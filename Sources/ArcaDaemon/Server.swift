@@ -1,0 +1,102 @@
+import Foundation
+import Logging
+import NIO
+import NIOHTTP1
+import NIOPosix
+
+/// The Arca HTTP server that listens on a Unix socket
+public final class ArcaServer {
+    private let socketPath: String
+    private let router: Router
+    private let logger: Logger
+
+    private var group: MultiThreadedEventLoopGroup?
+    private var channel: Channel?
+
+    public init(socketPath: String, router: Router, logger: Logger) {
+        self.socketPath = socketPath
+        self.router = router
+        self.logger = logger
+    }
+
+    /// Start the server
+    public func start() async throws {
+        logger.info("Starting Arca server", metadata: [
+            "socket_path": "\(socketPath)",
+            "api_version": "1.51"
+        ])
+
+        // Clean up existing socket file if it exists
+        try? FileManager.default.removeItem(atPath: socketPath)
+
+        // Create event loop group
+        let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+        self.group = eventLoopGroup
+
+        // Create bootstrap for Unix domain socket server
+        let bootstrap = ServerBootstrap(group: eventLoopGroup)
+            .serverChannelOption(ChannelOptions.backlog, value: 256)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                channel.pipeline.configureHTTPServerPipeline().flatMap {
+                    channel.pipeline.addHandler(HTTPHandler(router: self.router, logger: self.logger))
+                }
+            }
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
+
+        do {
+            // Bind to Unix domain socket
+            let channel = try await bootstrap.bind(unixDomainSocketPath: socketPath).get()
+            self.channel = channel
+
+            logger.info("Arca server started successfully", metadata: [
+                "socket_path": "\(socketPath)"
+            ])
+
+            // Set socket permissions to allow connections
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o666],
+                ofItemAtPath: socketPath
+            )
+
+            logger.info("Server listening for connections")
+
+            // Wait for the server to close
+            try await channel.closeFuture.get()
+        } catch {
+            logger.error("Failed to start server", metadata: [
+                "error": "\(error)"
+            ])
+            try? await shutdown()
+            throw error
+        }
+    }
+
+    /// Stop the server gracefully
+    public func shutdown() async throws {
+        logger.info("Shutting down Arca server")
+
+        // Close the channel
+        if let channel = channel {
+            try? await channel.close()
+            self.channel = nil
+        }
+
+        // Shutdown event loop group
+        if let group = group {
+            try? await group.shutdownGracefully()
+            self.group = nil
+        }
+
+        // Clean up socket file
+        try? FileManager.default.removeItem(atPath: socketPath)
+
+        logger.info("Arca server stopped")
+    }
+
+    /// Check if a socket file exists and is accessible
+    public static func socketExists(at path: String) -> Bool {
+        return FileManager.default.fileExists(atPath: path)
+    }
+}

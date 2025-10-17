@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:arca}",
+            "name": "Debug Arca",
+            "program": "${workspaceFolder:arca}/.build/debug/Arca",
+            "preLaunchTask": "swift: Build Debug Arca"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:arca}",
+            "name": "Release Arca",
+            "program": "${workspaceFolder:arca}/.build/release/Arca",
+            "preLaunchTask": "swift: Build Release Arca"
+        }
+    ]
+}

@@ -1,0 +1,301 @@
+import Foundation
+import Logging
+import ContainerBridge
+
+/// Handlers for Docker Engine API image endpoints
+/// Reference: Documentation/DockerEngineAPIv1.51.yaml
+public struct ImageHandlers {
+    private let imageManager: ImageManager
+    private let logger: Logger
+
+    public init(imageManager: ImageManager, logger: Logger) {
+        self.imageManager = imageManager
+        self.logger = logger
+    }
+
+    /// Handle GET /images/json
+    /// Lists all images
+    ///
+    /// Query parameters:
+    /// - all: Show all images (default hides intermediate images)
+    /// - filters: JSON encoded filters
+    /// - digests: Show digest information
+    public func handleListImages(
+        all: Bool = false,
+        filters: [String: [String]] = [:],
+        digests: Bool = false
+    ) async -> ImageListResponse {
+        logger.debug("Handling list images request", metadata: [
+            "all": "\(all)",
+            "filters": "\(filters)",
+            "digests": "\(digests)"
+        ])
+
+        do {
+            // Get images from ImageManager
+            let images = try await imageManager.listImages(filters: filters)
+
+            // Convert to Docker API format
+            let dockerImages = images.map { summary in
+                ImageListItem(
+                    id: summary.id,
+                    parentId: summary.parent ?? "",
+                    repoTags: summary.repoTags.isEmpty ? nil : summary.repoTags,
+                    repoDigests: digests ? summary.repoDigests : nil,
+                    created: summary.created,
+                    size: summary.size,
+                    virtualSize: summary.virtualSize,
+                    sharedSize: summary.sharedSize,
+                    labels: summary.labels.isEmpty ? nil : summary.labels,
+                    containers: summary.containers
+                )
+            }
+
+            logger.info("Listed images", metadata: [
+                "count": "\(dockerImages.count)"
+            ])
+
+            return ImageListResponse(images: dockerImages)
+        } catch {
+            logger.error("Failed to list images", metadata: [
+                "error": "\(error)"
+            ])
+
+            return ImageListResponse(images: [], error: error)
+        }
+    }
+
+    /// Handle POST /images/create
+    /// Pulls an image from a registry
+    ///
+    /// Query parameters:
+    /// - fromImage: Image name
+    /// - tag: Tag (default: latest)
+    /// - platform: Platform in format os[/arch[/variant]]
+    ///
+    /// Headers:
+    /// - X-Registry-Auth: Base64 encoded authentication
+    public func handlePullImage(
+        fromImage: String,
+        tag: String? = nil,
+        platform: String? = nil,
+        auth: RegistryAuthentication? = nil
+    ) async -> Result<ImagePullResponse, ImageHandlerError> {
+        let imageRef = tag.map { "\(fromImage):\($0)" } ?? fromImage
+
+        logger.info("Handling pull image request", metadata: [
+            "image": "\(imageRef)",
+            "platform": "\(platform ?? "default")"
+        ])
+
+        do {
+            let imageDetails = try await imageManager.pullImage(
+                reference: imageRef,
+                auth: auth
+            )
+
+            logger.info("Image pulled successfully", metadata: [
+                "id": "\(imageDetails.id)"
+            ])
+
+            return .success(ImagePullResponse(
+                status: "Pull complete",
+                id: imageDetails.id
+            ))
+        } catch {
+            logger.error("Failed to pull image", metadata: [
+                "image": "\(imageRef)",
+                "error": "\(error)"
+            ])
+
+            return .failure(.pullFailed(error.localizedDescription))
+        }
+    }
+
+    /// Handle GET /images/{name}/json
+    /// Inspects an image
+    public func handleInspectImage(nameOrId: String) async -> Result<ImageInspect, ImageHandlerError> {
+        logger.debug("Handling inspect image request", metadata: [
+            "name_or_id": "\(nameOrId)"
+        ])
+
+        do {
+            guard let imageDetails = try await imageManager.inspectImage(nameOrId: nameOrId) else {
+                return .failure(.imageNotFound(nameOrId))
+            }
+
+            // Convert to Docker API format
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+            let dockerImage = ImageInspect(
+                id: imageDetails.id,
+                repoTags: imageDetails.repoTags.isEmpty ? nil : imageDetails.repoTags,
+                repoDigests: imageDetails.repoDigests.isEmpty ? nil : imageDetails.repoDigests,
+                parent: imageDetails.parent ?? "",
+                comment: imageDetails.comment,
+                created: formatter.string(from: imageDetails.created),
+                container: imageDetails.container,
+                containerConfig: mapImageConfig(imageDetails.containerConfig),
+                dockerVersion: imageDetails.dockerVersion,
+                author: imageDetails.author,
+                config: mapImageConfig(imageDetails.config),
+                architecture: imageDetails.architecture,
+                os: imageDetails.os,
+                size: imageDetails.size,
+                virtualSize: imageDetails.virtualSize,
+                graphDriver: ImageGraphDriver(
+                    name: imageDetails.graphDriver.name,
+                    data: imageDetails.graphDriver.data
+                ),
+                rootFS: ImageRootFS(
+                    type: imageDetails.rootFS.type,
+                    layers: imageDetails.rootFS.layers.isEmpty ? nil : imageDetails.rootFS.layers
+                ),
+                metadata: ImageMetadataResponse(
+                    lastTagTime: imageDetails.metadata.lastTagTime.map { formatter.string(from: $0) }
+                )
+            )
+
+            logger.info("Image inspected", metadata: [
+                "id": "\(imageDetails.id)"
+            ])
+
+            return .success(dockerImage)
+        } catch {
+            logger.error("Failed to inspect image", metadata: [
+                "name_or_id": "\(nameOrId)",
+                "error": "\(error)"
+            ])
+
+            return .failure(.inspectFailed(error.localizedDescription))
+        }
+    }
+
+    /// Handle DELETE /images/{name}
+    /// Deletes an image
+    ///
+    /// Query parameters:
+    /// - force: Force removal
+    /// - noprune: Don't delete untagged parents
+    public func handleDeleteImage(
+        nameOrId: String,
+        force: Bool = false,
+        noprune: Bool = false
+    ) async -> Result<[ImageDeleteResponseItem], ImageHandlerError> {
+        logger.info("Handling delete image request", metadata: [
+            "name_or_id": "\(nameOrId)",
+            "force": "\(force)"
+        ])
+
+        do {
+            let deleteItems = try await imageManager.deleteImage(
+                nameOrId: nameOrId,
+                force: force
+            )
+
+            // Convert to Docker API format
+            let dockerItems = deleteItems.map { item in
+                ImageDeleteResponseItem(
+                    untagged: item.untagged,
+                    deleted: item.deleted
+                )
+            }
+
+            logger.info("Image deleted", metadata: [
+                "name_or_id": "\(nameOrId)",
+                "items": "\(dockerItems.count)"
+            ])
+
+            return .success(dockerItems)
+        } catch {
+            logger.error("Failed to delete image", metadata: [
+                "name_or_id": "\(nameOrId)",
+                "error": "\(error)"
+            ])
+
+            return .failure(.deleteFailed(error.localizedDescription))
+        }
+    }
+
+    // MARK: - Helper Methods
+
+    /// Map ImageContainerConfig to ImageConfig
+    private func mapImageConfig(_ config: ImageContainerConfig?) -> ImageConfig? {
+        guard let config = config else { return nil }
+
+        return ImageConfig(
+            hostname: config.hostname.isEmpty ? nil : config.hostname,
+            domainname: config.domainname.isEmpty ? nil : config.domainname,
+            user: config.user.isEmpty ? nil : config.user,
+            attachStdin: config.attachStdin,
+            attachStdout: config.attachStdout,
+            attachStderr: config.attachStderr,
+            exposedPorts: config.exposedPorts.map { ports in
+                Dictionary(uniqueKeysWithValues: ports.map { ($0.key, AnyCodable($0.value)) })
+            },
+            tty: config.tty,
+            openStdin: config.openStdin,
+            stdinOnce: config.stdinOnce,
+            env: config.env.isEmpty ? nil : config.env,
+            cmd: config.cmd.isEmpty ? nil : config.cmd,
+            image: config.image,
+            volumes: config.volumes.map { volumes in
+                Dictionary(uniqueKeysWithValues: volumes.map { ($0.key, AnyCodable($0.value)) })
+            },
+            workingDir: config.workingDir.isEmpty ? nil : config.workingDir,
+            entrypoint: config.entrypoint,
+            onBuild: config.onBuild,
+            labels: config.labels.isEmpty ? nil : config.labels
+        )
+    }
+}
+
+// MARK: - Response Types
+
+/// Response wrapper for list images
+public struct ImageListResponse {
+    public let images: [ImageListItem]
+    public let error: Error?
+
+    public init(images: [ImageListItem], error: Error? = nil) {
+        self.images = images
+        self.error = error
+    }
+}
+
+/// Response for image pull operation
+public struct ImagePullResponse: Codable {
+    public let status: String
+    public let id: String?
+
+    public init(status: String, id: String? = nil) {
+        self.status = status
+        self.id = id
+    }
+}
+
+// MARK: - Error Types
+
+public enum ImageHandlerError: Error, CustomStringConvertible {
+    case pullFailed(String)
+    case inspectFailed(String)
+    case deleteFailed(String)
+    case imageNotFound(String)
+    case invalidRequest(String)
+
+    public var description: String {
+        switch self {
+        case .pullFailed(let msg):
+            return "Failed to pull image: \(msg)"
+        case .inspectFailed(let msg):
+            return "Failed to inspect image: \(msg)"
+        case .deleteFailed(let msg):
+            return "Failed to delete image: \(msg)"
+        case .imageNotFound(let name):
+            return "Image not found: \(name)"
+        case .invalidRequest(let msg):
+            return "Invalid request: \(msg)"
+        }
+    }
+}
