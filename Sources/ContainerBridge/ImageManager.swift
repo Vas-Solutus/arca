@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import Containerization
 import ContainerizationOCI
+import ContainerizationExtras
 
 /// Manages OCI images using Apple's Containerization API
 /// Provides translation layer between Docker API and Containerization image operations
@@ -154,12 +155,16 @@ public actor ImageManager {
 
     // MARK: - Image Pulling
 
-    /// Pull an image from a registry
-    public func pullImage(
+    /// Resolve the manifest for an image and extract layer digests and manifest digest
+    /// This allows us to get real layer IDs and the manifest digest before pulling
+    public func resolveManifestLayersWithDigest(
         reference: String,
         auth: RegistryAuthentication? = nil
-    ) async throws -> ImageDetails {
-        logger.info("Pulling image", metadata: ["reference": "\(reference)"])
+    ) async throws -> (layerDigests: [String], layerSizes: [Int64], manifestDigest: String) {
+        logger.debug("Resolving manifest layers", metadata: ["reference": "\(reference)"])
+
+        // Normalize image reference
+        let normalizedRef = normalizeImageReference(reference)
 
         // Create authentication if provided
         var authentication: Authentication?
@@ -167,13 +172,91 @@ public actor ImageManager {
             authentication = BasicAuthentication(username: username, password: password)
         }
 
-        // Pull image using ImageStore
+        // Create registry client
+        let client = try RegistryClient(reference: normalizedRef, insecure: false, auth: authentication)
+
+        // Parse reference to get name and tag
+        let ref = try Reference.parse(normalizedRef)
+        let name = ref.path
+        guard let tag = ref.tag ?? ref.digest else {
+            throw ImageManagerError.invalidReference("Invalid tag/digest for image reference \(normalizedRef)")
+        }
+
+        // Resolve root descriptor (manifest)
+        let rootDescriptor = try await client.resolve(name: name, tag: tag)
+
+        // Fetch the manifest and track the manifest digest
+        let manifest: Manifest
+        let manifestDigest: String
+
+        switch rootDescriptor.mediaType {
+        case MediaTypes.imageManifest, MediaTypes.dockerManifest:
+            // Direct manifest
+            manifest = try await client.fetch(name: name, descriptor: rootDescriptor)
+            manifestDigest = rootDescriptor.digest
+        case MediaTypes.index, MediaTypes.dockerManifestList:
+            // Manifest list - need to select platform-specific manifest
+            let index: Index = try await client.fetch(name: name, descriptor: rootDescriptor)
+
+            // Find manifest for our platform
+            guard let platformManifest = index.manifests.first(where: { manifestDesc in
+                guard let platform = manifestDesc.platform else { return false }
+                // Check if platform matches (os and architecture)
+                return platform.os == self.defaultPlatform.os &&
+                       platform.architecture == self.defaultPlatform.architecture
+            }) else {
+                throw ImageManagerError.platformNotFound("No manifest found for platform \(self.defaultPlatform)")
+            }
+
+            // Fetch the platform-specific manifest
+            manifest = try await client.fetch(name: name, descriptor: platformManifest)
+            manifestDigest = platformManifest.digest
+        default:
+            throw ImageManagerError.unsupportedMediaType("Unsupported media type: \(rootDescriptor.mediaType)")
+        }
+
+        // Extract layer digests and sizes (in the order they appear in the manifest)
+        let layerDigests = manifest.layers.map { $0.digest }
+        let layerSizes = manifest.layers.map { Int64($0.size) }
+
+        logger.debug("Resolved manifest layers", metadata: [
+            "count": "\(layerDigests.count)",
+            "manifest_digest": "\(manifestDigest.prefix(19))...",
+            "digests": "\(layerDigests.prefix(3).joined(separator: ", "))...",
+            "total_layer_size": "\(layerSizes.reduce(0, +))"
+        ])
+
+        return (layerDigests, layerSizes, manifestDigest)
+    }
+
+    /// Pull an image from a registry
+    public func pullImage(
+        reference: String,
+        auth: RegistryAuthentication? = nil,
+        progress: ContainerizationExtras.ProgressHandler? = nil
+    ) async throws -> ImageDetails {
+        logger.info("Pulling image", metadata: ["reference": "\(reference)"])
+
+        // Normalize image reference (add :latest if needed, add docker.io registry)
+        let normalizedRef = normalizeImageReference(reference)
+        logger.debug("Normalized reference for pull", metadata: [
+            "original": "\(reference)",
+            "normalized": "\(normalizedRef)"
+        ])
+
+        // Create authentication if provided
+        var authentication: Authentication?
+        if let auth = auth, let username = auth.username, let password = auth.password {
+            authentication = BasicAuthentication(username: username, password: password)
+        }
+
+        // Pull image using ImageStore with normalized reference
         let image = try await imageStore.pull(
-            reference: reference,
+            reference: normalizedRef,
             platform: defaultPlatform,
             insecure: false,
             auth: authentication,
-            progress: nil
+            progress: progress
         )
 
         // Get image details
@@ -423,6 +506,8 @@ public enum ImageManagerError: Error, CustomStringConvertible {
     case deleteFailed(String)
     case tagFailed(String)
     case invalidReference(String)
+    case platformNotFound(String)
+    case unsupportedMediaType(String)
 
     public var description: String {
         switch self {
@@ -440,6 +525,10 @@ public enum ImageManagerError: Error, CustomStringConvertible {
             return "Failed to tag image: \(msg)"
         case .invalidReference(let ref):
             return "Invalid image reference: \(ref)"
+        case .platformNotFound(let msg):
+            return "Platform not found: \(msg)"
+        case .unsupportedMediaType(let msg):
+            return "Unsupported media type: \(msg)"
         }
     }
 }

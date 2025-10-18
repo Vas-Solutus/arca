@@ -2,6 +2,54 @@ import Foundation
 import Logging
 import NIO
 import NIOHTTP1
+import DockerAPI
+
+/// SwiftNIO-based stream writer for chunked HTTP responses
+/// @unchecked Sendable: Safe because all operations are executed on the channel's event loop
+final class NIOHTTPStreamWriter: HTTPStreamWriter, @unchecked Sendable {
+    private let context: ChannelHandlerContext
+    private let logger: Logger
+    private var finished = false
+
+    init(context: ChannelHandlerContext, logger: Logger) {
+        self.context = context
+        self.logger = logger
+    }
+
+    func write(_ data: Data) async throws {
+        guard !finished else {
+            throw StreamError.alreadyFinished
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            context.eventLoop.execute {
+                var buffer = self.context.channel.allocator.buffer(capacity: data.count)
+                buffer.writeBytes(data)
+                let part = HTTPServerResponsePart.body(.byteBuffer(buffer))
+                self.context.writeAndFlush(NIOAny(part), promise: nil)
+                continuation.resume()
+            }
+        }
+    }
+
+    func finish() async throws {
+        guard !finished else { return }
+        finished = true
+
+        return try await withCheckedThrowingContinuation { continuation in
+            context.eventLoop.execute {
+                // Send the end part to complete the HTTP response
+                let endPart = HTTPServerResponsePart.end(nil)
+                self.context.writeAndFlush(NIOAny(endPart), promise: nil)
+                continuation.resume()
+            }
+        }
+    }
+
+    enum StreamError: Error {
+        case alreadyFinished
+    }
+}
 
 /// SwiftNIO channel handler for processing HTTP requests
 final class HTTPHandler: ChannelInboundHandler {
@@ -74,12 +122,50 @@ final class HTTPHandler: ChannelInboundHandler {
         let eventLoop = context.eventLoop
         eventLoop.execute {
             Task {
-                let response = await self.router.route(request: request)
+                let responseType = await self.router.route(request: request)
 
                 // Send response on the event loop
                 eventLoop.execute {
-                    self.sendResponse(context: context, response: response)
+                    self.sendResponseType(context: context, responseType: responseType)
                     self.reset()
+                }
+            }
+        }
+    }
+
+    private func sendResponseType(context: ChannelHandlerContext, responseType: HTTPResponseType) {
+        switch responseType {
+        case .standard(let response):
+            sendResponse(context: context, response: response)
+
+        case .streaming(let status, var headers, let callback):
+            // Send response head with chunked transfer encoding
+            headers.add(name: "Server", value: "Arca/0.1.0")
+            headers.add(name: "Transfer-Encoding", value: "chunked")
+
+            let responseHead = HTTPResponseHead(
+                version: .http1_1,
+                status: status,
+                headers: headers
+            )
+            context.write(wrapOutboundOut(.head(responseHead)), promise: nil)
+            context.flush()
+
+            // Create stream writer and invoke callback
+            let writer = NIOHTTPStreamWriter(context: context, logger: logger)
+
+            // Execute callback on event loop
+            context.eventLoop.execute {
+                Task {
+                    do {
+                        try await callback(writer)
+                        try await writer.finish()
+                        self.logger.debug("Streaming response completed")
+                    } catch {
+                        self.logger.error("Streaming response error", metadata: ["error": "\(error)"])
+                        // Try to finish the stream gracefully
+                        try? await writer.finish()
+                    }
                 }
             }
         }

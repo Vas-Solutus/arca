@@ -123,7 +123,7 @@ public final class ArcaDaemon {
             headers.add(name: "OSType", value: response.osType)
             headers.add(name: "Content-Type", value: "text/plain; charset=utf-8")
             headers.add(name: "Content-Length", value: "\(body.count)")
-            return HTTPResponse(status: .ok, headers: headers, body: body)
+            return .standard(HTTPResponse(status: .ok, headers: headers, body: body))
         }
 
         router.register(method: .HEAD, pattern: "/_ping") { _ in
@@ -132,12 +132,12 @@ public final class ArcaDaemon {
             headers.add(name: "API-Version", value: response.apiVersion)
             headers.add(name: "OSType", value: response.osType)
             headers.add(name: "Content-Length", value: "0")
-            return HTTPResponse(status: .ok, headers: headers, body: nil)
+            return .standard(HTTPResponse(status: .ok, headers: headers, body: nil))
         }
 
         router.register(method: .GET, pattern: "/version") { _ in
             let response = SystemHandlers.handleVersion()
-            return HTTPResponse.json(response)
+            return .standard(HTTPResponse.json(response))
         }
 
         // Container endpoints - List
@@ -160,17 +160,17 @@ public final class ArcaDaemon {
                 )
 
                 if let error = listResponse.error {
-                    return HTTPResponse.error(
+                    return .standard(HTTPResponse.error(
                         "Failed to list containers: \(error.localizedDescription)",
                         status: .internalServerError
-                    )
+                    ))
                 }
 
-                return HTTPResponse.json(listResponse.containers)
+                return .standard(HTTPResponse.json(listResponse.containers))
             } catch let error as ValidationError {
-                return error.toHTTPResponse()
+                return .standard(error.toHTTPResponse())
             } catch {
-                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
             }
         }
 
@@ -182,7 +182,7 @@ public final class ArcaDaemon {
             // Parse JSON body
             guard let body = request.body,
                   let createRequest = try? JSONDecoder().decode(ContainerCreateRequest.self, from: body) else {
-                return HTTPResponse.error("Invalid or missing request body", status: .badRequest)
+                return .standard(HTTPResponse.error("Invalid or missing request body", status: .badRequest))
             }
 
             // Call handler
@@ -190,16 +190,16 @@ public final class ArcaDaemon {
 
             switch result {
             case .success(let response):
-                return HTTPResponse.json(response, status: .created)
+                return .standard(HTTPResponse.json(response, status: .created))
             case .failure(let error):
-                return HTTPResponse.error(error.description, status: .internalServerError)
+                return .standard(HTTPResponse.error(error.description, status: .internalServerError))
             }
         }
 
         // Container endpoints - Start
         router.register(method: .POST, pattern: "/containers/{id}/start") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             let result = await containerHandlers.handleStartContainer(id: id)
@@ -208,17 +208,17 @@ public final class ArcaDaemon {
             case .success:
                 var headers = HTTPHeaders()
                 headers.add(name: "Content-Length", value: "0")
-                return HTTPResponse(status: .noContent, headers: headers)
+                return .standard(HTTPResponse(status: .noContent, headers: headers))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
         // Container endpoints - Stop
         router.register(method: .POST, pattern: "/containers/{id}/stop") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             // Validate timeout parameter
@@ -231,22 +231,22 @@ public final class ArcaDaemon {
                 case .success:
                     var headers = HTTPHeaders()
                     headers.add(name: "Content-Length", value: "0")
-                    return HTTPResponse(status: .noContent, headers: headers)
+                    return .standard(HTTPResponse(status: .noContent, headers: headers))
                 case .failure(let error):
                     let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                    return HTTPResponse.error(error.description, status: status)
+                    return .standard(HTTPResponse.error(error.description, status: status))
                 }
             } catch let error as ValidationError {
-                return error.toHTTPResponse()
+                return .standard(error.toHTTPResponse())
             } catch {
-                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
             }
         }
 
         // Container endpoints - Remove
         router.register(method: .DELETE, pattern: "/containers/{id}") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
@@ -258,34 +258,34 @@ public final class ArcaDaemon {
             case .success:
                 var headers = HTTPHeaders()
                 headers.add(name: "Content-Length", value: "0")
-                return HTTPResponse(status: .noContent, headers: headers)
+                return .standard(HTTPResponse(status: .noContent, headers: headers))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
         // Container endpoints - Inspect
         router.register(method: .GET, pattern: "/containers/{id}/json") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             let result = await containerHandlers.handleInspectContainer(id: id)
 
             switch result {
             case .success(let inspect):
-                return HTTPResponse.json(inspect)
+                return .standard(HTTPResponse.json(inspect))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
         // Container endpoints - Logs
         router.register(method: .GET, pattern: "/containers/{id}/logs") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             // Validate query parameters
@@ -315,21 +315,21 @@ public final class ArcaDaemon {
                     var headers = HTTPHeaders()
                     headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
                     headers.add(name: "Content-Length", value: "\(logsData.count)")
-                    return HTTPResponse(status: .ok, headers: headers, body: logsData)
+                    return .standard(HTTPResponse(status: .ok, headers: headers, body: logsData))
                 case .failure(let error):
                     let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                    return HTTPResponse.error(error.description, status: status)
+                    return .standard(HTTPResponse.error(error.description, status: status))
                 }
             } catch let error as ValidationError {
-                return error.toHTTPResponse()
+                return .standard(error.toHTTPResponse())
             } catch {
-                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
             }
         }
 
         router.register(method: .POST, pattern: "/containers/{id}/attach") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             // Parse attach parameters (similar to logs endpoint)
@@ -356,16 +356,16 @@ public final class ArcaDaemon {
                 var headers = HTTPHeaders()
                 headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
                 headers.add(name: "Content-Length", value: "\(logsData.count)")
-                return HTTPResponse(status: .ok, headers: headers, body: logsData)
+                return .standard(HTTPResponse(status: .ok, headers: headers, body: logsData))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
         router.register(method: .POST, pattern: "/containers/{id}/wait") { request in
             guard let id = request.pathParameters["id"] else {
-                return HTTPResponse.error("Missing container ID", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
             // Wait for container to exit and return exit code
@@ -374,10 +374,10 @@ public final class ArcaDaemon {
             switch result {
             case .success(let exitCode):
                 let response = ["StatusCode": exitCode]
-                return HTTPResponse.json(response)
+                return .standard(HTTPResponse.json(response))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
@@ -399,24 +399,24 @@ public final class ArcaDaemon {
                 )
 
                 if let error = listResponse.error {
-                    return HTTPResponse.error(
+                    return .standard(HTTPResponse.error(
                         "Failed to list images: \(error.localizedDescription)",
                         status: .internalServerError
-                    )
+                    ))
                 }
 
-                return HTTPResponse.json(listResponse.images)
+                return .standard(HTTPResponse.json(listResponse.images))
             } catch let error as ValidationError {
-                return error.toHTTPResponse()
+                return .standard(error.toHTTPResponse())
             } catch {
-                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
             }
         }
 
         router.register(method: .POST, pattern: "/images/create") { request in
             // Parse query parameters
             guard let fromImage = request.queryParameters["fromImage"] else {
-                return HTTPResponse.error("Missing 'fromImage' query parameter", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing 'fromImage' query parameter", status: .badRequest))
             }
 
             let tag = request.queryParameters["tag"]
@@ -437,25 +437,18 @@ public final class ArcaDaemon {
                 }
             }
 
-            // Call handler asynchronously
-            let result = await imageHandlers.handlePullImage(
+            // Call streaming handler for real-time progress updates
+            return await imageHandlers.handlePullImageStreaming(
                 fromImage: fromImage,
                 tag: tag,
                 platform: platform,
                 auth: auth
             )
-
-            switch result {
-            case .success(let response):
-                return HTTPResponse.json(response)
-            case .failure(let error):
-                return HTTPResponse.error(error.description, status: .internalServerError)
-            }
         }
 
         router.register(method: .DELETE, pattern: "/images/{name}") { request in
             guard let name = request.pathParameters["name"] else {
-                return HTTPResponse.error("Missing image name", status: .badRequest)
+                return .standard(HTTPResponse.error("Missing image name", status: .badRequest))
             }
 
             let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
@@ -465,10 +458,10 @@ public final class ArcaDaemon {
 
             switch result {
             case .success(let response):
-                return HTTPResponse.json(response)
+                return .standard(HTTPResponse.json(response))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
 
