@@ -41,7 +41,19 @@ public final class Router {
                 logger.debug("Route matched", metadata: [
                     "pattern": "\(route.pattern.pattern)"
                 ])
-                return await route.handler(request)
+
+                // Extract path parameters and add to request
+                let pathParams = route.pattern.extractParameters(from: normalizedPath)
+                var requestWithParams = request
+                requestWithParams.pathParameters = pathParams
+
+                if !pathParams.isEmpty {
+                    logger.debug("Extracted path parameters", metadata: [
+                        "parameters": "\(pathParams)"
+                    ])
+                }
+
+                return await route.handler(requestWithParams)
             }
         }
 
@@ -91,23 +103,65 @@ public final class Router {
 }
 
 /// Pattern matcher for routes
+/// Supports path parameters using {paramName} syntax
+/// Example: /containers/{id}/start matches /containers/abc123/start
 struct RoutePattern {
     let pattern: String
     private let regex: NSRegularExpression?
+    private let parameterNames: [String]
 
     init(pattern: String) {
         self.pattern = pattern
 
-        // Convert route pattern to regex
-        // For now, we'll use exact matching, but this could be extended
-        // to support path parameters like /containers/:id
-        let escapedPattern = NSRegularExpression.escapedPattern(for: pattern)
-        self.regex = try? NSRegularExpression(pattern: "^" + escapedPattern + "$")
+        // Extract parameter names from pattern (e.g., {id} -> "id")
+        var names: [String] = []
+        var regexPattern = "^"
+
+        // Split pattern into components and process each
+        let components = pattern.split(separator: "/", omittingEmptySubsequences: false)
+        for (index, component) in components.enumerated() {
+            if index > 0 {
+                regexPattern += "/"
+            }
+
+            let componentStr = String(component)
+            if componentStr.hasPrefix("{") && componentStr.hasSuffix("}") {
+                // Extract parameter name and create capture group
+                let paramName = String(componentStr.dropFirst().dropLast())
+                names.append(paramName)
+                regexPattern += "([^/]+)"  // Match any non-slash characters
+            } else if !componentStr.isEmpty {
+                // Regular path component - escape it
+                regexPattern += NSRegularExpression.escapedPattern(for: componentStr)
+            }
+        }
+        regexPattern += "$"
+
+        self.parameterNames = names
+        self.regex = try? NSRegularExpression(pattern: regexPattern)
     }
 
     func matches(_ path: String) -> Bool {
         guard let regex = regex else { return false }
         let range = NSRange(path.startIndex..., in: path)
         return regex.firstMatch(in: path, range: range) != nil
+    }
+
+    /// Extract path parameters from a matching path
+    func extractParameters(from path: String) -> [String: String] {
+        guard let regex = regex else { return [:] }
+        let range = NSRange(path.startIndex..., in: path)
+        guard let match = regex.firstMatch(in: path, range: range) else { return [:] }
+
+        var parameters: [String: String] = [:]
+        for (index, paramName) in parameterNames.enumerated() {
+            let captureIndex = index + 1  // Capture groups start at 1
+            if captureIndex < match.numberOfRanges,
+               let captureRange = Range(match.range(at: captureIndex), in: path) {
+                parameters[paramName] = String(path[captureRange])
+            }
+        }
+
+        return parameters
     }
 }

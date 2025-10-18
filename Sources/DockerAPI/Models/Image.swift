@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Docker API Image Models
-// Reference: Documentation/DockerEngineAPIv1.51.yaml
+// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 
 /// Response for GET /images/json endpoint
 public struct ImageListItem: Codable {

@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Docker API Container Models
-// Reference: Documentation/DockerEngineAPIv1.51.yaml
+// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 
 /// Response for GET /containers/json endpoint
 /// Returns an array of containers with their metadata
@@ -298,6 +298,438 @@ public struct ContainerCreateResponse: Codable {
     public init(id: String, warnings: [String]? = nil) {
         self.id = id
         self.warnings = warnings
+    }
+}
+
+// MARK: - Container Inspect Response
+
+/// Response for GET /containers/{id}/json endpoint
+/// Full container details including state, config, and network settings
+public struct ContainerInspect: Codable {
+    public let id: String
+    public let created: String  // ISO 8601 timestamp
+    public let path: String
+    public let args: [String]
+    public let state: ContainerStateInspect
+    public let image: String
+    public let resolvConfPath: String
+    public let hostnamePath: String
+    public let hostsPath: String
+    public let logPath: String
+    public let name: String
+    public let restartCount: Int
+    public let driver: String
+    public let platform: String
+    public let mountLabel: String
+    public let processLabel: String
+    public let appArmorProfile: String
+    public let hostConfig: HostConfigInspect
+    public let config: ContainerConfigInspect
+    public let networkSettings: NetworkSettingsInspect
+    public let mounts: [MountInspect]
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id"
+        case created = "Created"
+        case path = "Path"
+        case args = "Args"
+        case state = "State"
+        case image = "Image"
+        case resolvConfPath = "ResolvConfPath"
+        case hostnamePath = "HostnamePath"
+        case hostsPath = "HostsPath"
+        case logPath = "LogPath"
+        case name = "Name"
+        case restartCount = "RestartCount"
+        case driver = "Driver"
+        case platform = "Platform"
+        case mountLabel = "MountLabel"
+        case processLabel = "ProcessLabel"
+        case appArmorProfile = "AppArmorProfile"
+        case hostConfig = "HostConfig"
+        case config = "Config"
+        case networkSettings = "NetworkSettings"
+        case mounts = "Mounts"
+    }
+
+    public init(
+        id: String,
+        created: String,
+        path: String,
+        args: [String],
+        state: ContainerStateInspect,
+        image: String,
+        resolvConfPath: String = "",
+        hostnamePath: String = "",
+        hostsPath: String = "",
+        logPath: String = "",
+        name: String,
+        restartCount: Int = 0,
+        driver: String = "overlay2",
+        platform: String = "linux",
+        mountLabel: String = "",
+        processLabel: String = "",
+        appArmorProfile: String = "",
+        hostConfig: HostConfigInspect,
+        config: ContainerConfigInspect,
+        networkSettings: NetworkSettingsInspect,
+        mounts: [MountInspect] = []
+    ) {
+        self.id = id
+        self.created = created
+        self.path = path
+        self.args = args
+        self.state = state
+        self.image = image
+        self.resolvConfPath = resolvConfPath
+        self.hostnamePath = hostnamePath
+        self.hostsPath = hostsPath
+        self.logPath = logPath
+        self.name = name
+        self.restartCount = restartCount
+        self.driver = driver
+        self.platform = platform
+        self.mountLabel = mountLabel
+        self.processLabel = processLabel
+        self.appArmorProfile = appArmorProfile
+        self.hostConfig = hostConfig
+        self.config = config
+        self.networkSettings = networkSettings
+        self.mounts = mounts
+    }
+}
+
+/// Container state for inspect response
+public struct ContainerStateInspect: Codable {
+    public let status: String
+    public let running: Bool
+    public let paused: Bool
+    public let restarting: Bool
+    public let oomKilled: Bool
+    public let dead: Bool
+    public let pid: Int
+    public let exitCode: Int
+    public let error: String
+    public let startedAt: String
+    public let finishedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case status = "Status"
+        case running = "Running"
+        case paused = "Paused"
+        case restarting = "Restarting"
+        case oomKilled = "OOMKilled"
+        case dead = "Dead"
+        case pid = "Pid"
+        case exitCode = "ExitCode"
+        case error = "Error"
+        case startedAt = "StartedAt"
+        case finishedAt = "FinishedAt"
+    }
+
+    public init(
+        status: String,
+        running: Bool,
+        paused: Bool = false,
+        restarting: Bool = false,
+        oomKilled: Bool = false,
+        dead: Bool = false,
+        pid: Int,
+        exitCode: Int,
+        error: String = "",
+        startedAt: String,
+        finishedAt: String
+    ) {
+        self.status = status
+        self.running = running
+        self.paused = paused
+        self.restarting = restarting
+        self.oomKilled = oomKilled
+        self.dead = dead
+        self.pid = pid
+        self.exitCode = exitCode
+        self.error = error
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+    }
+}
+
+/// Host config for inspect response
+public struct HostConfigInspect: Codable {
+    public let binds: [String]?
+    public let networkMode: String
+    public let portBindings: [String: [PortBindingInspect]]?
+    public let restartPolicy: RestartPolicyInspect
+    public let autoRemove: Bool
+    public let privileged: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case binds = "Binds"
+        case networkMode = "NetworkMode"
+        case portBindings = "PortBindings"
+        case restartPolicy = "RestartPolicy"
+        case autoRemove = "AutoRemove"
+        case privileged = "Privileged"
+    }
+
+    public init(
+        binds: [String]? = nil,
+        networkMode: String = "default",
+        portBindings: [String: [PortBindingInspect]]? = nil,
+        restartPolicy: RestartPolicyInspect = RestartPolicyInspect(name: "no"),
+        autoRemove: Bool = false,
+        privileged: Bool = false
+    ) {
+        self.binds = binds
+        self.networkMode = networkMode
+        self.portBindings = portBindings
+        self.restartPolicy = restartPolicy
+        self.autoRemove = autoRemove
+        self.privileged = privileged
+    }
+}
+
+/// Port binding for inspect response
+public struct PortBindingInspect: Codable {
+    public let hostIp: String
+    public let hostPort: String
+
+    enum CodingKeys: String, CodingKey {
+        case hostIp = "HostIp"
+        case hostPort = "HostPort"
+    }
+
+    public init(hostIp: String = "", hostPort: String = "") {
+        self.hostIp = hostIp
+        self.hostPort = hostPort
+    }
+}
+
+/// Restart policy for inspect response
+public struct RestartPolicyInspect: Codable {
+    public let name: String
+    public let maximumRetryCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case maximumRetryCount = "MaximumRetryCount"
+    }
+
+    public init(name: String, maximumRetryCount: Int = 0) {
+        self.name = name
+        self.maximumRetryCount = maximumRetryCount
+    }
+}
+
+/// Container config for inspect response
+public struct ContainerConfigInspect: Codable {
+    public let hostname: String
+    public let domainname: String
+    public let user: String
+    public let attachStdin: Bool
+    public let attachStdout: Bool
+    public let attachStderr: Bool
+    public let tty: Bool
+    public let openStdin: Bool
+    public let stdinOnce: Bool
+    public let env: [String]?
+    public let cmd: [String]?
+    public let image: String
+    public let volumes: [String: AnyCodable]?
+    public let workingDir: String
+    public let entrypoint: [String]?
+    public let labels: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case hostname = "Hostname"
+        case domainname = "Domainname"
+        case user = "User"
+        case attachStdin = "AttachStdin"
+        case attachStdout = "AttachStdout"
+        case attachStderr = "AttachStderr"
+        case tty = "Tty"
+        case openStdin = "OpenStdin"
+        case stdinOnce = "StdinOnce"
+        case env = "Env"
+        case cmd = "Cmd"
+        case image = "Image"
+        case volumes = "Volumes"
+        case workingDir = "WorkingDir"
+        case entrypoint = "Entrypoint"
+        case labels = "Labels"
+    }
+
+    public init(
+        hostname: String = "",
+        domainname: String = "",
+        user: String = "",
+        attachStdin: Bool = false,
+        attachStdout: Bool = true,
+        attachStderr: Bool = true,
+        tty: Bool = false,
+        openStdin: Bool = false,
+        stdinOnce: Bool = false,
+        env: [String]? = nil,
+        cmd: [String]? = nil,
+        image: String,
+        volumes: [String: AnyCodable]? = nil,
+        workingDir: String = "",
+        entrypoint: [String]? = nil,
+        labels: [String: String]? = nil
+    ) {
+        self.hostname = hostname
+        self.domainname = domainname
+        self.user = user
+        self.attachStdin = attachStdin
+        self.attachStdout = attachStdout
+        self.attachStderr = attachStderr
+        self.tty = tty
+        self.openStdin = openStdin
+        self.stdinOnce = stdinOnce
+        self.env = env
+        self.cmd = cmd
+        self.image = image
+        self.volumes = volumes
+        self.workingDir = workingDir
+        self.entrypoint = entrypoint
+        self.labels = labels
+    }
+}
+
+/// Network settings for inspect response
+public struct NetworkSettingsInspect: Codable {
+    public let bridge: String
+    public let sandboxID: String
+    public let hairpinMode: Bool
+    public let linkLocalIPv6Address: String
+    public let linkLocalIPv6PrefixLen: Int
+    public let ports: [String: [PortBindingInspect]?]?
+    public let sandboxKey: String
+    public let ipAddress: String
+    public let ipPrefixLen: Int
+    public let gateway: String
+    public let macAddress: String
+    public let networks: [String: NetworkEndpointInspect]
+
+    enum CodingKeys: String, CodingKey {
+        case bridge = "Bridge"
+        case sandboxID = "SandboxID"
+        case hairpinMode = "HairpinMode"
+        case linkLocalIPv6Address = "LinkLocalIPv6Address"
+        case linkLocalIPv6PrefixLen = "LinkLocalIPv6PrefixLen"
+        case ports = "Ports"
+        case sandboxKey = "SandboxKey"
+        case ipAddress = "IPAddress"
+        case ipPrefixLen = "IPPrefixLen"
+        case gateway = "Gateway"
+        case macAddress = "MacAddress"
+        case networks = "Networks"
+    }
+
+    public init(
+        bridge: String = "",
+        sandboxID: String = "",
+        hairpinMode: Bool = false,
+        linkLocalIPv6Address: String = "",
+        linkLocalIPv6PrefixLen: Int = 0,
+        ports: [String: [PortBindingInspect]?]? = nil,
+        sandboxKey: String = "",
+        ipAddress: String = "",
+        ipPrefixLen: Int = 0,
+        gateway: String = "",
+        macAddress: String = "",
+        networks: [String: NetworkEndpointInspect] = [:]
+    ) {
+        self.bridge = bridge
+        self.sandboxID = sandboxID
+        self.hairpinMode = hairpinMode
+        self.linkLocalIPv6Address = linkLocalIPv6Address
+        self.linkLocalIPv6PrefixLen = linkLocalIPv6PrefixLen
+        self.ports = ports
+        self.sandboxKey = sandboxKey
+        self.ipAddress = ipAddress
+        self.ipPrefixLen = ipPrefixLen
+        self.gateway = gateway
+        self.macAddress = macAddress
+        self.networks = networks
+    }
+}
+
+/// Network endpoint for inspect response
+public struct NetworkEndpointInspect: Codable {
+    public let networkID: String
+    public let endpointID: String
+    public let gateway: String
+    public let ipAddress: String
+    public let ipPrefixLen: Int
+    public let macAddress: String
+
+    enum CodingKeys: String, CodingKey {
+        case networkID = "NetworkID"
+        case endpointID = "EndpointID"
+        case gateway = "Gateway"
+        case ipAddress = "IPAddress"
+        case ipPrefixLen = "IPPrefixLen"
+        case macAddress = "MacAddress"
+    }
+
+    public init(
+        networkID: String = "",
+        endpointID: String = "",
+        gateway: String = "",
+        ipAddress: String = "",
+        ipPrefixLen: Int = 0,
+        macAddress: String = ""
+    ) {
+        self.networkID = networkID
+        self.endpointID = endpointID
+        self.gateway = gateway
+        self.ipAddress = ipAddress
+        self.ipPrefixLen = ipPrefixLen
+        self.macAddress = macAddress
+    }
+}
+
+/// Mount information for inspect response
+public struct MountInspect: Codable {
+    public let type: String
+    public let name: String?
+    public let source: String
+    public let destination: String
+    public let driver: String?
+    public let mode: String
+    public let rw: Bool
+    public let propagation: String
+
+    enum CodingKeys: String, CodingKey {
+        case type = "Type"
+        case name = "Name"
+        case source = "Source"
+        case destination = "Destination"
+        case driver = "Driver"
+        case mode = "Mode"
+        case rw = "RW"
+        case propagation = "Propagation"
+    }
+
+    public init(
+        type: String,
+        name: String? = nil,
+        source: String,
+        destination: String,
+        driver: String? = nil,
+        mode: String = "",
+        rw: Bool = true,
+        propagation: String = ""
+    ) {
+        self.type = type
+        self.name = name
+        self.source = source
+        self.destination = destination
+        self.driver = driver
+        self.mode = mode
+        self.rw = rw
+        self.propagation = propagation
     }
 }
 

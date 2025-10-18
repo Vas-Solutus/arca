@@ -7,6 +7,7 @@ public struct HTTPRequest {
     public let uri: String
     public let headers: HTTPHeaders
     public let body: Data?
+    public var pathParameters: [String: String]
 
     /// Extract the path without query parameters
     public var path: String {
@@ -28,11 +29,12 @@ public struct HTTPRequest {
         return params
     }
 
-    public init(method: HTTPMethod, uri: String, headers: HTTPHeaders, body: Data?) {
+    public init(method: HTTPMethod, uri: String, headers: HTTPHeaders, body: Data?, pathParameters: [String: String] = [:]) {
         self.method = method
         self.uri = uri
         self.headers = headers
         self.body = body
+        self.pathParameters = pathParameters
     }
 }
 

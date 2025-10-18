@@ -1,7 +1,7 @@
 import Foundation
 
 /// Handlers for Docker Engine API system endpoints
-/// Reference: Documentation/DockerEngineAPIv1.51.yaml
+/// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct SystemHandlers {
 
     /// Handle GET /_ping

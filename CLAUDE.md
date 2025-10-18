@@ -12,126 +12,264 @@ Part of the Vas Solutus project - freeing containers on macOS.
 
 ### Building
 ```bash
-swift build
+# Using Makefile (recommended - includes code signing)
+make                           # Debug build with entitlements
+make release                   # Release build with entitlements
+make debug                     # Explicit debug build
+
+# Using Swift directly
+swift build                    # Debug build
+swift build -c release         # Release build
+
+# Verify code signing
+make verify-entitlements       # Check applied entitlements
+```
+
+**Critical**: Arca requires code signing with specific entitlements (`Arca.entitlements`) to access Apple's Containerization framework. The Makefile handles this automatically. If building with `swift build` directly, you must manually codesign:
+```bash
+codesign --force --sign - --entitlements Arca.entitlements .build/debug/Arca
+```
+
+### Installing
+```bash
+make install                   # Install to /usr/local/bin (requires sudo)
+make uninstall                 # Remove from /usr/local/bin
 ```
 
 ### Running
 ```bash
-swift run Arca
+# After building
+.build/debug/Arca daemon start
+.build/release/Arca daemon start
+
+# Using swift run (slower, rebuilds)
+swift run Arca daemon start --socket-path /var/run/arca.sock --log-level debug
+
+# After installing
+arca daemon start
 ```
 
 ### Testing
 ```bash
-swift test
+swift test                     # Run all tests
+swift test --filter ArcaTests  # Run specific test target
 ```
 
 ### Clean Build
 ```bash
-swift package clean
+make clean                     # Remove all build artifacts
+swift package clean            # Swift-only clean
 ```
+
+### One-Time Setup: Building vminit
+
+**Critical prerequisite**: Arca requires the `vminit:latest` init system image before ContainerManager can initialize containers. This is a one-time setup.
+
+```bash
+# Navigate to containerization package
+cd .build/checkouts/containerization
+
+# Install Swift Static Linux SDK (one-time, ~5 minutes)
+make cross-prep
+
+# Build vminitd binaries (cross-compiled to Linux)
+make vminitd
+
+# Package into vminit:latest OCI image
+make init
+```
+
+This creates `vminit:latest` in `~/Library/Application Support/com.apple.containerization/`.
+
+**Why this is needed**:
+- vminit runs as PID 1 inside each container's Linux VM
+- Provides gRPC API over vsock for container management
+- Must be cross-compiled to Linux using Swift Static Linux SDK
+
+**Future improvement**: This will be automated via `arca setup` command (see `Documentation/IMPLEMENTATION_PLAN.md` Phase 0.5).
+
+## Configuration
+
+Arca uses a JSON configuration file with the following structure:
+
+**Location**: `~/.arca/config.json` (optional - falls back to defaults)
+
+**Default configuration**:
+```json
+{
+  "kernelPath": "~/.arca/vmlinux",
+  "socketPath": "/var/run/arca.sock",
+  "logLevel": "info"
+}
+```
+
+**Kernel setup**: The `vmlinux` kernel must exist at the configured path. Without it, Arca will fail to start with `ConfigError.kernelNotFound`.
 
 ## Architecture
 
-### Core Architecture
-The project translates Docker Engine API calls to Apple's Containerization Swift API. This enables:
-- Docker CLI compatibility with Apple containers
-- Docker Compose support (with networking/volume limitations)
-- Native Apple Silicon performance
-- OCI-compliant image support
+### Module Structure
+
+The project is organized into four Swift Package Manager targets:
+
+1. **Arca** (executable) - CLI entry point using ArgumentParser
+   - `Sources/Arca/main.swift` - Daemon management commands (start, stop, status)
+   - Subcommands: `daemon start`, `daemon stop`, `daemon status`
+   - Default socket path: `/var/run/arca.sock`
+
+2. **ArcaDaemon** - HTTP/Unix socket server using SwiftNIO
+   - `ArcaDaemon.swift` - Main daemon initialization and lifecycle
+   - `Server.swift` - SwiftNIO-based Unix socket server
+   - `Router.swift` - Request routing with API version normalization
+   - `HTTPHandler.swift`, `HTTPTypes.swift` - HTTP request/response handling
+
+3. **DockerAPI** - Docker Engine API models and handlers
+   - `Models/` - Codable structs for Docker API types (Container, Image, etc.)
+   - `Handlers/` - Request handlers (ContainerHandlers, ImageHandlers, SystemHandlers)
+   - Implements Docker Engine API v1.51 specification
+
+4. **ContainerBridge** - Apple Containerization API wrapper
+   - `ContainerManager.swift` - Container lifecycle management
+   - `ImageManager.swift` - OCI image operations
+   - `Config.swift` - Configuration management
+   - `Types.swift`, `ImageTypes.swift` - Bridging types
+
+### Request Flow
+
+```
+Docker CLI → Unix Socket → ArcaServer (SwiftNIO)
+    ↓
+Router (version normalization: /v1.51/containers/json → /containers/json)
+    ↓
+Handler (ContainerHandlers, ImageHandlers, SystemHandlers)
+    ↓
+ContainerBridge (ContainerManager, ImageManager)
+    ↓
+Apple Containerization API
+```
+
+### API Version Handling
+
+The Router (`Router.swift:86-99`) normalizes API version prefixes to allow version-agnostic route registration:
+- Incoming: `/v1.51/containers/json` → Normalized: `/containers/json`
+- Incoming: `/v1.24/version` → Normalized: `/version`
+- Routes are registered WITHOUT version prefixes
 
 ### API Reference
-The **source of truth** for all API implementations is `Documentation/DockerEngineAPIv1.51.yaml`. All endpoint implementations, request/response models, and behaviors must reference this OpenAPI specification for:
+
+**Sources of truth**:
+
+1. `Documentation/DOCKER_ENGINE_API_SPEC.md` - OpenAPI specification
+
+All endpoint implementations must reference this spec for:
 - Exact endpoint paths and HTTP methods
 - Request/response schemas and field names
 - Query parameters and their types
 - Error response formats
-- API versioning behavior
 
-### Planned Directory Structure
-```
-Sources/
-├── ContainerEngineDaemon/      # Main daemon process
-│   ├── main.swift               # Entry point
-│   ├── APIServer.swift          # HTTP/Unix socket server
-│   └── Router.swift             # Route definitions
-├── DockerAPI/                   # API models & handlers
-│   ├── Models/                  # Request/Response types
-│   │   ├── Container.swift
-│   │   ├── Image.swift
-│   │   ├── Network.swift
-│   │   └── Volume.swift
-│   └── Handlers/                # Endpoint implementations
-│       ├── ContainerHandlers.swift
-│       ├── ImageHandlers.swift
-│       ├── NetworkHandlers.swift
-│       └── SystemHandlers.swift
-├── ContainerBridge/             # Containerization API wrapper
-│   ├── ContainerManager.swift
-│   ├── ImageManager.swift
-│   └── NetworkManager.swift
-└── Utilities/
-    ├── Logger.swift
-    ├── Config.swift
-    └── APIVersioning.swift
-```
+2. `Documentation/OCI_*_SPEC.md` files - OCI compliance
 
-### Key Architectural Mappings
+All behaviors must follow these specs for:
+- How to store images (Image Layout, Image Manifest)
+- How to run containers (Runtime Spec)
+- How to manage images (Distribution Spec)
+- How to share images (Registry API)
+- Container lifecycle management
 
-**Container IDs:**
+### Key Architectural Patterns
+
+**Container ID Mapping** (`ContainerManager.swift:14-17`):
 - Docker uses 64-character hex IDs
-- Apple Containerization uses UUIDs
-- Bidirectional mapping required between formats
+- Apple Containerization uses UUID strings
+- Bidirectional mapping maintained in `idMapping` and `reverseMapping` dictionaries
+- IDs generated via `generateDockerID()` by duplicating UUID hex to reach 64 chars
 
-**Networking:**
-- Docker uses bridge networks with virtual interfaces
-- Apple uses DNS-based networking
+**Networking Translation**:
+- Docker: bridge networks with virtual interfaces
+- Apple: DNS-based networking
 - Translation: containers on "my-network" become `container-name.my-network.container.internal`
+- See `Documentation/LIMITATIONS.md` for details
 
-**Volumes:**
+**Volumes**:
 - Docker named volumes map to Apple container volume paths
-- VirtioFS limitations require read-only mount workarounds in some cases
+- VirtioFS limitations require read-only mount workarounds
+- See `Documentation/LIMITATIONS.md` for known issues
 
-### API Version Support
-- Current implementation target: Docker Engine API v1.51
-- Minimum supported version: v1.28
-- API version appears in URL path: `/v1.51/containers/json`
+**Socket Configuration**:
+- Default: `/var/run/arca.sock` (NOT `/var/run/docker.sock`)
+- Enables coexistence with Docker Desktop/Colima
+- Users switch via `export DOCKER_HOST=unix:///var/run/arca.sock`
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: MVP - Core Container Lifecycle
-Priority endpoints:
-- System: `GET /version`, `GET /info`, `GET /_ping`
-- Containers: create, start, stop, list, inspect, remove, wait, logs
-- Images: list, inspect, pull, remove
+**Current State**: Phase 1 Complete - MVP container lifecycle working
 
-Target: Basic `docker run`, `docker ps`, `docker logs`, `docker stop` functionality
+The codebase contains:
+- ✅ Full SwiftNIO-based Unix socket server
+- ✅ Router with API version normalization
+- ✅ Handler structure for containers, images, system endpoints
+- ✅ Type definitions for Docker API models
+- ✅ Basic container lifecycle (create, start, stop, list, inspect, remove, logs, wait)
+- ✅ Image operations (list, inspect, pull, remove, tag)
+- 🚧 Exec API (Phase 2)
+- 🚧 Networks and Volumes (Phase 3)
+- 🚧 Build API (Phase 4)
 
-### Phase 2: Interactive & Execution
-- Exec API: create exec, start exec, inspect exec
-- Attach/Streams: attach to containers, streaming logs
-- Target: `docker exec -it`, `docker attach` functionality
+**Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
 
-### Phase 3: Docker Compose Support
-- Networks: CRUD operations, connect/disconnect
-- Volumes: CRUD operations
-- Target: `docker compose up/down` functionality
+## Development Guidelines
 
-### Phase 4: Build & Advanced Features
-- Build API: build images from Dockerfile
-- Container operations: restart, pause, rename, stats, top
-- System operations: events stream, prune commands
+### API Implementation
 
-## Key Limitations
+When implementing Docker Engine API endpoints:
 
-Arca differs from Docker in these areas:
-- **Networking**: DNS-based instead of bridge networks
-- **Volumes**: Some VirtioFS limitations affect volume operations
-- See `Documentation/LIMITATIONS.md` for complete details
+1. **Consult the spec**: Always reference `Documentation/DOCKER_ENGINE_API_SPEC.md`
+2. **Ensure OCI compliance**: Consult `Documentation/OCI_*_SPEC.md` files for container/image lifecycle
+3. **Route registration** (`ArcaDaemon.swift`): Register routes WITHOUT version prefix
+4. **Handler pattern**: Create async handler methods that return `HTTPResponse`
+5. **Query parameters**: Parse from `request.queryParameters` dictionary
+6. **Path parameters**: Access from `request.pathParameters` (populated by Router)
+7. **Error handling**: Return `HTTPResponse.error(message, status: .statusCode)`
+8. **JSON responses**: Use `HTTPResponse.json(codableObject)`
+
+Example handler registration:
+```swift
+router.register(method: .GET, pattern: "/containers/json") { request in
+    let all = request.queryParameters["all"] == "true"
+    let response = await containerHandlers.handleListContainers(all: all)
+    return HTTPResponse.json(response.containers)
+}
+```
+
+### Code Style
+
+- Use Swift 6.2 concurrency (async/await) throughout
+- Structured logging with `Logger` from swift-log
+- Public APIs documented with doc comments
+- Error types conform to `Error` and `CustomStringConvertible`
+
+### Containerization API Integration
+
+When adding new Containerization API calls:
+
+1. Import `Containerization` and `ContainerizationOCI` at module level
+2. Access native manager via `nativeManager` property (initialized in `initialize()`)
+3. Map between Docker and Containerization types using existing patterns
+4. Handle errors and translate to Docker HTTP status codes
+5. Update ID mappings for container operations
+
+### Critical Implementation Details
+
+1. **ID Mapping**: Always maintain bidirectional mapping in `ContainerManager.idMapping` and `reverseMapping`
+2. **API Versioning**: Router handles normalization automatically - register routes without version prefix
+3. **Error Translation**: Map Containerization errors to appropriate Docker HTTP status codes
+4. **Async Handlers**: All route handlers are async and must await manager calls
+5. **Platform Detection**: Use `detectSystemPlatform()` to determine linux/arm64 vs linux/amd64
 
 ## Testing Strategy
 
 ### Unit Tests
-Test API endpoint parsing and response formatting with XCTest
+- Test API endpoint parsing and response formatting with XCTest
+- Located in `Tests/ArcaTests/`
 
 ### Integration Tests
 Test with real Containerization API:
@@ -147,7 +285,7 @@ func testFullContainerLifecycle() async throws {
 ### Compatibility Tests
 Test with real Docker tools:
 ```bash
-export DOCKER_HOST=unix:///var/run/container-engine.sock
+export DOCKER_HOST=unix:///var/run/arca.sock
 docker run -d --name test-nginx nginx:latest
 docker ps | grep test-nginx
 docker logs test-nginx
@@ -158,29 +296,21 @@ docker rm test-nginx
 ## Technology Stack
 
 - **Language**: Swift 6.2+
-- **HTTP Server**: SwiftNIO or Vapor (to be implemented)
+- **Platform**: macOS 26.0+ (Sequoia)
+- **HTTP Server**: SwiftNIO
+- **CLI**: swift-argument-parser
+- **Logging**: swift-log
+- **Containerization**: apple/containerization package
 - **API Version**: Docker Engine API v1.51
-- **Socket Path**: `/var/run/container-engine.sock` (with symlink option to `/var/run/docker.sock`)
-- **Configuration**: JSON config file + command-line flags
+- **Socket Path**: `/var/run/arca.sock` (configurable via `--socket-path`)
 
-## Development Guidelines
+## Known Limitations
 
-### API Implementation
-When implementing API endpoints:
-1. Always reference `Documentation/DockerEngineAPIv1.51.yaml` for the complete specification
-2. Use Swift Codable structs with proper CodingKeys for JSON key mapping
-3. Follow Swift naming conventions (camelCase) for internal code
-4. Map Docker API responses correctly from Containerization API
-5. Handle errors appropriately with proper HTTP status codes
+See `Documentation/LIMITATIONS.md` for full details. Key limitations:
 
-### Code Style
-- Use Swift 6.2 concurrency features (async/await)
-- Structured logging with appropriate levels
-- Clear error messages that help users understand Containerization vs Docker differences
-
-### Critical Implementation Requirements
-1. **ID Mapping**: Maintain bidirectional mapping between Docker hex IDs and Apple UUIDs
-2. **Network Translation**: Document DNS-based networking limitations clearly
-3. **Volume Handling**: Implement VirtioFS workarounds where necessary
-4. **API Versioning**: Support version negotiation in URL paths
-5. **Error Translation**: Map Containerization errors to appropriate Docker API errors
+1. **Image Size Reporting**: Reports compressed (OCI blob) sizes instead of uncompressed sizes
+2. **Networking**: DNS-based networking instead of bridge networks
+3. **Volumes**: VirtioFS limitations affect some operations
+4. **Build API**: Not yet implemented
+5. **Swarm Mode**: Not supported
+6. **Platform**: macOS-only, requires Apple Silicon or Intel with Virtualization framework

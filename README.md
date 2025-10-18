@@ -24,6 +24,34 @@ This project implements the Docker Engine API to bridge that gap.
 - ⚠️  Some volume operations limited by VirtioFS
 
 ## Installation
+
+### Prerequisites
+
+Arca requires the `vminit` init system to be built before it can run containers. This is a one-time setup step.
+
+### Build vminit (One-Time Setup)
+
+The `vminit` init system runs inside each container's VM and provides container management capabilities. To build it:
+
+```bash
+cd .build/checkouts/containerization
+
+# Install Swift Static Linux SDK (one-time, ~5 minutes)
+make cross-prep
+
+# Build vminitd binaries
+make vminitd
+
+# Package into vminit:latest OCI image
+make init
+```
+
+This creates the `vminit:latest` image in `~/Library/Application Support/com.apple.containerization/`.
+
+**Note**: This step is only needed once. Future versions of Arca will automate this process or include pre-built binaries.
+
+### Build and Run Arca
+
 ```bash
 # Build from source
 swift build -c release

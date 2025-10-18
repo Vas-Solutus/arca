@@ -4,7 +4,7 @@ import Logging
 /// Docker Engine API v1.51 implementation
 ///
 /// This module contains all API models and handlers that implement the Docker Engine API.
-/// The source of truth is Documentation/DockerEngineAPIv1.51.yaml
+/// The source of truth is Documentation/DOCKER_ENGINE_API_SPEC.md
 ///
 /// API Endpoints are organized by resource:
 /// - System: /version, /info, /_ping

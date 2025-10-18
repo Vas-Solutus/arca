@@ -3,7 +3,7 @@ import Logging
 import ContainerBridge
 
 /// Handlers for Docker Engine API image endpoints
-/// Reference: Documentation/DockerEngineAPIv1.51.yaml
+/// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct ImageHandlers {
     private let imageManager: ImageManager
     private let logger: Logger

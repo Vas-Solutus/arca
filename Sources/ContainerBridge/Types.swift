@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Bridging Types between Docker API and Containerization
 
 /// Summary of a container for list operations
-public struct ContainerSummary {
+public struct ContainerSummary: Sendable {
     public let id: String  // Docker-style 64-char hex ID
     public let nativeID: String  // Apple Containerization ID (UUID or similar)
     public let names: [String]
@@ -50,7 +50,7 @@ public struct ContainerSummary {
 }
 
 /// Port mapping information
-public struct PortMapping {
+public struct PortMapping: Sendable {
     public let privatePort: Int
     public let publicPort: Int?
     public let type: String  // "tcp" or "udp"
@@ -65,7 +65,7 @@ public struct PortMapping {
 }
 
 /// Full container details
-public struct Container {
+public struct Container: Sendable {
     public let id: String
     public let nativeID: String
     public let created: Date
@@ -109,7 +109,7 @@ public struct Container {
 }
 
 /// Container runtime state
-public struct ContainerState {
+public struct ContainerState: Sendable {
     public let status: String
     public let running: Bool
     public let paused: Bool
@@ -150,7 +150,7 @@ public struct ContainerState {
 }
 
 /// Container configuration
-public struct ContainerConfiguration {
+public struct ContainerConfiguration: @unchecked Sendable {
     public let hostname: String
     public let domainname: String
     public let user: String
@@ -206,7 +206,7 @@ public struct ContainerConfiguration {
 }
 
 /// Host configuration for containers
-public struct HostConfig {
+public struct HostConfig: Sendable {
     public let binds: [String]
     public let networkMode: String
     public let portBindings: [String: [PortBinding]]
@@ -235,7 +235,7 @@ public struct HostConfig {
 }
 
 /// Port binding for host configuration
-public struct PortBinding {
+public struct PortBinding: Sendable {
     public let hostIp: String
     public let hostPort: String
 
@@ -246,7 +246,7 @@ public struct PortBinding {
 }
 
 /// Restart policy
-public struct RestartPolicy {
+public struct RestartPolicy: Sendable {
     public let name: String  // "no", "always", "on-failure", "unless-stopped"
     public let maximumRetryCount: Int
 
@@ -257,7 +257,7 @@ public struct RestartPolicy {
 }
 
 /// Network settings
-public struct NetworkSettings {
+public struct NetworkSettings: Sendable {
     public let bridge: String
     public let sandboxID: String
     public let hairpinMode: Bool
@@ -301,7 +301,7 @@ public struct NetworkSettings {
 }
 
 /// Network endpoint settings
-public struct EndpointSettings {
+public struct EndpointSettings: Sendable {
     public let ipamConfig: IPAMConfig?
     public let links: [String]
     public let aliases: [String]
@@ -336,7 +336,7 @@ public struct EndpointSettings {
 }
 
 /// IPAM configuration
-public struct IPAMConfig {
+public struct IPAMConfig: Sendable {
     public let ipv4Address: String
     public let ipv6Address: String
 

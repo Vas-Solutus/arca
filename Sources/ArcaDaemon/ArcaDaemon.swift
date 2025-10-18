@@ -24,6 +24,19 @@ public final class ArcaDaemon {
             "api_version": "1.51"
         ])
 
+        // Load and validate configuration
+        let configManager = ConfigManager(logger: logger)
+        let config = try configManager.loadConfig()
+
+        logger.info("Configuration loaded", metadata: [
+            "kernel_path": "\(config.kernelPath)",
+            "socket_path": "\(config.socketPath)",
+            "log_level": "\(config.logLevel)"
+        ])
+
+        // Validate that kernel exists
+        try configManager.validateConfig(config)
+
         // Check if socket already exists (daemon might be running)
         if ArcaServer.socketExists(at: socketPath) {
             logger.warning("Socket file already exists", metadata: [
@@ -38,7 +51,7 @@ public final class ArcaDaemon {
         }
 
         // Initialize ImageManager
-        let imageManager = ImageManager(logger: logger)
+        let imageManager = try ImageManager(logger: logger, imageStorePath: nil)
         self.imageManager = imageManager
 
         do {
@@ -50,17 +63,21 @@ public final class ArcaDaemon {
             // Continue anyway - we can still serve API requests
         }
 
-        // Initialize ContainerManager
-        let containerManager = ContainerManager(imageManager: imageManager, logger: logger)
+        // Initialize ContainerManager with kernel path from config
+        let containerManager = ContainerManager(
+            imageManager: imageManager,
+            kernelPath: config.kernelPath,
+            logger: logger
+        )
         self.containerManager = containerManager
 
         do {
             try await containerManager.initialize()
         } catch {
-            logger.warning("ContainerManager initialization incomplete", metadata: [
+            logger.error("ContainerManager initialization failed", metadata: [
                 "error": "\(error)"
             ])
-            // Continue anyway - we can still serve API requests
+            throw error
         }
 
         // Create router and register routes
@@ -97,10 +114,25 @@ public final class ArcaDaemon {
         let containerHandlers = ContainerHandlers(containerManager: containerManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
 
-        // System endpoints
+        // System endpoints - Ping (GET and HEAD)
         router.register(method: .GET, pattern: "/_ping") { _ in
             let response = SystemHandlers.handlePing()
-            return HTTPResponse.json(response)
+            let body = Data("OK".utf8)
+            var headers = HTTPHeaders()
+            headers.add(name: "API-Version", value: response.apiVersion)
+            headers.add(name: "OSType", value: response.osType)
+            headers.add(name: "Content-Type", value: "text/plain; charset=utf-8")
+            headers.add(name: "Content-Length", value: "\(body.count)")
+            return HTTPResponse(status: .ok, headers: headers, body: body)
+        }
+
+        router.register(method: .HEAD, pattern: "/_ping") { _ in
+            let response = SystemHandlers.handlePing()
+            var headers = HTTPHeaders()
+            headers.add(name: "API-Version", value: response.apiVersion)
+            headers.add(name: "OSType", value: response.osType)
+            headers.add(name: "Content-Length", value: "0")
+            return HTTPResponse(status: .ok, headers: headers, body: nil)
         }
 
         router.register(method: .GET, pattern: "/version") { _ in
@@ -108,7 +140,7 @@ public final class ArcaDaemon {
             return HTTPResponse.json(response)
         }
 
-        // Container endpoints
+        // Container endpoints - List
         router.register(method: .GET, pattern: "/containers/json") { request in
             // Parse query parameters
             let all = request.queryParameters["all"] == "true" || request.queryParameters["all"] == "1"
@@ -134,6 +166,199 @@ public final class ArcaDaemon {
             }
 
             return HTTPResponse.json(listResponse.containers)
+        }
+
+        // Container endpoints - Create
+        router.register(method: .POST, pattern: "/containers/create") { request in
+            // Parse container name from query parameters
+            let name = request.queryParameters["name"]
+
+            // Parse JSON body
+            guard let body = request.body,
+                  let createRequest = try? JSONDecoder().decode(ContainerCreateRequest.self, from: body) else {
+                return HTTPResponse.error("Invalid or missing request body", status: .badRequest)
+            }
+
+            // Call handler
+            let result = await containerHandlers.handleCreateContainer(request: createRequest, name: name)
+
+            switch result {
+            case .success(let response):
+                return HTTPResponse.json(response, status: .created)
+            case .failure(let error):
+                return HTTPResponse.error(error.description, status: .internalServerError)
+            }
+        }
+
+        // Container endpoints - Start
+        router.register(method: .POST, pattern: "/containers/{id}/start") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            let result = await containerHandlers.handleStartContainer(id: id)
+
+            switch result {
+            case .success:
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Length", value: "0")
+                return HTTPResponse(status: .noContent, headers: headers)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        // Container endpoints - Stop
+        router.register(method: .POST, pattern: "/containers/{id}/stop") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            let timeout = request.queryParameters["t"].flatMap { Int($0) }
+
+            let result = await containerHandlers.handleStopContainer(id: id, timeout: timeout)
+
+            switch result {
+            case .success:
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Length", value: "0")
+                return HTTPResponse(status: .noContent, headers: headers)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        // Container endpoints - Remove
+        router.register(method: .DELETE, pattern: "/containers/{id}") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
+            let volumes = request.queryParameters["v"] == "true" || request.queryParameters["v"] == "1"
+
+            let result = await containerHandlers.handleRemoveContainer(id: id, force: force, removeVolumes: volumes)
+
+            switch result {
+            case .success:
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Length", value: "0")
+                return HTTPResponse(status: .noContent, headers: headers)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        // Container endpoints - Inspect
+        router.register(method: .GET, pattern: "/containers/{id}/json") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            let result = await containerHandlers.handleInspectContainer(id: id)
+
+            switch result {
+            case .success(let inspect):
+                return HTTPResponse.json(inspect)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        // Container endpoints - Logs
+        router.register(method: .GET, pattern: "/containers/{id}/logs") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            let stdout = request.queryParameters["stdout"] != "false"  // default true
+            let stderr = request.queryParameters["stderr"] != "false"  // default true
+            let follow = request.queryParameters["follow"] == "true" || request.queryParameters["follow"] == "1"
+            let timestamps = request.queryParameters["timestamps"] == "true" || request.queryParameters["timestamps"] == "1"
+            let since = request.queryParameters["since"].flatMap { Int($0) }
+            let until = request.queryParameters["until"].flatMap { Int($0) }
+            let tail = request.queryParameters["tail"]
+
+            let result = await containerHandlers.handleLogsContainer(
+                idOrName: id,
+                stdout: stdout,
+                stderr: stderr,
+                follow: follow,
+                since: since,
+                until: until,
+                timestamps: timestamps,
+                tail: tail
+            )
+
+            switch result {
+            case .success(let logsData):
+                // Return binary multiplexed stream data
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
+                headers.add(name: "Content-Length", value: "\(logsData.count)")
+                return HTTPResponse(status: .ok, headers: headers, body: logsData)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        router.register(method: .POST, pattern: "/containers/{id}/attach") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            // Parse attach parameters (similar to logs endpoint)
+            let stdout = request.queryParameters["stdout"] == "1"
+            let stderr = request.queryParameters["stderr"] == "1"
+            let stream = request.queryParameters["stream"] == "1"
+
+            // For now, use the logs handler to return container output
+            // Full attach implementation would require HTTP hijacking for bidirectional streaming
+            let result = await containerHandlers.handleLogsContainer(
+                idOrName: id,
+                stdout: stdout,
+                stderr: stderr,
+                follow: stream,  // Use stream param for follow
+                since: nil,
+                until: nil,
+                timestamps: false,
+                tail: nil
+            )
+
+            switch result {
+            case .success(let logsData):
+                // Return binary multiplexed stream for attach
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
+                headers.add(name: "Content-Length", value: "\(logsData.count)")
+                return HTTPResponse(status: .ok, headers: headers, body: logsData)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        router.register(method: .POST, pattern: "/containers/{id}/wait") { request in
+            guard let id = request.pathParameters["id"] else {
+                return HTTPResponse.error("Missing container ID", status: .badRequest)
+            }
+
+            // Wait for container to exit and return exit code
+            let result = await containerHandlers.handleWaitContainer(idOrName: id)
+
+            switch result {
+            case .success(let exitCode):
+                let response = ["StatusCode": exitCode]
+                return HTTPResponse.json(response)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
         }
 
         // Image endpoints
@@ -202,7 +427,26 @@ public final class ArcaDaemon {
             }
         }
 
-        logger.info("Registered 5 routes")
+        router.register(method: .DELETE, pattern: "/images/{name}") { request in
+            guard let name = request.pathParameters["name"] else {
+                return HTTPResponse.error("Missing image name", status: .badRequest)
+            }
+
+            let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
+            let noprune = request.queryParameters["noprune"] == "true" || request.queryParameters["noprune"] == "1"
+
+            let result = await imageHandlers.handleDeleteImage(nameOrId: name, force: force, noprune: noprune)
+
+            switch result {
+            case .success(let response):
+                return HTTPResponse.json(response)
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return HTTPResponse.error(error.description, status: status)
+            }
+        }
+
+        logger.info("Registered 14 routes")
     }
 
     /// Check if the daemon is running

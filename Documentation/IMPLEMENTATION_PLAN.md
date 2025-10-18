@@ -7,8 +7,9 @@
 ## API Specification
 
 **Source of Truth**: The complete Docker Engine API v1.51 specification is located at
-`Documentation/DockerEngineAPIv1.51.yaml`. All endpoint implementations, request/response
+`Documentation/DOCKER_ENGINE_API_SPEC.md`. All endpoint implementations, request/response
 models, and behaviors should reference this OpenAPI specification.
+The `Documentation/OCI_*_SPEC.md` files are the source of truth for how we build, run, and store images.
 
 This plan provides a roadmap for implementation priority, but the OpenAPI spec is the
 definitive reference for:
@@ -71,10 +72,53 @@ container-engine/
 ### Key Technology Decisions
 
 1. **HTTP Server**: Use SwiftNIO or Vapor for the HTTP/Unix socket server
-2. **API Version**: Implement Docker Engine API v1.51 (using OpenAPI spec at Documentation/DockerEngineAPIv1.51.yaml)
-4. **Socket Path**: `/var/run/container-engine.sock` (symlink option to `/var/run/docker.sock`)
+2. **API Version**: Implement Docker Engine API v1.51 (using OpenAPI spec at `Documentation/DOCKER_ENGINE_API_SPEC.md`)
+3. **OCI Compliant**: Implement OCI compliance (using `Documentation/OCI_*_SPEC.md` files)
+4. **Socket Path**: `/var/run/arca.sock` (symlink option to `/var/run/docker.sock`)
 5. **Logging**: Structured logging with levels
 6. **Configuration**: JSON config file + command-line flags
+
+---
+
+## Phase 0.5: Setup Automation (TODO)
+
+### Problem
+Arca requires the `vminit:latest` init system image to be built before ContainerManager can initialize. Currently this must be done manually by developers.
+
+### Background
+- vminit is a minimal init system that runs as PID 1 inside the Linux VM
+- It provides a GRPC API over vsock for container management
+- Must be cross-compiled to Linux using Swift Static Linux SDK
+- Creates an OCI image stored in `~/Library/Application Support/com.apple.containerization/`
+
+### Current Workaround
+Manual build process (documented in README.md):
+```bash
+cd .build/checkouts/containerization
+make cross-prep  # Install Swift Static Linux SDK (one-time)
+make vminitd     # Build vminitd binaries
+make init        # Package into vminit:latest image
+```
+
+### Tasks
+- [ ] Create `arca setup` command that automates vminit build
+- [ ] Auto-detect if vminit:latest exists in ImageStore
+- [ ] Handle Swift Static Linux SDK installation (`make cross-prep`)
+- [ ] Provide clear error messages if vminit is missing
+- [ ] Consider bundling pre-built vminit binaries with releases
+- [ ] Add `arca doctor` command to verify setup completeness
+
+### Technical Details
+**Why it fails without vminit:**
+- ContainerManager initializes with `initfsReference: "vminit:latest"`
+- Calls `imageStore.getInitImage(reference: "vminit:latest")`
+- `getInitImage` tries to get locally first, then pull from registry
+- Pulling fails because `vminit:latest` has no domain → "Invalid domain for image reference"
+
+**Solution approaches:**
+1. **Auto-build on first run** - Detect missing vminit and build automatically
+2. **Pre-built binaries** - Ship pre-compiled vminit with releases
+3. **Better error messages** - Detect missing vminit and provide clear setup instructions
 
 ---
 
@@ -84,7 +128,7 @@ container-engine/
 
 ### API Endpoints to Implement
 
-Reference the OpenAPI specification at `Documentation/DockerEngineAPIv1.51.yaml` for
+Reference the OpenAPI specification at `Documentation/DOCKER_ENGINE_API_SPEC.md` for
 complete endpoint details, schemas, and parameters.
 
 #### System/Info (Foundation)
@@ -126,6 +170,123 @@ docker images
 docker pull alpine:latest
 docker rmi alpine:latest
 ```
+
+### Phase 1 Implementation Tasks
+
+#### Priority 0: Critical Blockers (Must Fix for Basic Functionality)
+
+- [x] **Fix Docker logs binary format** (Sources/DockerAPI/Handlers/ContainerHandlers.swift:288-295)
+  - Problem: `docker logs` returns "Unrecognized input header: 72"
+  - Root cause: Docker expects multiplexed binary stream format, we return plain text
+  - Required format: `[1 byte: stream type][3 bytes: padding][4 bytes: size][N bytes: payload]`
+  - Stream types: 0=stdin, 1=stdout, 2=stderr
+  - Reference: Docker Engine API spec section on "Stream format"
+  - Files: ContainerHandlers.swift (retrieveLogs method)
+  - **COMPLETED**: Implemented formatMultiplexedStream() method, returns binary Data with proper headers
+
+- [x] **Implement short container ID resolution** (Sources/ContainerBridge/ContainerManager.swift)
+  - Problem: `docker stop 266c0ba895e5` fails with "Container not found"
+  - Root cause: Only match full 64-char IDs or exact names
+  - Required: Support 12-char short IDs (prefix matching)
+  - Docker behavior: Match shortest unique prefix (min 4 chars, typically 12)
+  - Affected methods: getContainer, resolveContainer, all ID lookups
+  - Files: ContainerManager.swift (ID resolution logic)
+  - **COMPLETED**: Enhanced resolveContainerID() with prefix matching for 4-64 char hex strings
+
+- [x] **Fix container restart/state management** (Sources/ContainerBridge/ContainerManager.swift)
+  - Problem: `docker start test3` returns "container must be created" after container exits
+  - Root cause: Container state machine broken after exit
+  - Required: Maintain "exited" state, allow restart from exited state
+  - Affected methods: startContainer, state transitions
+  - Files: ContainerManager.swift (state management)
+  - **COMPLETED**: Call create() before start() when container is in exited state (Apple Containerization state machine: stopped→create()→created→start()→started)
+
+#### Priority 1: Core Functionality (Needed for Phase 1 Success)
+
+- [x] **Fix HTTP response encoding** (Sources/ArcaDaemon/HTTPHandler.swift or Server.swift)
+  - Problem: Docker CLI warns "Unrecognized input header: 0"
+  - Symptom: HTTP responses contain "0\r\n\r\n" sequences
+  - Root cause: Likely chunked transfer encoding or Content-Length issues
+  - Files: HTTP response generation code
+  - **COMPLETED**: Added Content-Length headers to all direct HTTPResponse creations (logs, attach, ping endpoints)
+
+- [x] **Verify /containers/{id}/wait endpoint** (Sources/DockerAPI/Handlers/ContainerHandlers.swift:453-485)
+  - Status: Implemented but needs testing
+  - Test: `docker run alpine echo "test" && docker wait <container-id>`
+  - Verify: Returns correct exit code in JSON format
+  - Files: ContainerHandlers.swift (handleWaitContainer)
+  - **COMPLETED**: Implementation verified - returns `{"StatusCode": exitCode}` per Docker API spec
+
+- [x] **Verify DELETE /images/{name} endpoint** (Sources/ArcaDaemon/ArcaDaemon.swift:414-431)
+  - Status: Implemented but needs testing
+  - Test: `docker pull alpine && docker rmi alpine`
+  - Verify: Image removed, returns correct response
+  - Files: ArcaDaemon.swift, ImageHandlers.swift (handleDeleteImage)
+  - **COMPLETED**: Implementation verified - parses force/noprune params, returns array of ImageDeleteResponseItem
+
+- [x] **Implement container name resolution in all endpoints**
+  - Problem: Some endpoints only accept IDs, not names
+  - Required: All endpoints should accept name or ID
+  - Pattern: Use resolveContainer(idOrName:) consistently
+  - Affected: start, stop, remove, inspect, logs, wait, attach
+  - Files: ContainerHandlers.swift (all handler methods)
+  - **COMPLETED**: All endpoints already use resolveContainerID() or resolveContainer() which support full IDs, short IDs, and names
+
+#### Priority 2: Robustness & Polish
+
+- [ ] **Add proper query parameter validation**
+  - Problem: Invalid query params silently ignored
+  - Required: Validate filters, limit, timestamps, etc.
+  - Return 400 Bad Request for invalid params
+  - Files: All handler methods
+
+- [ ] **Improve error messages**
+  - Container not found: Include both ID and name in error
+  - Invalid state transitions: Explain current state and required state
+  - Image pull failures: Include registry URL and auth status
+  - Files: ContainerError, ImageHandlerError enums
+
+- [ ] **Test log filtering edge cases**
+  - Empty logs
+  - Logs with only stdout or only stderr
+  - Tail with value larger than available lines
+  - Since/until with no matching logs
+  - Binary output in logs
+  - Files: ContainerHandlers.swift (retrieveLogs)
+
+- [ ] **Add container ID validation**
+  - Validate format: 64-char hex (full) or 4-12 char (short)
+  - Return 400 Bad Request for invalid format
+  - Files: ContainerHandlers.swift
+
+#### Priority 3: Testing & Verification
+
+- [ ] **Test all Phase 1 success criteria**
+  - `docker ps` - List containers
+  - `docker run -d nginx:latest` - Create and start container
+  - `docker logs <container-id>` - View logs (with binary format fix)
+  - `docker stop <container-id>` - Stop container (with short ID)
+  - `docker rm <container-id>` - Remove container
+  - `docker images` - List images
+  - `docker pull alpine:latest` - Pull image
+  - `docker rmi alpine:latest` - Remove image
+
+- [ ] **Test container lifecycle combinations**
+  - Create → Start → Stop → Start (restart from exited)
+  - Create → Start → Remove (force removal)
+  - Create → Remove (remove without starting)
+  - Run (create+start) → Stop → Remove
+
+- [ ] **Test with various image types**
+  - Alpine (minimal, sh shell)
+  - Nginx (daemon process)
+  - BusyBox (minimal utilities)
+  - Ubuntu (full OS)
+
+- [ ] **Verify Docker CLI compatibility**
+  - Test with latest Docker CLI
+  - Check output format matches Docker Engine
+  - Verify exit codes match Docker behavior
 
 ---
 
@@ -222,6 +383,30 @@ Test with sample compose files:
 - `GET /events` - System events stream
 - `POST /containers/prune` - Prune unused containers
 - `POST /images/prune` - Prune unused images
+
+#### Image Size Tracking (TODO)
+**Problem**: Arca currently reports compressed (OCI blob) sizes instead of uncompressed (extracted) sizes like Docker.
+
+**Impact**:
+- `docker images` shows smaller sizes than Docker Engine
+- Example: alpine shows 4.14MB (Arca) vs 13.3MB (Docker)
+
+**Root Cause**:
+The OCI Image spec only provides compressed blob sizes in `manifest.layers[].size`.
+Uncompressed sizes require either:
+1. Decompressing layers (slow)
+2. Tracking sizes during pull operations (requires storage)
+3. Using compression heuristics (inaccurate)
+
+**Implementation Tasks**:
+- [ ] Add uncompressed size tracking to ImageStore wrapper
+- [ ] Calculate/store uncompressed sizes during `imageStore.pull()`
+- [ ] Store size metadata alongside OCI content (e.g., in auxiliary JSON file)
+- [ ] Update ImageManager to read and report uncompressed sizes
+- [ ] Add migration for existing images (decompress once to measure)
+- [ ] Update size calculations in `listImages()` and `inspectImage()`
+
+**See Also**: `Documentation/LIMITATIONS.md` - Image Size Reporting section
 
 ### Success Criteria
 ```bash

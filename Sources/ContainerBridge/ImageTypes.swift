@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Bridging Types for Image Operations
 
 /// Summary of an image for list operations
-public struct ImageSummary {
+public struct ImageSummary: Sendable {
     public let id: String  // Docker-style ID: sha256:abc123...
     public let repoTags: [String]  // e.g., ["nginx:latest", "nginx:1.21"]
     public let repoDigests: [String]  // e.g., ["nginx@sha256:..."]
@@ -44,7 +44,7 @@ public struct ImageSummary {
 }
 
 /// Detailed image information for inspect operations
-public struct ImageDetails {
+public struct ImageDetails: Sendable {
     public let id: String
     public let repoTags: [String]
     public let repoDigests: [String]
@@ -106,7 +106,9 @@ public struct ImageDetails {
 }
 
 /// Image container configuration
-public struct ImageContainerConfig {
+/// Note: @unchecked Sendable because exposedPorts and volumes use [String: Any]
+/// In practice, we only store Sendable values in these dictionaries
+public struct ImageContainerConfig: @unchecked Sendable {
     public let hostname: String
     public let domainname: String
     public let user: String
@@ -168,7 +170,7 @@ public struct ImageContainerConfig {
 }
 
 /// Graph driver information
-public struct GraphDriver {
+public struct GraphDriver: Sendable {
     public let name: String
     public let data: [String: String]
 
@@ -179,7 +181,7 @@ public struct GraphDriver {
 }
 
 /// Root filesystem information
-public struct RootFS {
+public struct RootFS: Sendable {
     public let type: String
     public let layers: [String]
 
@@ -190,7 +192,7 @@ public struct RootFS {
 }
 
 /// Image metadata
-public struct ImageMetadata {
+public struct ImageMetadata: Sendable {
     public let lastTagTime: Date?
 
     public init(lastTagTime: Date? = nil) {
@@ -199,7 +201,7 @@ public struct ImageMetadata {
 }
 
 /// Image deletion response
-public struct ImageDeleteItem {
+public struct ImageDeleteItem: Sendable {
     public let untagged: String?
     public let deleted: String?
 
@@ -210,7 +212,7 @@ public struct ImageDeleteItem {
 }
 
 /// Authentication credentials for registry operations
-public struct RegistryAuthentication {
+public struct RegistryAuthentication: Sendable {
     public let username: String?
     public let password: String?
     public let email: String?
@@ -236,7 +238,7 @@ public struct RegistryAuthentication {
 }
 
 /// Image reference parser
-public struct ImageReference {
+public struct ImageReference: Sendable {
     public let registry: String?
     public let namespace: String?
     public let repository: String
