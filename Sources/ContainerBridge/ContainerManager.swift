@@ -495,20 +495,34 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Cancel monitoring task if running
+        // Cancel monitoring task if running and wait for it to complete
         if let task = monitoringTasks.removeValue(forKey: dockerID) {
             task.cancel()
+            // Wait for the task to fully complete to avoid file descriptor races
+            _ = await task.result
         }
 
-        if force && info.state == "running" {
-            // Stop container first if running
-            logger.info("Force stopping container before removal", metadata: ["id": "\(dockerID)"])
+        // Stop the container to ensure proper resource cleanup
+        // This closes file descriptors and cleans up VM resources
+        if info.state == "running" || info.state == "created" {
+            if force || info.state == "created" {
+                logger.info("Stopping container before removal", metadata: [
+                    "id": "\(dockerID)",
+                    "state": "\(info.state)"
+                ])
+                try? await nativeContainer.stop()
+            } else if !force && info.state == "running" {
+                // Already checked above, but being explicit
+                throw ContainerManagerError.containerRunning(id)
+            }
+        }
+
+        // For exited containers, still call stop() to ensure cleanup
+        if info.state == "exited" {
+            logger.debug("Calling stop() on exited container for cleanup", metadata: ["id": "\(dockerID)"])
             try? await nativeContainer.stop()
         }
 
-        // Note: LinuxContainer doesn't have a remove() method
-        // The container cleanup happens when we remove it from our tracking
-        // and the LinuxContainer is deallocated
         logger.info("Removing container from tracking", metadata: ["id": "\(dockerID)"])
 
         // Clean up all state
