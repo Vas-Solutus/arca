@@ -142,30 +142,36 @@ public final class ArcaDaemon {
 
         // Container endpoints - List
         router.register(method: .GET, pattern: "/containers/json") { request in
-            // Parse query parameters
-            let all = request.queryParameters["all"] == "true" || request.queryParameters["all"] == "1"
-            let limit = request.queryParameters["limit"].flatMap { Int($0) }
-            let size = request.queryParameters["size"] == "true" || request.queryParameters["size"] == "1"
+            // Validate and parse query parameters
+            do {
+                let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
+                let limit = try QueryParameterValidator.parsePositiveInt(request.queryParameters["limit"], paramName: "limit")
+                let size = QueryParameterValidator.parseBoolean(request.queryParameters["size"])
 
-            // TODO: Parse filters JSON from query parameter
-            let filters: [String: String] = [:]
+                // Parse filters JSON from query parameter
+                let filters: [String: String] = try QueryParameterValidator.parseFilters(request.queryParameters["filters"]) ?? [:]
 
-            // Call handler asynchronously
-            let listResponse = await containerHandlers.handleListContainers(
-                all: all,
-                limit: limit,
-                size: size,
-                filters: filters
-            )
-
-            if let error = listResponse.error {
-                return HTTPResponse.error(
-                    "Failed to list containers: \(error.localizedDescription)",
-                    status: .internalServerError
+                // Call handler asynchronously
+                let listResponse = await containerHandlers.handleListContainers(
+                    all: all,
+                    limit: limit,
+                    size: size,
+                    filters: filters
                 )
-            }
 
-            return HTTPResponse.json(listResponse.containers)
+                if let error = listResponse.error {
+                    return HTTPResponse.error(
+                        "Failed to list containers: \(error.localizedDescription)",
+                        status: .internalServerError
+                    )
+                }
+
+                return HTTPResponse.json(listResponse.containers)
+            } catch let error as ValidationError {
+                return error.toHTTPResponse()
+            } catch {
+                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+            }
         }
 
         // Container endpoints - Create
@@ -215,18 +221,25 @@ public final class ArcaDaemon {
                 return HTTPResponse.error("Missing container ID", status: .badRequest)
             }
 
-            let timeout = request.queryParameters["t"].flatMap { Int($0) }
+            // Validate timeout parameter
+            do {
+                let timeout = try QueryParameterValidator.parseNonNegativeInt(request.queryParameters["t"], paramName: "t")
 
-            let result = await containerHandlers.handleStopContainer(id: id, timeout: timeout)
+                let result = await containerHandlers.handleStopContainer(id: id, timeout: timeout)
 
-            switch result {
-            case .success:
-                var headers = HTTPHeaders()
-                headers.add(name: "Content-Length", value: "0")
-                return HTTPResponse(status: .noContent, headers: headers)
-            case .failure(let error):
-                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                switch result {
+                case .success:
+                    var headers = HTTPHeaders()
+                    headers.add(name: "Content-Length", value: "0")
+                    return HTTPResponse(status: .noContent, headers: headers)
+                case .failure(let error):
+                    let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                    return HTTPResponse.error(error.description, status: status)
+                }
+            } catch let error as ValidationError {
+                return error.toHTTPResponse()
+            } catch {
+                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
             }
         }
 
@@ -275,35 +288,42 @@ public final class ArcaDaemon {
                 return HTTPResponse.error("Missing container ID", status: .badRequest)
             }
 
-            let stdout = request.queryParameters["stdout"] != "false"  // default true
-            let stderr = request.queryParameters["stderr"] != "false"  // default true
-            let follow = request.queryParameters["follow"] == "true" || request.queryParameters["follow"] == "1"
-            let timestamps = request.queryParameters["timestamps"] == "true" || request.queryParameters["timestamps"] == "1"
-            let since = request.queryParameters["since"].flatMap { Int($0) }
-            let until = request.queryParameters["until"].flatMap { Int($0) }
-            let tail = request.queryParameters["tail"]
+            // Validate query parameters
+            do {
+                let stdout = QueryParameterValidator.parseBooleanDefaultTrue(request.queryParameters["stdout"])
+                let stderr = QueryParameterValidator.parseBooleanDefaultTrue(request.queryParameters["stderr"])
+                let follow = QueryParameterValidator.parseBoolean(request.queryParameters["follow"])
+                let timestamps = QueryParameterValidator.parseBoolean(request.queryParameters["timestamps"])
+                let since = try QueryParameterValidator.parseUnixTimestamp(request.queryParameters["since"], paramName: "since")
+                let until = try QueryParameterValidator.parseUnixTimestamp(request.queryParameters["until"], paramName: "until")
+                let tail = try QueryParameterValidator.parseTail(request.queryParameters["tail"])
 
-            let result = await containerHandlers.handleLogsContainer(
-                idOrName: id,
-                stdout: stdout,
-                stderr: stderr,
-                follow: follow,
-                since: since,
-                until: until,
-                timestamps: timestamps,
-                tail: tail
-            )
+                let result = await containerHandlers.handleLogsContainer(
+                    idOrName: id,
+                    stdout: stdout,
+                    stderr: stderr,
+                    follow: follow,
+                    since: since,
+                    until: until,
+                    timestamps: timestamps,
+                    tail: tail
+                )
 
-            switch result {
-            case .success(let logsData):
-                // Return binary multiplexed stream data
-                var headers = HTTPHeaders()
-                headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
-                headers.add(name: "Content-Length", value: "\(logsData.count)")
-                return HTTPResponse(status: .ok, headers: headers, body: logsData)
-            case .failure(let error):
-                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return HTTPResponse.error(error.description, status: status)
+                switch result {
+                case .success(let logsData):
+                    // Return binary multiplexed stream data
+                    var headers = HTTPHeaders()
+                    headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
+                    headers.add(name: "Content-Length", value: "\(logsData.count)")
+                    return HTTPResponse(status: .ok, headers: headers, body: logsData)
+                case .failure(let error):
+                    let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                    return HTTPResponse.error(error.description, status: status)
+                }
+            } catch let error as ValidationError {
+                return error.toHTTPResponse()
+            } catch {
+                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
             }
         }
 
@@ -363,28 +383,34 @@ public final class ArcaDaemon {
 
         // Image endpoints
         router.register(method: .GET, pattern: "/images/json") { request in
-            // Parse query parameters
-            let all = request.queryParameters["all"] == "true" || request.queryParameters["all"] == "1"
-            let digests = request.queryParameters["digests"] == "true" || request.queryParameters["digests"] == "1"
+            // Validate and parse query parameters
+            do {
+                let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
+                let digests = QueryParameterValidator.parseBoolean(request.queryParameters["digests"])
 
-            // TODO: Parse filters JSON from query parameter
-            let filters: [String: [String]] = [:]
+                // Parse filters JSON from query parameter
+                let filters: [String: [String]] = try QueryParameterValidator.parseFilters(request.queryParameters["filters"]) ?? [:]
 
-            // Call handler asynchronously
-            let listResponse = await imageHandlers.handleListImages(
-                all: all,
-                filters: filters,
-                digests: digests
-            )
-
-            if let error = listResponse.error {
-                return HTTPResponse.error(
-                    "Failed to list images: \(error.localizedDescription)",
-                    status: .internalServerError
+                // Call handler asynchronously
+                let listResponse = await imageHandlers.handleListImages(
+                    all: all,
+                    filters: filters,
+                    digests: digests
                 )
-            }
 
-            return HTTPResponse.json(listResponse.images)
+                if let error = listResponse.error {
+                    return HTTPResponse.error(
+                        "Failed to list images: \(error.localizedDescription)",
+                        status: .internalServerError
+                    )
+                }
+
+                return HTTPResponse.json(listResponse.images)
+            } catch let error as ValidationError {
+                return error.toHTTPResponse()
+            } catch {
+                return HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest)
+            }
         }
 
         router.register(method: .POST, pattern: "/images/create") { request in
