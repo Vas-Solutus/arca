@@ -1,4 +1,4 @@
-.PHONY: build clean codesign install uninstall debug release run
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -21,24 +21,22 @@ INSTALL_DIR = /usr/local/bin
 # Entitlements file
 ENTITLEMENTS = Arca.entitlements
 
-# Default target
-all: build codesign
+# Source files (for dependency tracking)
+SOURCES := $(shell find Sources -name '*.swift' 2>/dev/null)
 
-# Build the project
-build:
+# Default target
+all: codesign
+
+# Build the project - file-based target that depends on source files
+$(BUILD_DIR)/$(BINARY): $(SOURCES) Package.swift
 	@echo "Building $(BINARY) ($(CONFIGURATION))..."
-	swift build $(SWIFT_BUILD_FLAGS)
+	@swift build $(SWIFT_BUILD_FLAGS)
 
 # Codesign the binary with entitlements
-codesign: build
+codesign: $(BUILD_DIR)/$(BINARY)
 	@echo "Code signing $(BINARY) with entitlements..."
-	@if [ -f "$(BUILD_DIR)/$(BINARY)" ]; then \
-		codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/$(BINARY); \
-		echo "✓ Code signing complete"; \
-	else \
-		echo "✗ Binary not found at $(BUILD_DIR)/$(BINARY)"; \
-		exit 1; \
-	fi
+	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/$(BINARY)
+	@echo "✓ Code signing complete"
 
 # Debug build (default)
 debug:
@@ -67,7 +65,7 @@ uninstall:
 	@echo "✓ Uninstalled"
 
 # Verify entitlements
-verify-entitlements: codesign
+verify-entitlements: $(BUILD_DIR)/$(BINARY)
 	@echo "Verifying entitlements for $(BUILD_DIR)/$(BINARY)..."
 	@codesign -d --entitlements - $(BUILD_DIR)/$(BINARY)
 
@@ -82,12 +80,11 @@ help:
 	@echo "Arca Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              - Build debug binary and codesign with entitlements"
-	@echo "  make debug        - Build debug binary (default)"
-	@echo "  make release      - Build release binary"
-	@echo "  make codesign     - Codesign binary with entitlements"
-	@echo "  make run          - Run daemon in foreground at /tmp/arca.sock"
-	@echo "  make clean        - Remove build artifacts"
+	@echo "  make              - Build and codesign debug binary (incremental)"
+	@echo "  make debug        - Build and codesign debug binary"
+	@echo "  make release      - Build and codesign release binary"
+	@echo "  make run          - Build, sign, and run daemon at /tmp/arca.sock"
+	@echo "  make clean        - Remove all build artifacts"
 	@echo "  make install      - Install release binary to /usr/local/bin"
 	@echo "  make uninstall    - Remove binary from /usr/local/bin"
 	@echo "  make verify-entitlements - Display entitlements of built binary"
@@ -95,3 +92,7 @@ help:
 	@echo "Build configurations:"
 	@echo "  CONFIGURATION=debug   - Debug build (default)"
 	@echo "  CONFIGURATION=release - Optimized release build"
+	@echo ""
+	@echo "Notes:"
+	@echo "  - Builds are incremental: only changed files are recompiled"
+	@echo "  - Binary is automatically codesigned with entitlements"
