@@ -232,6 +232,28 @@ docker rmi alpine:latest
   - Files: ContainerHandlers.swift (all handler methods)
   - **COMPLETED**: All endpoints already use resolveContainerID() or resolveContainer() which support full IDs, short IDs, and names
 
+- [x] **Implement thread-safe concurrency with Swift actors**
+  - Problem: Multiple concurrent Docker CLI requests could cause data races
+  - Solution: Convert ContainerManager and ImageManager to actors
+  - Added Sendable conformance to all data types for actor isolation
+  - Files: ContainerManager.swift, ImageManager.swift, Types.swift, ImageTypes.swift
+  - **COMPLETED**: Both managers are now actors with proper isolation
+
+- [x] **Implement background container monitoring**
+  - Problem: Containers stuck in "running" state after process exits
+  - Solution: Spawn monitoring Task when containers start
+  - Background task waits for container exit and updates state automatically
+  - Proper actor isolation with weak self and callback methods
+  - Files: ContainerManager.swift (startContainer, updateContainerStateAfterExit)
+  - **COMPLETED**: Containers automatically transition to "exited" state
+
+- [x] **Fix file descriptor cleanup on container removal**
+  - Problem: Daemon crashes with "Bad file descriptor" after removing containers
+  - Root cause: Background monitoring task held references while resources cleaned up
+  - Solution: Wait for monitoring task completion, call stop() before removal
+  - Files: ContainerManager.swift (removeContainer)
+  - **COMPLETED**: Proper cleanup prevents crashes
+
 #### Priority 2: Robustness & Polish
 
 - [ ] **Add proper query parameter validation**
