@@ -181,28 +181,50 @@ else
     print_success "Container successfully removed"
 fi
 
-# Test 14: Get image ID for deletion test
+# Test 14: Force remove running container
+print_test "Create and start container for force removal test"
+FORCE_CONTAINER="arca-force-test-$(date +%s)"
+FORCE_ID=$(docker run -d --name "$FORCE_CONTAINER" "$TEST_IMAGE" sleep 30)
+FORCE_SHORT_ID="${FORCE_ID:0:12}"
+echo -e "${YELLOW}Container ID:${NC} $FORCE_SHORT_ID"
+
+run_test "Force remove running container" \
+    "docker rm -f $FORCE_SHORT_ID" \
+    "$FORCE_SHORT_ID"
+
+# Test 15: Remove container without starting
+print_test "Create container without starting"
+CREATE_ONLY_CONTAINER="arca-create-only-$(date +%s)"
+CREATE_ONLY_ID=$(docker create --name "$CREATE_ONLY_CONTAINER" "$TEST_IMAGE" echo "test")
+CREATE_ONLY_SHORT_ID="${CREATE_ONLY_ID:0:12}"
+echo -e "${YELLOW}Container ID:${NC} $CREATE_ONLY_SHORT_ID"
+
+run_test "Remove container without starting" \
+    "docker rm $CREATE_ONLY_SHORT_ID" \
+    "$CREATE_ONLY_SHORT_ID"
+
+# Test 16: Get image ID for deletion test
 print_test "Get image short ID for deletion test"
 IMAGE_ID=$(docker images -q "$TEST_IMAGE" | head -1)
 IMAGE_SHORT_ID="${IMAGE_ID:0:12}"  # Get first 12 chars of image ID
 echo -e "${YELLOW}Image ID:${NC} $IMAGE_ID"
 echo -e "${YELLOW}Short ID:${NC} $IMAGE_SHORT_ID"
 
-# Test 15: docker rmi by short ID
+# Test 17: docker rmi by short ID
 run_test "Remove image by short ID" \
     "docker rmi $IMAGE_SHORT_ID" \
     ""
 
-# Test 16: Pull image again for name-based deletion
+# Test 18: Pull image again for name-based deletion
 print_info "Pulling image again to test name-based deletion..."
 docker pull "$TEST_IMAGE" >/dev/null 2>&1
 
-# Test 17: docker rmi by name
+# Test 19: docker rmi by name
 run_test "Remove image by name" \
     "docker rmi $TEST_IMAGE" \
     "Untagged"
 
-# Test 18: Error handling - missing image
+# Test 20: Error handling - missing image
 print_test "Error handling: Delete non-existent image"
 if docker rmi nonexistent:image 2>&1 | grep -q "No such image"; then
     print_success "Correctly returns 'No such image' error"
@@ -210,7 +232,7 @@ else
     print_failure "Did not return expected error for missing image"
 fi
 
-# Test 19: Error handling - missing container
+# Test 21: Error handling - missing container
 print_test "Error handling: Stop non-existent container"
 if docker stop nonexistent123 2>&1 | grep -q "No such container"; then
     print_success "Correctly returns 'No such container' error"

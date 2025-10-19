@@ -353,55 +353,62 @@ The Containerization framework provides `ProgressHandler = @Sendable (_ events: 
   - Files: Sources/ArcaDaemon/HTTPTypes.swift
   - **COMPLETED**: Types added with proper Sendable conformance
 
-- [ ] **Implement NIOHTTPStreamWriter in HTTPHandler.swift**
+- [x] **Implement NIOHTTPStreamWriter in HTTPHandler.swift**
   - Create NIOHTTPStreamWriter class implementing HTTPStreamWriter
   - Use ChannelHandlerContext.writeAndFlush() for chunk writing
   - Handle chunked transfer encoding via SwiftNIO
   - Implement finish() to send final empty chunk
   - Files: Sources/ArcaDaemon/HTTPHandler.swift
-  - **IN PROGRESS**: Class skeleton added, needs completion
+  - **COMPLETED**: NIOHTTPStreamWriter fully implemented with proper error handling
 
-- [ ] **Update HTTPHandler to support streaming responses**
+- [x] **Update HTTPHandler to support streaming responses**
   - Modify handleRequest() to receive HTTPResponseType
   - Add sendResponseType() method to detect .standard vs .streaming
   - For .streaming: send headers with Transfer-Encoding: chunked, invoke callback
   - For .standard: existing sendResponse() behavior
   - Files: Sources/ArcaDaemon/HTTPHandler.swift (handleRequest, sendResponseType)
+  - **COMPLETED**: HTTPHandler supports both standard and streaming responses
 
-- [ ] **Update Router to return HTTPResponseType**
+- [x] **Update Router to return HTTPResponseType**
   - Change RouteHandler typealias from `-> HTTPResponse` to `-> HTTPResponseType`
   - Update route() method to return HTTPResponseType
   - Files: Sources/ArcaDaemon/Router.swift
+  - **COMPLETED**: Router.swift updated to use HTTPResponseType
 
-- [ ] **Update all route registrations to use HTTPResponseType**
+- [x] **Update all route registrations to use HTTPResponseType**
   - Wrap existing handler returns with .standard(HTTPResponse)
   - No logic changes needed, just wrapping
   - Files: Sources/ArcaDaemon/ArcaDaemon.swift (all route registrations)
+  - **COMPLETED**: All routes updated to return HTTPResponseType
 
-- [ ] **Create Docker progress formatter in ImageHandlers**
+- [x] **Create Docker progress formatter**
   - Implement formatDockerProgress() to convert ProgressEvent → Docker JSON
   - Track total/current sizes and items for progress calculations
   - Generate layer IDs from descriptors
   - Format status messages: "Pulling fs layer", "Downloading", "Download complete"
-  - Files: Sources/DockerAPI/Handlers/ImageHandlers.swift
+  - Files: Sources/DockerAPI/DockerProgressFormatter.swift (extracted to separate file)
+  - **COMPLETED**: DockerProgressFormatter actor with full progress tracking
 
-- [ ] **Implement streaming image pull handler**
+- [x] **Implement streaming image pull handler**
   - Create handlePullImageStreaming() returning .streaming()
   - Create progress callback that writes Docker JSON via HTTPStreamWriter
   - Pass callback to imageManager.pullImage(progress: callback)
   - Handle errors and send final status message
   - Files: Sources/DockerAPI/Handlers/ImageHandlers.swift
+  - **COMPLETED**: handlePullImageStreaming() with real-time progress updates
 
-- [ ] **Wire up streaming in POST /images/create route**
+- [x] **Wire up streaming in POST /images/create route**
   - Update route registration to use handlePullImageStreaming()
   - Return .streaming() response type
   - Files: Sources/ArcaDaemon/ArcaDaemon.swift (images/create route)
+  - **COMPLETED**: Route calls handlePullImageStreaming() for real-time progress
 
-- [ ] **Test real-time progress with docker pull**
+- [x] **Test real-time progress with docker pull**
   - Test: `docker pull nginx:alpine` shows layer-by-layer progress
   - Verify: Progress bars, percentages, and sizes display correctly
   - Verify: Final "Downloaded newer image" message appears
   - Test with large images (nginx, ubuntu) and small images (alpine, busybox)
+  - **COMPLETED**: Real-time progress working for all image pulls
 
 **Reference Implementation**:
 - Apple's ProgressConfig.swift: https://github.com/apple/container/blob/main/Sources/TerminalProgress/ProgressConfig.swift
@@ -460,10 +467,10 @@ The Containerization framework provides `ProgressHandler = @Sendable (_ events: 
 
 - [x] **Create Phase 1 MVP test script**
   - Created comprehensive test script: scripts/test-phase1-mvp.sh
-  - Tests 17 scenarios including error handling
+  - Tests 19 scenarios including error handling
   - Colorful output with pass/fail indicators
   - Automatic cleanup
-  - **COMPLETED**: All 17 tests passing
+  - **COMPLETED**: All 19 tests passing
 
 - [x] **Test all Phase 1 success criteria**
   - `docker ps` - List containers ✅
@@ -478,11 +485,12 @@ The Containerization framework provides `ProgressHandler = @Sendable (_ events: 
   - Error handling for missing images/containers ✅
   - **COMPLETED**: All Phase 1 commands working correctly
 
-- [ ] **Test container lifecycle combinations**
-  - Create → Start → Stop → Start (restart from exited)
-  - Create → Start → Remove (force removal)
-  - Create → Remove (remove without starting)
-  - Run (create+start) → Stop → Remove
+- [x] **Test container lifecycle combinations**
+  - Create → Start → Stop → Start (restart from exited) ✅ Test 11
+  - Create → Start → Remove (force removal) ✅ Test 14
+  - Create → Remove (remove without starting) ✅ Test 15
+  - Run (create+start) → Stop → Remove ✅ Tests 5-10
+  - **COMPLETED**: All container lifecycle combinations tested and passing
 
 - [ ] **Test with various image types**
   - Alpine (minimal, sh shell)
