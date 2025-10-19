@@ -158,18 +158,20 @@ complete endpoint details, schemas, and parameters.
 - Response formats and status codes
 - Error responses
 
-### Success Criteria
+### Success Criteria ✅ COMPLETE
 ```bash
-# These should work:
-docker ps
-docker run -d nginx:latest
-docker logs <container-id>
-docker stop <container-id>
-docker rm <container-id>
-docker images
-docker pull alpine:latest
-docker rmi alpine:latest
+# These all work:
+docker ps                      ✅
+docker run -d nginx:latest     ✅
+docker logs <container-id>     ✅
+docker stop <container-id>     ✅
+docker rm <container-id>       ✅
+docker images                  ✅
+docker pull alpine:latest      ✅
+docker rmi alpine:latest       ✅
 ```
+
+**Status**: Phase 1 MVP complete as of 2025-10-18
 
 ### Phase 1 Implementation Tasks
 
@@ -247,12 +249,12 @@ docker rmi alpine:latest
   - Files: ContainerManager.swift (startContainer, updateContainerStateAfterExit)
   - **COMPLETED**: Containers automatically transition to "exited" state
 
-- [x] **Implement automatic image pull in container creation**
-  - Problem: `docker run` with non-existent image fails with "Image not found"
-  - Solution: Automatically pull image if not found locally
-  - Pattern: Try getImage(), catch error, call pullImage(), retry
-  - Files: ContainerHandlers.swift (handleCreateContainer)
-  - **COMPLETED**: Container creation now auto-pulls missing images
+- [x] **Align container creation with Docker CLI pull behavior**
+  - Problem: `docker run` with non-existent image should trigger client-side pull
+  - Solution: Return 404 Not Found when image doesn't exist, let Docker CLI handle pull
+  - Pattern: Check image exists, return 404 error, Docker CLI calls POST /images/create
+  - Files: ContainerHandlers.swift (handleCreateContainer), ArcaDaemon.swift (route)
+  - **COMPLETED**: Returns 404 for missing images, Docker CLI auto-pulls via /images/create
 
 - [x] **Fix file descriptor cleanup on container removal**
   - Problem: Daemon crashes with "Bad file descriptor" after removing containers
@@ -260,6 +262,28 @@ docker rmi alpine:latest
   - Solution: Wait for monitoring task completion, call stop() before removal
   - Files: ContainerManager.swift (removeContainer)
   - **COMPLETED**: Proper cleanup prevents crashes
+
+- [x] **Implement short image ID resolution**
+  - Problem: `docker rmi ed294d8639cc` fails with "Image not found"
+  - Root cause: Only match full image references, not short IDs
+  - Required: Support 12-char short IDs (prefix matching)
+  - Docker behavior: Match by short ID (12+ hex chars) or full sha256 digest
+  - Files: ImageManager.swift (resolveImage, deleteImage, inspectImage, getImage)
+  - **COMPLETED**: Added resolveImage() with ID and reference matching
+
+- [x] **Fix image deletion error codes**
+  - Problem: Returns 500 Internal Server Error when image not found
+  - Required: Return 404 Not Found for missing images
+  - Docker behavior: "Error: No such image: latest" with 404 status
+  - Files: ImageHandlers.swift (handleDeleteImage), ArcaDaemon.swift (route handler)
+  - **COMPLETED**: Proper error case handling returns 404 for imageNotFound
+
+- [x] **Extract DockerProgressFormatter for code reuse**
+  - Problem: Progress formatting logic duplicated across handlers
+  - Required: Single reusable formatter for pull, run, build operations
+  - Pattern: Actor-based formatter with aggregate progress tracking
+  - Files: DockerProgressFormatter.swift, ImageHandlers.swift
+  - **COMPLETED**: Formatter extracted to separate file with full implementation
 
 #### Priority 1.5: HTTP Streaming Architecture (Real-time Progress)
 

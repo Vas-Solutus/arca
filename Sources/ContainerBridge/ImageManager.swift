@@ -99,12 +99,9 @@ public actor ImageManager {
     public func inspectImage(nameOrId: String) async throws -> ImageDetails? {
         logger.debug("Inspecting image", metadata: ["name_or_id": "\(nameOrId)"])
 
-        // Normalize image reference (add :latest if no tag/digest specified)
-        let normalizedRef = normalizeImageReference(nameOrId)
-
-        // Try to get image by reference
-        guard let image = try? await imageStore.get(reference: normalizedRef, pull: false) else {
-            logger.warning("Image not found", metadata: ["reference": "\(normalizedRef)"])
+        // Resolve image by name or ID
+        guard let image = try? await resolveImage(nameOrId: nameOrId) else {
+            logger.warning("Image not found", metadata: ["name_or_id": "\(nameOrId)"])
             return nil
         }
 
@@ -317,20 +314,15 @@ public actor ImageManager {
             "force": "\(force)"
         ])
 
-        // Normalize image reference (add :latest if no tag/digest specified)
-        let normalizedRef = normalizeImageReference(nameOrId)
-
-        // Get the image BEFORE deleting to retrieve its digest
-        guard let image = try? await imageStore.get(reference: normalizedRef, pull: false) else {
-            logger.error("Image not found for deletion", metadata: ["reference": "\(normalizedRef)"])
-            throw ImageManagerError.imageNotFound(nameOrId)
-        }
+        // Resolve image by name or ID
+        let image = try await resolveImage(nameOrId: nameOrId)
 
         let imageDigest = image.digest
         let dockerID = generateDockerID(from: imageDigest)
+        let imageReference = image.reference
 
         logger.debug("Image resolved for deletion", metadata: [
-            "reference": "\(normalizedRef)",
+            "reference": "\(imageReference)",
             "digest": "\(imageDigest)",
             "docker_id": "\(dockerID)"
         ])
@@ -340,8 +332,8 @@ public actor ImageManager {
             // TODO: Check with ContainerManager if image is in use
         }
 
-        // Delete the image
-        try await imageStore.delete(reference: normalizedRef, performCleanup: true)
+        // Delete the image by reference
+        try await imageStore.delete(reference: imageReference, performCleanup: true)
 
         logger.info("Image deleted", metadata: [
             "name_or_id": "\(nameOrId)",
@@ -349,7 +341,7 @@ public actor ImageManager {
         ])
 
         return [
-            ImageDeleteItem(untagged: normalizedRef),
+            ImageDeleteItem(untagged: imageReference),
             ImageDeleteItem(deleted: dockerID)
         ]
     }
@@ -372,6 +364,112 @@ public actor ImageManager {
     }
 
     // MARK: - Helper Methods
+
+    /// Resolve image by name or ID
+    /// Handles multiple input formats:
+    /// - Full reference: docker.io/library/nginx:alpine
+    /// - Short reference: nginx:alpine, nginx
+    /// - Short ID: 4986bf8c1536 (12 chars)
+    /// - Long ID: sha256:4986bf8c15... (full digest)
+    private func resolveImage(nameOrId: String) async throws -> Containerization.Image {
+        // Check if input is a Docker ID (short or long)
+        let isShortID = nameOrId.range(of: "^[a-f0-9]{12,64}$", options: .regularExpression) != nil
+        let isLongID = nameOrId.hasPrefix("sha256:")
+
+        logger.debug("Resolving image", metadata: [
+            "name_or_id": "\(nameOrId)",
+            "is_short_id": "\(isShortID)",
+            "is_long_id": "\(isLongID)"
+        ])
+
+        // For both ID-based and tag-based lookups, we need to list all images
+        // because the stored reference might not match our normalized version
+        let images = try await imageStore.list()
+
+        for image in images {
+            let dockerID = generateDockerID(from: image.digest)
+
+            // Match short ID (first 12+ chars)
+            if isShortID && dockerID.replacingOccurrences(of: "sha256:", with: "").hasPrefix(nameOrId) {
+                logger.debug("Matched image by short ID", metadata: [
+                    "input": "\(nameOrId)",
+                    "reference": "\(image.reference)",
+                    "digest": "\(image.digest)"
+                ])
+                return image
+            }
+
+            // Match long ID (full digest)
+            if isLongID && dockerID == nameOrId {
+                logger.debug("Matched image by long ID", metadata: [
+                    "input": "\(nameOrId)",
+                    "reference": "\(image.reference)",
+                    "digest": "\(image.digest)"
+                ])
+                return image
+            }
+
+            // Match by reference (tag) - need to check multiple variations
+            if !isShortID && !isLongID {
+                // Try to match the stored reference against the input in various ways
+                if matchesReference(stored: image.reference, input: nameOrId) {
+                    logger.debug("Matched image by reference", metadata: [
+                        "input": "\(nameOrId)",
+                        "reference": "\(image.reference)",
+                        "digest": "\(image.digest)"
+                    ])
+                    return image
+                }
+            }
+        }
+
+        // Not found
+        logger.warning("Image not found", metadata: ["name_or_id": "\(nameOrId)"])
+        throw ImageManagerError.imageNotFound(nameOrId)
+    }
+
+    /// Check if a stored image reference matches an input reference
+    /// Handles Docker reference formats with proper normalization:
+    /// - Exact match: stored=nginx:alpine, input=nginx:alpine
+    /// - Without tag: stored=nginx:latest, input=nginx
+    /// - Without registry: stored=docker.io/library/nginx:alpine, input=nginx:alpine
+    /// - User repos: stored=docker.io/apache/superset:tag, input=apache/superset:tag
+    ///
+    /// Docker reference format: [registry/][namespace/]repository[:tag|@digest]
+    /// - nginx → docker.io/library/nginx:latest
+    /// - nginx:alpine → docker.io/library/nginx:alpine
+    /// - apache/superset:tag → docker.io/apache/superset:tag
+    /// - myregistry.com/repo:tag → myregistry.com/repo:tag
+    private func matchesReference(stored: String, input: String) -> Bool {
+        // Exact match
+        if stored == input {
+            return true
+        }
+
+        // Normalize the input reference using the same logic as when images are stored
+        let normalizedInput = normalizeImageReference(input)
+
+        // Match normalized input against stored reference
+        if stored == normalizedInput {
+            return true
+        }
+
+        // Also try suffix matching for cases where stored might have different normalization
+        // e.g., stored=docker.io/library/nginx:alpine, input normalized to same
+        // This handles edge cases in normalization
+        let storedComponents = stored.components(separatedBy: "/")
+        let inputComponents = normalizedInput.components(separatedBy: "/")
+
+        // If input has fewer components after normalization, try suffix matching
+        if inputComponents.count < storedComponents.count {
+            let storedSuffix = storedComponents.suffix(inputComponents.count).joined(separator: "/")
+            if storedSuffix == normalizedInput {
+                return true
+            }
+        }
+
+        return false
+    }
 
     /// Generate Docker-compatible image ID from OCI digest
     private func generateDockerID(from digest: String) -> String {
@@ -396,18 +494,8 @@ public actor ImageManager {
     public func getImage(nameOrId: String) async throws -> Containerization.Image {
         logger.debug("Getting image", metadata: ["name_or_id": "\(nameOrId)"])
 
-        // Normalize image reference (add :latest if no tag/digest specified)
-        let normalizedRef = normalizeImageReference(nameOrId)
-        logger.debug("Normalized reference", metadata: [
-            "original": "\(nameOrId)",
-            "normalized": "\(normalizedRef)"
-        ])
-
-        // Try to get image by reference (don't auto-pull)
-        guard let image = try? await imageStore.get(reference: normalizedRef, pull: false) else {
-            logger.error("Image not found", metadata: ["reference": "\(normalizedRef)"])
-            throw ImageManagerError.imageNotFound(nameOrId)
-        }
+        // Resolve image by name or ID
+        let image = try await resolveImage(nameOrId: nameOrId)
 
         logger.debug("Image retrieved", metadata: [
             "reference": "\(image.reference)",

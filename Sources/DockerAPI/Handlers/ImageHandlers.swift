@@ -338,6 +338,19 @@ public struct ImageHandlers: Sendable {
             ])
 
             return .success(dockerItems)
+        } catch let error as ImageManagerError {
+            logger.error("Failed to delete image", metadata: [
+                "name_or_id": "\(nameOrId)",
+                "error": "\(error)"
+            ])
+
+            // Map ImageManagerError to ImageHandlerError with proper case
+            switch error {
+            case .imageNotFound:
+                return .failure(.imageNotFound(nameOrId))
+            default:
+                return .failure(.deleteFailed(error.description))
+            }
         } catch {
             logger.error("Failed to delete image", metadata: [
                 "name_or_id": "\(nameOrId)",

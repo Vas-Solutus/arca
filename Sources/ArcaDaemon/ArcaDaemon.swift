@@ -464,7 +464,13 @@ public final class ArcaDaemon {
             case .success(let response):
                 return .standard(HTTPResponse.json(response))
             case .failure(let error):
-                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                // Return 404 for image not found, 500 for other errors
+                let status: HTTPResponseStatus = {
+                    if case .imageNotFound = error {
+                        return .notFound
+                    }
+                    return .internalServerError
+                }()
                 return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
