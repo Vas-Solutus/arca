@@ -111,7 +111,7 @@ public final class ArcaDaemon {
         logger.info("Registering API routes")
 
         // Create handlers
-        let containerHandlers = ContainerHandlers(containerManager: containerManager, logger: logger)
+        let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
 
         // System endpoints - Ping (GET and HEAD)
@@ -192,6 +192,10 @@ public final class ArcaDaemon {
             case .success(let response):
                 return .standard(HTTPResponse.json(response, status: .created))
             case .failure(let error):
+                // Return 404 for image not found so Docker CLI knows to pull
+                if case .imageNotFound = error {
+                    return .standard(HTTPResponse.error(error.description, status: .notFound))
+                }
                 return .standard(HTTPResponse.error(error.description, status: .internalServerError))
             }
         }

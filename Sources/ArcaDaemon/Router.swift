@@ -1,9 +1,10 @@
 import Foundation
 import Logging
 import NIOHTTP1
+import DockerAPI
 
 /// Type alias for route handler functions
-public typealias RouteHandler = (HTTPRequest) async -> HTTPResponse
+public typealias RouteHandler = (HTTPRequest) async -> HTTPResponseType
 
 /// A route pattern matcher and request dispatcher
 public final class Router {
@@ -25,7 +26,7 @@ public final class Router {
     }
 
     /// Route an incoming request to the appropriate handler
-    public func route(request: HTTPRequest) async -> HTTPResponse {
+    public func route(request: HTTPRequest) async -> HTTPResponseType {
         // Normalize the path by removing API version prefix if present
         let normalizedPath = normalizePath(request.path)
 
@@ -64,10 +65,10 @@ public final class Router {
                     "expected": "\(route.method.rawValue)",
                     "received": "\(request.method.rawValue)"
                 ])
-                return HTTPResponse.error(
+                return .standard(HTTPResponse.error(
                     "Method \(request.method.rawValue) not allowed for \(request.path)",
                     status: .methodNotAllowed
-                )
+                ))
             }
         }
 
@@ -75,7 +76,7 @@ public final class Router {
         logger.warning("No route found", metadata: [
             "path": "\(request.path)"
         ])
-        return HTTPResponse.error("Not found: \(request.path)", status: .notFound)
+        return .standard(HTTPResponse.error("Not found: \(request.path)", status: .notFound))
     }
 
     /// Normalize path by removing API version prefix

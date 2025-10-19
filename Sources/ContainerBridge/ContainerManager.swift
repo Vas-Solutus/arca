@@ -182,13 +182,6 @@ public actor ContainerManager {
             "name": "\(name ?? "auto")"
         ])
 
-        // Verify image exists
-        let imageExists = await imageManager.imageExists(nameOrId: image)
-        if !imageExists {
-            logger.error("Image not found", metadata: ["image": "\(image)"])
-            throw ContainerManagerError.imageNotFound(image)
-        }
-
         // Generate Docker-compatible ID
         let dockerID = generateDockerID()
 
@@ -201,7 +194,7 @@ public actor ContainerManager {
             throw ContainerManagerError.notInitialized
         }
 
-        // Get the image from ImageStore
+        // Get the image from ImageStore (no auto-pull - let Docker CLI handle it)
         logger.debug("Retrieving image", metadata: ["image": "\(image)"])
         let containerImage = try await imageManager.getImage(nameOrId: image)
 
@@ -260,6 +253,7 @@ public actor ContainerManager {
             "docker_id": "\(dockerID)",
             "native_id": "\(nativeID)"
         ])
+
         try await linuxContainer.create()
         logger.info("Container VM created successfully", metadata: ["docker_id": "\(dockerID)"])
 

@@ -204,7 +204,7 @@ public struct MountPoint: Codable {
 // MARK: - Container Create Request/Response
 
 /// Request body for POST /containers/create
-public struct ContainerCreateRequest: Codable {
+public struct ContainerCreateRequest: Codable, Sendable {
     public let hostname: String?
     public let domainname: String?
     public let user: String?
@@ -245,7 +245,7 @@ public struct ContainerCreateRequest: Codable {
 }
 
 /// Host configuration for container creation
-public struct HostConfigCreate: Codable {
+public struct HostConfigCreate: Codable, Sendable {
     public let binds: [String]?
     public let networkMode: String?
     public let portBindings: [String: [PortBindingCreate]]?
@@ -264,7 +264,7 @@ public struct HostConfigCreate: Codable {
 }
 
 /// Port binding for creation
-public struct PortBindingCreate: Codable {
+public struct PortBindingCreate: Codable, Sendable {
     public let hostIp: String?
     public let hostPort: String?
 
@@ -275,7 +275,7 @@ public struct PortBindingCreate: Codable {
 }
 
 /// Restart policy for creation
-public struct RestartPolicyCreate: Codable {
+public struct RestartPolicyCreate: Codable, Sendable {
     public let name: String
     public let maximumRetryCount: Int?
 
@@ -736,7 +736,7 @@ public struct MountInspect: Codable {
 // MARK: - Helper Types
 
 /// Type-erased Codable wrapper for dynamic JSON values
-public struct AnyCodable: Codable {
+public struct AnyCodable: Codable, @unchecked Sendable {
     public let value: Any
 
     public init(_ value: Any) {

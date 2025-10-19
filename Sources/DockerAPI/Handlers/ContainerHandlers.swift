@@ -1,15 +1,18 @@
 import Foundation
 import Logging
 import ContainerBridge
+import NIOHTTP1
 
 /// Handlers for Docker Engine API container endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
-public struct ContainerHandlers {
+public struct ContainerHandlers: Sendable {
     private let containerManager: ContainerManager
+    private let imageManager: ImageManager
     private let logger: Logger
 
-    public init(containerManager: ContainerManager, logger: Logger) {
+    public init(containerManager: ContainerManager, imageManager: ImageManager, logger: Logger) {
         self.containerManager = containerManager
+        self.imageManager = imageManager
         self.logger = logger
     }
 
@@ -79,11 +82,24 @@ public struct ContainerHandlers {
 
     /// Handle POST /containers/create
     /// Creates a new container
-    public func handleCreateContainer(request: ContainerCreateRequest, name: String?) async -> Result<ContainerCreateResponse, ContainerError> {
+    public func handleCreateContainer(
+        request: ContainerCreateRequest,
+        name: String?
+    ) async -> Result<ContainerCreateResponse, ContainerError> {
         logger.info("Handling create container request", metadata: [
             "image": "\(request.image)",
             "name": "\(name ?? "auto")"
         ])
+
+        // Check if image exists locally - return error if not (let Docker CLI handle the pull)
+        do {
+            _ = try await imageManager.getImage(nameOrId: request.image)
+        } catch {
+            logger.warning("Image not found, returning error to trigger client-side pull", metadata: [
+                "image": "\(request.image)"
+            ])
+            return .failure(.imageNotFound(request.image))
+        }
 
         do {
             let containerID = try await containerManager.createContainer(
@@ -544,6 +560,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case inspectFailed(String)
     case notFound(String)
     case invalidRequest(String)
+    case imageNotFound(String)
 
     public var description: String {
         switch self {
@@ -557,6 +574,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):
             return "Failed to inspect container: \(msg)"
+        case .imageNotFound(let image):
+            return "No such image: \(image)"
         case .notFound(let id):
             return "Container not found: \(id)"
         case .invalidRequest(let msg):

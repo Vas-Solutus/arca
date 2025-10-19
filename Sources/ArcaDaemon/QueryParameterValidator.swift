@@ -1,5 +1,6 @@
 import Foundation
 import NIOHTTP1
+import DockerAPI
 
 /// Utility for validating HTTP query parameters
 /// Returns descriptive error messages for invalid parameters
