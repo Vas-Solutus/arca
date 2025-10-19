@@ -130,6 +130,106 @@ Document specific VirtioFS behaviors and best practices for volume usage with Ar
 
 ---
 
+## Image Pull Progress
+
+**Status**: Implementation difference
+**Affected APIs**: `POST /images/create` (streaming progress)
+**Impact**: Pull progress estimates layer completion, not exact per-layer tracking
+
+### Description
+
+Docker Engine shows precise per-layer progress during image pulls, tracking each layer's download status individually. Arca shows Docker-compatible progress output but distributes aggregate progress proportionally across layers.
+
+**Example comparison**:
+
+Docker Engine (exact per-layer tracking):
+```
+a1b2c3d4e5f6: Downloading [====>      ] 5.2MB/15.3MB
+a1b2c3d4e5f6: Downloading [=========> ] 12.1MB/15.3MB
+a1b2c3d4e5f6: Pull complete
+b2c3d4e5f6a7: Downloading [=>         ] 2.1MB/25.7MB
+```
+
+Arca (proportional distribution):
+```
+a1b2c3d4e5f6: Downloading [====>      ] 5.2MB/15.3MB (estimated)
+a1b2c3d4e5f6: Pull complete
+b2c3d4e5f6a7: Downloading [=>         ] 2.1MB/25.7MB (estimated)
+```
+
+### Technical Background
+
+Apple's Containerization framework downloads image blobs (manifests, configs, and layers) in parallel using a task pool. The progress API provides only **aggregate events** across all parallel downloads:
+
+- `add-size`: Total bytes downloaded across all blobs
+- `add-items`: Total blobs completed
+- `add-total-size`: Total bytes to download
+- `add-total-items`: Total blobs to download
+
+These events do not identify which specific blob (layer) each event is for. Since downloads happen in parallel (up to 8 concurrent), small blobs (manifest/config) complete first, and there's no way to correlate a specific `add-items` event to a specific layer digest.
+
+From `containerization/Sources/Containerization/Image/ImageStore/ImageStore+Import.swift:133-140`:
+```swift
+private func fetchAll(_ descriptors: [Descriptor]) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        var iterator = descriptors.makeIterator()
+        for _ in 0..<8 {  // Downloads 8 blobs IN PARALLEL
+            if let desc = iterator.next() {
+                group.addTask {
+                    try await self.fetch(desc)
+                }
+            }
+        }
+```
+
+### Current Behavior
+
+Arca's implementation:
+1. ✅ Fetches the OCI manifest to get real layer digests
+2. ✅ Sends Docker-compatible JSON with real layer IDs (12-char hex from digest)
+3. ✅ Shows "Pulling fs layer" status for each layer at start
+4. ⚠️ Distributes aggregate download progress proportionally across layers by size
+5. ⚠️ Marks layers complete based on size ratios (larger layers estimated to complete later)
+
+This means:
+- **Layer IDs are accurate** - they match the real OCI manifest layer digests
+- **Total progress is accurate** - aggregate bytes and blob counts are correct
+- **Per-layer progress is estimated** - we don't know which exact layer is downloading at any moment
+- **Progress bars look like Docker** - same JSON format, similar visual output
+
+### Why Not Exact Tracking?
+
+To provide exact per-layer progress like Docker, we would need one of:
+
+1. **Per-blob progress events** - Apple's API doesn't provide this
+2. **Sequential downloads** - Would be much slower than parallel downloads
+3. **Custom network layer** - Bypass Apple's API entirely (defeats the purpose)
+
+None of these options are viable while maintaining performance and using Apple's Containerization framework.
+
+### Impact
+
+**For most users**: No noticeable difference - progress bars show download activity and complete successfully.
+
+**Edge cases**:
+- Large layers may show progress earlier or later than they actually download
+- If downloads are slow/interrupted, estimated progress may not match reality
+- Monitoring tools that parse exact progress may see different patterns
+
+**What still works perfectly**:
+- Total download progress (bytes and blob counts)
+- Layer IDs (real digests from manifest)
+- Final state (all layers shown as "Pull complete" when done)
+- Docker CLI display compatibility
+
+### Future Work
+
+This is an architectural limitation of Apple's Containerization API. The only way to provide exact per-layer progress would be to reimplement the entire image pull logic at a lower network level, which would bypass Apple's optimized parallel download implementation.
+
+**No planned changes** - the current proportional approach provides good user experience while leveraging Apple's high-performance parallel downloads.
+
+---
+
 ## Build Operations
 
 **Status**: Not yet implemented

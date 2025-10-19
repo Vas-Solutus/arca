@@ -247,12 +247,140 @@ docker rmi alpine:latest
   - Files: ContainerManager.swift (startContainer, updateContainerStateAfterExit)
   - **COMPLETED**: Containers automatically transition to "exited" state
 
+- [x] **Implement automatic image pull in container creation**
+  - Problem: `docker run` with non-existent image fails with "Image not found"
+  - Solution: Automatically pull image if not found locally
+  - Pattern: Try getImage(), catch error, call pullImage(), retry
+  - Files: ContainerHandlers.swift (handleCreateContainer)
+  - **COMPLETED**: Container creation now auto-pulls missing images
+
 - [x] **Fix file descriptor cleanup on container removal**
   - Problem: Daemon crashes with "Bad file descriptor" after removing containers
   - Root cause: Background monitoring task held references while resources cleaned up
   - Solution: Wait for monitoring task completion, call stop() before removal
   - Files: ContainerManager.swift (removeContainer)
   - **COMPLETED**: Proper cleanup prevents crashes
+
+#### Priority 1.5: HTTP Streaming Architecture (Real-time Progress)
+
+**Problem**: Docker operations like `docker pull`, `docker build`, and `docker run` show real-time progress updates as layers download, images build, or containers start. Arca currently returns complete responses only after operations finish, providing no progress feedback.
+
+**Architecture Overview**:
+
+Current architecture returns complete HTTP responses:
+```
+Request → Router → Handler → HTTPResponse (complete body)
+```
+
+New architecture supports streaming responses via callbacks:
+```
+Request → Router → Handler → HTTPResponseType enum
+                                   ↓
+                   ┌───────────────┴────────────────┐
+                   ↓                                ↓
+          .standard(HTTPResponse)      .streaming(status, headers, callback)
+                   ↓                                ↓
+          Send complete body            Invoke callback with HTTPStreamWriter
+                                                    ↓
+                                        Callback writes chunks progressively
+```
+
+**Key Components**:
+
+1. **HTTPResponseType enum** - Represents either standard or streaming response
+2. **HTTPStreamWriter protocol** - Interface for writing response chunks
+3. **NIOHTTPStreamWriter** - SwiftNIO implementation using channel.writeAndFlush()
+4. **Modified Router** - Returns HTTPResponseType instead of HTTPResponse
+5. **Modified HTTPHandler** - Detects streaming responses and invokes callbacks
+6. **Progress formatters** - Convert ProgressEvent to Docker JSON format
+
+**Docker Progress Format**:
+Docker API returns newline-delimited JSON that the Docker CLI renders as progress bars:
+```json
+{"status":"Pulling from library/nginx","id":"alpine"}
+{"status":"Pulling fs layer","id":"76f96c998a19"}
+{"status":"Downloading","progressDetail":{"current":1024,"total":4194304},"progress":"[=>  ] 1.024MB/4.194MB","id":"76f96c998a19"}
+{"status":"Download complete","id":"76f96c998a19"}
+{"status":"Digest: sha256:abc123..."}
+{"status":"Status: Downloaded newer image for nginx:alpine"}
+```
+
+**Apple Containerization API Integration**:
+The Containerization framework provides `ProgressHandler = @Sendable (_ events: [ProgressEvent]) async -> Void`:
+- Events: "add-total-size", "add-total-items", "add-size", "add-items"
+- Emitted during `imageStore.pull()`, layer fetches, etc.
+- Must be translated to Docker JSON format and written via HTTPStreamWriter
+
+**Endpoints Requiring Streaming** (Phases 1-4):
+- `POST /images/create` - Image pull progress (Phase 1)
+- `POST /build` - Build progress (Phase 4)
+- `POST /containers/create?fromImage=X` - Auto-pull progress (Phase 1)
+- `GET /events` - System events stream (Phase 4)
+- `POST /containers/{id}/attach` - Interactive I/O (Phase 2)
+
+**Implementation Tasks**:
+
+- [x] **Add HTTPResponseType and HTTPStreamWriter to HTTPTypes.swift**
+  - Define HTTPResponseType enum with .standard and .streaming cases
+  - Define HTTPStreamWriter protocol with write() and finish() methods
+  - Add HTTPStreamingCallback typealias
+  - Files: Sources/ArcaDaemon/HTTPTypes.swift
+  - **COMPLETED**: Types added with proper Sendable conformance
+
+- [ ] **Implement NIOHTTPStreamWriter in HTTPHandler.swift**
+  - Create NIOHTTPStreamWriter class implementing HTTPStreamWriter
+  - Use ChannelHandlerContext.writeAndFlush() for chunk writing
+  - Handle chunked transfer encoding via SwiftNIO
+  - Implement finish() to send final empty chunk
+  - Files: Sources/ArcaDaemon/HTTPHandler.swift
+  - **IN PROGRESS**: Class skeleton added, needs completion
+
+- [ ] **Update HTTPHandler to support streaming responses**
+  - Modify handleRequest() to receive HTTPResponseType
+  - Add sendResponseType() method to detect .standard vs .streaming
+  - For .streaming: send headers with Transfer-Encoding: chunked, invoke callback
+  - For .standard: existing sendResponse() behavior
+  - Files: Sources/ArcaDaemon/HTTPHandler.swift (handleRequest, sendResponseType)
+
+- [ ] **Update Router to return HTTPResponseType**
+  - Change RouteHandler typealias from `-> HTTPResponse` to `-> HTTPResponseType`
+  - Update route() method to return HTTPResponseType
+  - Files: Sources/ArcaDaemon/Router.swift
+
+- [ ] **Update all route registrations to use HTTPResponseType**
+  - Wrap existing handler returns with .standard(HTTPResponse)
+  - No logic changes needed, just wrapping
+  - Files: Sources/ArcaDaemon/ArcaDaemon.swift (all route registrations)
+
+- [ ] **Create Docker progress formatter in ImageHandlers**
+  - Implement formatDockerProgress() to convert ProgressEvent → Docker JSON
+  - Track total/current sizes and items for progress calculations
+  - Generate layer IDs from descriptors
+  - Format status messages: "Pulling fs layer", "Downloading", "Download complete"
+  - Files: Sources/DockerAPI/Handlers/ImageHandlers.swift
+
+- [ ] **Implement streaming image pull handler**
+  - Create handlePullImageStreaming() returning .streaming()
+  - Create progress callback that writes Docker JSON via HTTPStreamWriter
+  - Pass callback to imageManager.pullImage(progress: callback)
+  - Handle errors and send final status message
+  - Files: Sources/DockerAPI/Handlers/ImageHandlers.swift
+
+- [ ] **Wire up streaming in POST /images/create route**
+  - Update route registration to use handlePullImageStreaming()
+  - Return .streaming() response type
+  - Files: Sources/ArcaDaemon/ArcaDaemon.swift (images/create route)
+
+- [ ] **Test real-time progress with docker pull**
+  - Test: `docker pull nginx:alpine` shows layer-by-layer progress
+  - Verify: Progress bars, percentages, and sizes display correctly
+  - Verify: Final "Downloaded newer image" message appears
+  - Test with large images (nginx, ubuntu) and small images (alpine, busybox)
+
+**Reference Implementation**:
+- Apple's ProgressConfig.swift: https://github.com/apple/container/blob/main/Sources/TerminalProgress/ProgressConfig.swift
+- Docker Engine API spec: Documentation/DOCKER_ENGINE_API_SPEC.md (POST /images/create)
+- ProgressEvent definition: .build/checkouts/containerization/Sources/ContainerizationExtras/ProgressEvent.swift
 
 #### Priority 2: Robustness & Polish
 
