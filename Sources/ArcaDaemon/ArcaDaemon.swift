@@ -147,9 +147,7 @@ public final class ArcaDaemon {
                 let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
                 let limit = try QueryParameterValidator.parsePositiveInt(request.queryParameters["limit"], paramName: "limit")
                 let size = QueryParameterValidator.parseBoolean(request.queryParameters["size"])
-
-                // Parse filters JSON from query parameter
-                let filters: [String: String] = try QueryParameterValidator.parseFilters(request.queryParameters["filters"]) ?? [:]
+                let filters = try QueryParameterValidator.parseDockerFiltersToSingle(request.queryParameters["filters"])
 
                 // Call handler asynchronously
                 let listResponse = await containerHandlers.handleListContainers(
@@ -391,9 +389,7 @@ public final class ArcaDaemon {
             do {
                 let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
                 let digests = QueryParameterValidator.parseBoolean(request.queryParameters["digests"])
-
-                // Parse filters JSON from query parameter
-                let filters: [String: [String]] = try QueryParameterValidator.parseFilters(request.queryParameters["filters"]) ?? [:]
+                let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
 
                 // Call handler asynchronously
                 let listResponse = await imageHandlers.handleListImages(

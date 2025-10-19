@@ -143,6 +143,28 @@ public struct QueryParameterValidator {
         }
     }
 
+    /// Parse Docker-format filters and convert to array format
+    /// Docker sends filters as: {"filterName": {"value1": true, "value2": false}}
+    /// Converts to: {"filterName": ["value1"]} (only including true values)
+    public static func parseDockerFiltersToArray(_ value: String?, paramName: String = "filters") throws -> [String: [String]] {
+        let dockerFilters: [String: [String: Bool]]? = try parseFilters(value, paramName: paramName)
+
+        return dockerFilters?.mapValues { valueMap in
+            valueMap.compactMap { key, include in include ? key : nil }
+        } ?? [:]
+    }
+
+    /// Parse Docker-format filters and convert to single-value format
+    /// Docker sends filters as: {"filterName": {"value": true}}
+    /// Converts to: {"filterName": "value"} (taking first true value)
+    public static func parseDockerFiltersToSingle(_ value: String?, paramName: String = "filters") throws -> [String: String] {
+        let dockerFilters: [String: [String: Bool]]? = try parseFilters(value, paramName: paramName)
+
+        return dockerFilters?.compactMapValues { valueMap in
+            valueMap.first { $0.value }?.key
+        } ?? [:]
+    }
+
     /// Validate a boolean parameter
     /// Returns false if parameter is missing (default behavior)
     public static func parseBoolean(_ value: String?) -> Bool {

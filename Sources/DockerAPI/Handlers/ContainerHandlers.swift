@@ -16,6 +16,15 @@ public struct ContainerHandlers: Sendable {
         self.logger = logger
     }
 
+    /// Get proper error description from Swift errors
+    /// Uses CustomStringConvertible description for our error types, falls back to localizedDescription
+    private func errorDescription(_ error: Error) -> String {
+        if let describable = error as? CustomStringConvertible {
+            return describable.description
+        }
+        return error.localizedDescription
+    }
+
     /// Handle GET /containers/json
     /// Lists all containers
     ///
@@ -121,7 +130,7 @@ public struct ContainerHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(ContainerError.creationFailed(error.localizedDescription))
+            return .failure(ContainerError.creationFailed(errorDescription(error)))
         }
     }
 
@@ -146,7 +155,7 @@ public struct ContainerHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(ContainerError.startFailed(error.localizedDescription))
+            return .failure(ContainerError.startFailed(errorDescription(error)))
         }
     }
 
@@ -172,7 +181,7 @@ public struct ContainerHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(ContainerError.stopFailed(error.localizedDescription))
+            return .failure(ContainerError.stopFailed(errorDescription(error)))
         }
     }
 
@@ -199,7 +208,7 @@ public struct ContainerHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(ContainerError.removeFailed(error.localizedDescription))
+            return .failure(ContainerError.removeFailed(errorDescription(error)))
         }
     }
 
@@ -297,7 +306,7 @@ public struct ContainerHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(ContainerError.inspectFailed(error.localizedDescription))
+            return .failure(ContainerError.inspectFailed(errorDescription(error)))
         }
     }
 
@@ -532,7 +541,7 @@ public struct ContainerHandlers: Sendable {
                 "id": "\(dockerID)",
                 "error": "\(error)"
             ])
-            return .failure(ContainerError.inspectFailed(error.localizedDescription))
+            return .failure(ContainerError.inspectFailed(errorDescription(error)))
         }
     }
 }
@@ -577,7 +586,7 @@ public enum ContainerError: Error, CustomStringConvertible {
         case .imageNotFound(let image):
             return "No such image: \(image)"
         case .notFound(let id):
-            return "Container not found: \(id)"
+            return "No such container: \(id)"
         case .invalidRequest(let msg):
             return "Invalid request: \(msg)"
         }

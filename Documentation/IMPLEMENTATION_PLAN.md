@@ -197,11 +197,13 @@ docker rmi alpine:latest       ✅
 
 - [x] **Fix container restart/state management** (Sources/ContainerBridge/ContainerManager.swift)
   - Problem: `docker start test3` returns "container must be created" after container exits
-  - Root cause: Container state machine broken after exit
-  - Required: Maintain "exited" state, allow restart from exited state
-  - Affected methods: startContainer, state transitions
+  - Root cause: After wait() completes, must call stop() to clean up VM and transition to .stopped state
+  - Required: Call stop() in monitoring task after wait(), then create() before start() when restarting
+  - Containerization state machine: .stopped → create() → .created → start() → .started → (exit) → wait() → **stop()** → .stopped
+  - Reference: containerization/examples/ctr-example/main.swift shows stop() must be called after wait()
+  - Affected methods: startContainer (monitoring task), startContainer (restart logic)
   - Files: ContainerManager.swift (state management)
-  - **COMPLETED**: Call create() before start() when container is in exited state (Apple Containerization state machine: stopped→create()→created→start()→started)
+  - **COMPLETED**: Background monitor calls stop() after wait() to properly clean up VM; restart calls create() for exited containers
 
 #### Priority 1: Core Functionality (Needed for Phase 1 Success)
 
@@ -408,9 +410,30 @@ The Containerization framework provides `ProgressHandler = @Sendable (_ events: 
 
 #### Priority 2: Robustness & Polish
 
-- [ ] **Add proper query parameter validation**
-  - Problem: Invalid query params silently ignored
-  - Required: Validate filters, limit, timestamps, etc.
+- [x] **Fix error message format to match Docker**
+  - Problem: Error messages said "Image not found:" instead of "No such image:"
+  - Solution: Updated all error types to use Docker-compatible messages
+  - Added errorDescription() helper to use CustomStringConvertible instead of localizedDescription
+  - Files: ContainerBridge/*Manager.swift, DockerAPI/Handlers/*.swift, DockerAPI/Models/*.swift
+  - **COMPLETED**: All error messages now match Docker format exactly
+
+- [x] **Add Docker filter parameter validation**
+  - Problem: Docker CLI sends filters as {"filterName": {"value": true}}, validator expected different format
+  - Solution: Created parseDockerFiltersToArray() and parseDockerFiltersToSingle() helpers
+  - Follows DRY principle - single place for filter conversion logic
+  - Files: QueryParameterValidator.swift, ArcaDaemon.swift
+  - **COMPLETED**: Filter validation now handles Docker's format correctly
+
+- [ ] **Refactor error handling architecture** (Future improvement)
+  - Problem: Multiple error types (ImageManagerError, ImageHandlerError, ImageError) can represent same error
+  - Current: Quick fix applied - all error messages updated to match Docker's format
+  - Proper fix: Refactor to have errors flow through without re-wrapping, or preserve original error when wrapping
+  - Consider: Single error type per layer, or better error composition pattern
+  - Files: ContainerBridge/*Manager.swift, DockerAPI/Handlers/*.swift, DockerAPI/Models/*.swift
+
+- [ ] **Add comprehensive query parameter validation**
+  - Problem: Some invalid query params might be silently ignored
+  - Required: Validate all parameters (limit ranges, timestamps, etc.)
   - Return 400 Bad Request for invalid params
   - Files: All handler methods
 
@@ -435,15 +458,25 @@ The Containerization framework provides `ProgressHandler = @Sendable (_ events: 
 
 #### Priority 3: Testing & Verification
 
-- [ ] **Test all Phase 1 success criteria**
-  - `docker ps` - List containers
-  - `docker run -d nginx:latest` - Create and start container
-  - `docker logs <container-id>` - View logs (with binary format fix)
-  - `docker stop <container-id>` - Stop container (with short ID)
-  - `docker rm <container-id>` - Remove container
-  - `docker images` - List images
-  - `docker pull alpine:latest` - Pull image
-  - `docker rmi alpine:latest` - Remove image
+- [x] **Create Phase 1 MVP test script**
+  - Created comprehensive test script: scripts/test-phase1-mvp.sh
+  - Tests 17 scenarios including error handling
+  - Colorful output with pass/fail indicators
+  - Automatic cleanup
+  - **COMPLETED**: All 17 tests passing
+
+- [x] **Test all Phase 1 success criteria**
+  - `docker ps` - List containers ✅
+  - `docker run -d nginx:latest` - Create and start container ✅
+  - `docker logs <container-id>` - View logs (with binary format fix) ✅
+  - `docker stop <container-id>` - Stop container (with short ID) ✅
+  - `docker rm <container-id>` - Remove container ✅
+  - `docker images` - List images ✅
+  - `docker pull alpine:latest` - Pull image ✅
+  - `docker rmi alpine:latest` - Remove image ✅
+  - `docker start <container-id>` - Restart exited container ✅
+  - Error handling for missing images/containers ✅
+  - **COMPLETED**: All Phase 1 commands working correctly
 
 - [ ] **Test container lifecycle combinations**
   - Create → Start → Stop → Start (restart from exited)

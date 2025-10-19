@@ -15,6 +15,15 @@ public struct ImageHandlers: Sendable {
         self.logger = logger
     }
 
+    /// Get proper error description from Swift errors
+    /// Uses CustomStringConvertible description for our error types, falls back to localizedDescription
+    private func errorDescription(_ error: Error) -> String {
+        if let describable = error as? CustomStringConvertible {
+            return describable.description
+        }
+        return error.localizedDescription
+    }
+
     /// Handle GET /images/json
     /// Lists all images
     ///
@@ -110,7 +119,7 @@ public struct ImageHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(.pullFailed(error.localizedDescription))
+            return .failure(.pullFailed(errorDescription(error)))
         }
     }
 
@@ -230,7 +239,7 @@ public struct ImageHandlers: Sendable {
                 ])
 
                 // Send error message to stream
-                let errorStatus = ["error": error.localizedDescription]
+                let errorStatus = ["error": errorDescription(error)]
                 if let jsonData = try? JSONSerialization.data(withJSONObject: errorStatus, options: []),
                    let jsonString = String(data: jsonData, encoding: .utf8) {
                     let data = Data((jsonString + "\n").utf8)
@@ -298,7 +307,7 @@ public struct ImageHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(.inspectFailed(error.localizedDescription))
+            return .failure(.inspectFailed(errorDescription(error)))
         }
     }
 
@@ -357,7 +366,7 @@ public struct ImageHandlers: Sendable {
                 "error": "\(error)"
             ])
 
-            return .failure(.deleteFailed(error.localizedDescription))
+            return .failure(.deleteFailed(errorDescription(error)))
         }
     }
 
@@ -436,7 +445,7 @@ public enum ImageHandlerError: Error, CustomStringConvertible {
         case .deleteFailed(let msg):
             return "Failed to delete image: \(msg)"
         case .imageNotFound(let name):
-            return "Image not found: \(name)"
+            return "No such image: \(name)"
         case .invalidRequest(let msg):
             return "Invalid request: \(msg)"
         }

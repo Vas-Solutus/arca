@@ -604,7 +604,7 @@ public enum ImageManagerError: Error, CustomStringConvertible {
         case .notImplemented:
             return "Feature not yet implemented (Containerization API integration in progress)"
         case .imageNotFound(let ref):
-            return "Image not found: \(ref)"
+            return "No such image: \(ref)"
         case .pullFailed(let msg):
             return "Failed to pull image: \(msg)"
         case .deleteFailed(let msg):

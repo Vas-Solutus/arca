@@ -331,7 +331,7 @@ public enum ImageError: Error, CustomStringConvertible {
         case .invalidReference(let ref):
             return "Invalid image reference: \(ref)"
         case .imageNotFound(let ref):
-            return "Image not found: \(ref)"
+            return "No such image: \(ref)"
         }
     }
 }

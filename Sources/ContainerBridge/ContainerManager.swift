@@ -367,15 +367,21 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // If container is in exited state, we need to call create() first
-        // The Containerization API state machine requires: stopped -> create() -> created -> start() -> started
+        // Start the container using Containerization API
+        // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
+        // After a container exits and we call stop(), it goes back to .stopped state
+        // To restart, we must call create() again to transition .stopped -> .created
         if info.state == "exited" {
-            logger.info("Container is exited, calling create() before start()", metadata: ["id": "\(dockerID)"])
+            logger.info("Container is exited, calling create() before start()", metadata: [
+                "id": "\(dockerID)"
+            ])
             try await nativeContainer.create()
         }
 
-        // Start the container using Containerization API
-        logger.info("Starting container with Containerization API", metadata: ["id": "\(dockerID)"])
+        logger.info("Starting container with Containerization API", metadata: [
+            "id": "\(dockerID)",
+            "current_state": "\(info.state)"
+        ])
         try await nativeContainer.start()
 
         // Update state
@@ -400,6 +406,12 @@ public actor ContainerManager {
                     "id": "\(dockerID)",
                     "exit_code": "\(exitStatus.exitCode)"
                 ])
+
+                // After wait() completes, we MUST call stop() to clean up the VM
+                // and transition the container from .started to .stopped state
+                // Reference: containerization/examples/ctr-example/main.swift
+                logger.debug("Background monitor: stopping container to clean up VM", metadata: ["id": "\(dockerID)"])
+                try await nativeContainer.stop()
 
                 // Update container state via actor-isolated method
                 await self?.updateContainerStateAfterExit(
@@ -754,11 +766,11 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
         case .kernelNotFound(let path):
             return "Kernel file not found at: \(path)\nPlease run: arca setup"
         case .containerNotFound(let id):
-            return "Container not found: \(id)"
+            return "No such container: \(id)"
         case .containerRunning(let id):
             return "Container is running: \(id). Stop the container before removing it or use force."
         case .imageNotFound(let ref):
-            return "Image not found: \(ref)"
+            return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
             return "Invalid configuration: \(msg)"
         }
