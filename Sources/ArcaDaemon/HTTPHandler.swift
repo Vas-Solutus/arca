@@ -52,7 +52,9 @@ final class NIOHTTPStreamWriter: HTTPStreamWriter, @unchecked Sendable {
 }
 
 /// SwiftNIO channel handler for processing HTTP requests
-final class HTTPHandler: ChannelInboundHandler {
+/// @unchecked Sendable: Safe because NIO guarantees each handler instance is only accessed
+/// from its associated channel's event loop, providing thread-safety through event loop isolation
+final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 

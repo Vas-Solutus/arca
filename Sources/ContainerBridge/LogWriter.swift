@@ -109,7 +109,7 @@ public final class ContainerLogManager {
     private var logPaths: [String: LogPaths] = [:]  // Docker ID -> LogPaths
     private let lock = NSLock()
 
-    public struct LogPaths {
+    public struct LogPaths: Sendable {
         public let stdoutPath: URL
         public let stderrPath: URL
         public let combinedPath: URL

@@ -64,6 +64,59 @@ docker rm temp
 
 ---
 
+## Error Message Format
+
+**Status**: Implementation difference
+**Affected APIs**: Exec API, container operations
+**Impact**: Error messages may differ from Docker Engine
+
+### Description
+
+Error messages returned by Arca may use different wording than Docker Engine because they originate from Apple's Containerization framework rather than Docker's runc runtime.
+
+**Example**:
+```bash
+# Docker Engine
+$ docker exec container /nonexistent/command
+OCI runtime exec failed: exec failed: unable to start container process: exec: "/nonexistent/command": executable file not found in $PATH: unknown
+
+# Arca
+$ docker exec container /nonexistent/command
+Error: internalError: "Failed to find target executable /nonexistent/command"
+```
+
+### Technical Background
+
+Apple's Containerization framework uses its own Linux VM runtime, which generates error messages independently from Docker's OCI runtime (runc). The errors convey the same information but with different wording:
+
+- Docker: "executable file not found in $PATH"
+- Apple: "Failed to find target executable"
+
+Both correctly indicate that the command could not be found, but the text differs.
+
+### Current Behavior
+
+- ✅ Errors are correctly reported with appropriate exit codes
+- ✅ Error conditions match Docker behavior (invalid commands fail, permission errors fail, etc.)
+- ⚠️ Error message text may differ from Docker's exact wording
+
+### Impact
+
+**For most users**: No impact - errors are still informative and accurate.
+
+**Potential issues**:
+- Scripts that parse specific Docker error messages may need adjustment
+- Monitoring tools that pattern-match error text may need updated patterns
+- Documentation/tutorials showing exact Docker error messages won't match
+
+### Future Work
+
+This is an architectural difference in how Apple's Containerization framework reports errors and cannot be changed at the Arca layer without losing the error information provided by the framework.
+
+**No planned changes** - error messages remain accurate and informative, just with different wording.
+
+---
+
 ## Networking
 
 **Status**: Architectural difference

@@ -4,7 +4,7 @@ import NIO
 import DockerAPI
 
 /// Represents an HTTP request received by the server
-public struct HTTPRequest {
+public struct HTTPRequest: Sendable {
     public let method: HTTPMethod
     public let uri: String
     public let headers: HTTPHeaders

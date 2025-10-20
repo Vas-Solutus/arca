@@ -14,13 +14,15 @@ public protocol HTTPStreamWriter: Sendable {
 public typealias HTTPStreamingCallback = @Sendable (HTTPStreamWriter) async throws -> Void
 
 /// Represents a streaming or standard HTTP response
-public enum HTTPResponseType {
+/// Note: HTTP protocol upgrades (for Docker exec/attach) are handled automatically
+/// by DockerRawStreamUpgrader when client sends Connection: Upgrade headers
+public enum HTTPResponseType: Sendable {
     case standard(HTTPResponse)
     case streaming(status: HTTPResponseStatus, headers: HTTPHeaders, callback: HTTPStreamingCallback)
 }
 
 /// Standard HTTP response (non-streaming)
-public struct HTTPResponse {
+public struct HTTPResponse: Sendable {
     public let status: HTTPResponseStatus
     public let headers: HTTPHeaders
     public let body: Data?

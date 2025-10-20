@@ -11,6 +11,7 @@ public final class ArcaDaemon {
     private var server: ArcaServer?
     private var containerManager: ContainerManager?
     private var imageManager: ImageManager?
+    private var execManager: ExecManager?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -80,12 +81,16 @@ public final class ArcaDaemon {
             throw error
         }
 
+        // Initialize ExecManager
+        let execManager = ExecManager(containerManager: containerManager, logger: logger)
+        self.execManager = execManager
+
         // Create router and register routes
         let router = Router(logger: logger)
-        registerRoutes(router: router, containerManager: containerManager, imageManager: imageManager)
+        registerRoutes(router: router, containerManager: containerManager, imageManager: imageManager, execManager: execManager)
 
         // Create and start server
-        let server = ArcaServer(socketPath: socketPath, router: router, logger: logger)
+        let server = ArcaServer(socketPath: socketPath, router: router, execManager: execManager, containerManager: containerManager, logger: logger)
         self.server = server
 
         try await server.start()
@@ -107,12 +112,13 @@ public final class ArcaDaemon {
     }
 
     /// Register all API routes
-    private func registerRoutes(router: Router, containerManager: ContainerManager, imageManager: ImageManager) {
+    private func registerRoutes(router: Router, containerManager: ContainerManager, imageManager: ImageManager, execManager: ExecManager) {
         logger.info("Registering API routes")
 
         // Create handlers
         let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
+        let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
 
         // System endpoints - Ping (GET and HEAD)
         router.register(method: .GET, pattern: "/_ping") { _ in
@@ -300,7 +306,8 @@ public final class ArcaDaemon {
                 let until = try QueryParameterValidator.parseUnixTimestamp(request.queryParameters["until"], paramName: "until")
                 let tail = try QueryParameterValidator.parseTail(request.queryParameters["tail"])
 
-                let result = await containerHandlers.handleLogsContainer(
+                // Use streaming handler which supports both streaming and standard responses
+                return await containerHandlers.handleLogsContainerStreaming(
                     idOrName: id,
                     stdout: stdout,
                     stderr: stderr,
@@ -310,18 +317,6 @@ public final class ArcaDaemon {
                     timestamps: timestamps,
                     tail: tail
                 )
-
-                switch result {
-                case .success(let logsData):
-                    // Return binary multiplexed stream data
-                    var headers = HTTPHeaders()
-                    headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
-                    headers.add(name: "Content-Length", value: "\(logsData.count)")
-                    return .standard(HTTPResponse(status: .ok, headers: headers, body: logsData))
-                case .failure(let error):
-                    let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                    return .standard(HTTPResponse.error(error.description, status: status))
-                }
             } catch let error as ValidationError {
                 return .standard(error.toHTTPResponse())
             } catch {
@@ -334,35 +329,20 @@ public final class ArcaDaemon {
                 return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
             }
 
-            // Parse attach parameters (similar to logs endpoint)
             let stdout = request.queryParameters["stdout"] == "1"
             let stderr = request.queryParameters["stderr"] == "1"
             let stream = request.queryParameters["stream"] == "1"
 
-            // For now, use the logs handler to return container output
-            // Full attach implementation would require HTTP hijacking for bidirectional streaming
-            let result = await containerHandlers.handleLogsContainer(
+            return await containerHandlers.handleLogsContainerStreaming(
                 idOrName: id,
                 stdout: stdout,
                 stderr: stderr,
-                follow: stream,  // Use stream param for follow
+                follow: stream,
                 since: nil,
                 until: nil,
                 timestamps: false,
                 tail: nil
             )
-
-            switch result {
-            case .success(let logsData):
-                // Return binary multiplexed stream for attach
-                var headers = HTTPHeaders()
-                headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
-                headers.add(name: "Content-Length", value: "\(logsData.count)")
-                return .standard(HTTPResponse(status: .ok, headers: headers, body: logsData))
-            case .failure(let error):
-                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                return .standard(HTTPResponse.error(error.description, status: status))
-            }
         }
 
         router.register(method: .POST, pattern: "/containers/{id}/wait") { request in
@@ -377,6 +357,93 @@ public final class ArcaDaemon {
             case .success(let exitCode):
                 let response = ["StatusCode": exitCode]
                 return .standard(HTTPResponse.json(response))
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
+        router.register(method: .POST, pattern: "/containers/{id}/resize") { request in
+            guard let id = request.pathParameters["id"] else {
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+            }
+
+            let height = request.queryParameters["h"].flatMap { Int($0) }
+            let width = request.queryParameters["w"].flatMap { Int($0) }
+
+            let result = await containerHandlers.handleResizeContainer(id: id, height: height, width: width)
+
+            switch result {
+            case .success:
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Length", value: "0")
+                return .standard(HTTPResponse(status: .ok, headers: headers))
+            case .failure(let error):
+                return .standard(HTTPResponse.error(error.description, status: .internalServerError))
+            }
+        }
+
+        // Exec endpoints
+        router.register(method: .POST, pattern: "/containers/{id}/exec") { request in
+            guard let id = request.pathParameters["id"] else {
+                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+            }
+
+            // Parse JSON body
+            guard let body = request.body,
+                  let execConfig = try? JSONDecoder().decode(ExecConfig.self, from: body) else {
+                return .standard(HTTPResponse.error("Invalid or missing request body", status: .badRequest))
+            }
+
+            let result = await execHandlers.handleCreateExec(containerID: id, config: execConfig)
+
+            switch result {
+            case .success(let response):
+                return .standard(HTTPResponse.json(response, status: .created))
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not running") ? .conflict : .internalServerError
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
+        router.register(method: .POST, pattern: "/exec/{id}/start") { request in
+            guard let id = request.pathParameters["id"] else {
+                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+            }
+
+            // Parse JSON body
+            guard let body = request.body,
+                  let startConfig = try? JSONDecoder().decode(ExecStartConfig.self, from: body) else {
+                return .standard(HTTPResponse.error("Invalid or missing request body", status: .badRequest))
+            }
+
+            // Handler returns HTTPResponseType directly (streaming or standard)
+            return await execHandlers.handleStartExec(execID: id, config: startConfig)
+        }
+
+        // Exec endpoints - Resize
+        router.register(method: .POST, pattern: "/exec/{id}/resize") { request in
+            guard let id = request.pathParameters["id"] else {
+                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+            }
+
+            let height = request.queryParameters["h"].flatMap(Int.init)
+            let width = request.queryParameters["w"].flatMap(Int.init)
+
+            return await execHandlers.handleResizeExec(execID: id, height: height, width: width)
+        }
+
+        // Exec endpoints - Inspect
+        router.register(method: .GET, pattern: "/exec/{id}/json") { request in
+            guard let id = request.pathParameters["id"] else {
+                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+            }
+
+            let result = await execHandlers.handleInspectExec(execID: id)
+
+            switch result {
+            case .success(let inspect):
+                return .standard(HTTPResponse.json(inspect))
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
                 return .standard(HTTPResponse.error(error.description, status: status))
@@ -471,7 +538,7 @@ public final class ArcaDaemon {
             }
         }
 
-        logger.info("Registered 14 routes")
+        logger.info("Registered 17 routes")
     }
 
     /// Check if the daemon is running

@@ -26,7 +26,42 @@ public actor ContainerManager {
     // Background monitoring tasks
     private var monitoringTasks: [String: Task<Void, Never>] = [:]  // Docker ID -> Monitoring Task
 
+    // Pending attach connections for interactive containers (docker run -it)
+    private var pendingAttaches: [String: (handles: AttachHandles, exitSignal: AsyncStream<Void>.Continuation)] = [:]
+
+    // Deferred container configurations (for attached containers)
+    private var deferredConfigs: [String: DeferredContainerConfig] = [:]  // Docker ID -> Config
+
     private var nativeManager: Containerization.ContainerManager?
+
+    /// Configuration for a container whose .create() was deferred
+    private struct DeferredContainerConfig {
+        let image: Containerization.Image
+        let command: [String]?
+        let env: [String]?
+        let workingDir: String?
+        let hostname: String
+    }
+
+    /// Handles for an attached container (stdin/stdout/stderr streams)
+    public struct AttachHandles: Sendable {
+        public let stdin: ChannelReader
+        public let stdout: StreamingWriter
+        public let stderr: StreamingWriter
+        public let waitForExit: @Sendable () async throws -> Void
+
+        public init(
+            stdin: ChannelReader,
+            stdout: StreamingWriter,
+            stderr: StreamingWriter,
+            waitForExit: @escaping @Sendable () async throws -> Void
+        ) {
+            self.stdin = stdin
+            self.stdout = stdout
+            self.stderr = stderr
+            self.waitForExit = waitForExit
+        }
+    }
 
     public init(imageManager: ImageManager, kernelPath: String, logger: Logger) {
         self.imageManager = imageManager
@@ -175,11 +210,18 @@ public actor ContainerManager {
         command: [String]?,
         env: [String]?,
         workingDir: String?,
-        labels: [String: String]?
+        labels: [String: String]?,
+        attachStdin: Bool = false,
+        attachStdout: Bool = false,
+        attachStderr: Bool = false,
+        tty: Bool = false,
+        openStdin: Bool = false
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
-            "name": "\(name ?? "auto")"
+            "name": "\(name ?? "auto")",
+            "attach": "\(attachStdin || attachStdout || attachStderr)",
+            "tty": "\(tty)"
         ])
 
         // Generate Docker-compatible ID
@@ -207,58 +249,94 @@ public actor ContainerManager {
         let (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
         logWriters[dockerID] = (stdoutWriter, stderrWriter)
 
-        // Create container using Containerization API
-        logger.info("Creating container with Containerization API", metadata: [
-            "docker_id": "\(dockerID)",
-            "hostname": "\(containerName)"
-        ])
+        // For attached containers (docker run -it), defer container creation until start
+        // This allows us to configure stdio with attach handles when they're provided
+        let isAttached = (attachStdin || attachStdout || attachStderr) && openStdin
+        let shouldDeferCreate = isAttached
 
-        let linuxContainer = try await manager.create(
-            dockerID,
-            image: containerImage,
-            rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-        ) { config in
-            // Configure the container process (OCI-compliant)
-            // Note: config.process is already initialized from image config via init(from:)
+        let nativeID: String
+        let linuxContainer: LinuxContainer?
 
-            // Override with Docker API parameters if provided
-            if let command = command {
-                config.process.arguments = command
+        if shouldDeferCreate {
+            // Deferred containers: Don't create LinuxContainer yet
+            logger.info("Deferring container creation for attached container", metadata: [
+                "docker_id": "\(dockerID)",
+                "hostname": "\(containerName)"
+            ])
+
+            // Store deferred config for later use during start
+            deferredConfigs[dockerID] = DeferredContainerConfig(
+                image: containerImage,
+                command: command,
+                env: env,
+                workingDir: workingDir,
+                hostname: containerName
+            )
+
+            // Use Docker ID as native ID for deferred containers
+            // The actual LinuxContainer will be created during start
+            nativeID = dockerID
+            linuxContainer = nil
+        } else {
+            // Non-deferred containers: Create LinuxContainer immediately
+            logger.info("Creating container with Containerization API", metadata: [
+                "docker_id": "\(dockerID)",
+                "hostname": "\(containerName)"
+            ])
+
+            let container = try await manager.create(
+                dockerID,
+                image: containerImage,
+                rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
+            ) { config in
+                // Configure the container process (OCI-compliant)
+                // Note: config.process is already initialized from image config via init(from:)
+
+                // Override with Docker API parameters if provided
+                if let command = command {
+                    config.process.arguments = command
+                }
+
+                if let env = env {
+                    // Merge with existing env from image, Docker CLI behavior
+                    config.process.environmentVariables += env
+                }
+
+                if let workingDir = workingDir {
+                    config.process.workingDirectory = workingDir
+                }
+
+                // Set hostname (OCI spec field)
+                config.hostname = containerName
+
+                // Configure TTY mode
+                config.process.terminal = tty
+
+                // Configure stdout to write to log files (always needed)
+                config.process.stdout = stdoutWriter
+
+                // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
+                if !tty {
+                    config.process.stderr = stderrWriter
+                }
             }
 
-            if let env = env {
-                // Merge with existing env from image, Docker CLI behavior
-                config.process.environmentVariables += env
-            }
+            nativeID = container.id
+            linuxContainer = container
 
-            if let workingDir = workingDir {
-                config.process.workingDirectory = workingDir
-            }
-
-            // Set hostname (OCI spec field)
-            config.hostname = containerName
-
-            // Configure stdout/stderr to write to log files
-            // This enables Docker-compatible log retrieval
-            config.process.stdout = stdoutWriter
-            config.process.stderr = stderrWriter
+            // Call .create() to set up the VM
+            logger.info("Setting up container VM and runtime environment", metadata: [
+                "docker_id": "\(dockerID)",
+                "native_id": "\(nativeID)"
+            ])
+            try await container.create()
+            logger.info("Container VM created successfully", metadata: ["docker_id": "\(dockerID)"])
         }
 
-        // Extract native ID from LinuxContainer
-        let nativeID = linuxContainer.id
-
-        // Transition container from .initialized to .created state
-        // This sets up the VM, mounts rootfs, configures networking
-        logger.info("Setting up container VM and runtime environment", metadata: [
-            "docker_id": "\(dockerID)",
-            "native_id": "\(nativeID)"
-        ])
-
-        try await linuxContainer.create()
-        logger.info("Container VM created successfully", metadata: ["docker_id": "\(dockerID)"])
-
-        // Store the native container object for later operations (start, stop, etc.)
-        nativeContainers[dockerID] = linuxContainer
+        // Store the native container object for later operations (if created)
+        if let container = linuxContainer {
+            nativeContainers[dockerID] = container
+        }
 
         // Register ID mapping
         registerIDMapping(dockerID: dockerID, nativeID: nativeID)
@@ -292,7 +370,9 @@ public actor ContainerManager {
             pid: 0,
             exitCode: 0,
             startedAt: nil,
-            finishedAt: nil
+            finishedAt: nil,
+            tty: tty,
+            needsCreate: shouldDeferCreate
         )
 
         containers[dockerID] = containerInfo
@@ -348,6 +428,23 @@ public actor ContainerManager {
         return nil
     }
 
+    // MARK: - Container Attach Support
+
+    /// Register attach handles for a container (called before container starts)
+    /// Used for interactive containers (docker run -it)
+    public func registerAttach(containerID: String, handles: AttachHandles, exitSignal: AsyncStream<Void>.Continuation) {
+        logger.debug("Registering attach handles", metadata: ["container_id": "\(containerID)"])
+        pendingAttaches[containerID] = (handles: handles, exitSignal: exitSignal)
+    }
+
+    /// Consume and remove pending attach handles for a container
+    /// Returns nil if no attach handles are registered
+    private func consumeAttachHandles(containerID: String) -> (handles: AttachHandles, exitSignal: AsyncStream<Void>.Continuation)? {
+        return pendingAttaches.removeValue(forKey: containerID)
+    }
+
+    // MARK: - Container Lifecycle
+
     /// Start a container
     public func startContainer(id: String) async throws {
         logger.info("Starting container", metadata: ["id": "\(id)"])
@@ -361,21 +458,120 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Get the native container object
-        guard let nativeContainer = nativeContainers[dockerID] else {
-            logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
-            throw ContainerManagerError.containerNotFound(id)
+        // Get manager
+        guard var manager = nativeManager else {
+            logger.error("ContainerManager not initialized")
+            throw ContainerManagerError.notInitialized
         }
 
-        // Start the container using Containerization API
-        // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
-        // After a container exits and we call stop(), it goes back to .stopped state
-        // To restart, we must call create() again to transition .stopped -> .created
-        if info.state == "exited" {
-            logger.info("Container is exited, calling create() before start()", metadata: [
-                "id": "\(dockerID)"
-            ])
-            try await nativeContainer.create()
+        // Check if this is a deferred container (needs creation)
+        let nativeContainer: LinuxContainer
+        let attachInfo: (handles: AttachHandles, exitSignal: AsyncStream<Void>.Continuation)?
+
+        if info.needsCreate {
+            // Container creation was deferred - create it now
+            logger.info("Creating deferred container", metadata: ["id": "\(dockerID)"])
+
+            // Get deferred config
+            guard let config = deferredConfigs.removeValue(forKey: dockerID) else {
+                logger.error("Deferred config not found", metadata: ["id": "\(dockerID)"])
+                throw ContainerManagerError.containerNotFound(id)
+            }
+
+            // Check for attach handles
+            attachInfo = consumeAttachHandles(containerID: dockerID)
+
+            // Get log writers
+            guard let (stdoutLogWriter, stderrLogWriter) = logWriters[dockerID] else {
+                logger.error("Log writers not found", metadata: ["id": "\(dockerID)"])
+                throw ContainerManagerError.containerNotFound(id)
+            }
+
+            // Create stdout/stderr writers (MultiWriter if attached, otherwise just log writers)
+            let stdoutWriter: Writer
+            let stderrWriter: Writer
+
+            if let attach = attachInfo {
+                // Use MultiWriter to send output to both logs AND attach handles
+                stdoutWriter = MultiWriter(writers: [stdoutLogWriter, attach.handles.stdout])
+                stderrWriter = MultiWriter(writers: [stderrLogWriter, attach.handles.stderr])
+                logger.info("Using MultiWriter for attached container", metadata: ["id": "\(dockerID)"])
+            } else {
+                // No attach - just use log writers
+                stdoutWriter = stdoutLogWriter
+                stderrWriter = stderrLogWriter
+            }
+
+            // Create the LinuxContainer with proper stdio configuration
+            let container = try await manager.create(
+                dockerID,
+                image: config.image,
+                rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
+            ) { containerConfig in
+                // Override with Docker API parameters
+                if let command = config.command {
+                    containerConfig.process.arguments = command
+                }
+
+                if let env = config.env {
+                    // Merge with existing env from image
+                    containerConfig.process.environmentVariables += env
+                }
+
+                if let workingDir = config.workingDir {
+                    containerConfig.process.workingDirectory = workingDir
+                }
+
+                // Set hostname
+                containerConfig.hostname = config.hostname
+
+                // Configure TTY mode
+                containerConfig.process.terminal = info.tty
+
+                // Configure stdout (always needed)
+                containerConfig.process.stdout = stdoutWriter
+
+                // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
+                if !info.tty {
+                    containerConfig.process.stderr = stderrWriter
+                }
+
+                // Configure stdin if attached
+                if let attach = attachInfo {
+                    containerConfig.process.stdin = attach.handles.stdin
+                }
+            }
+
+            // Call .create() to set up the VM
+            logger.info("Setting up container VM and runtime environment", metadata: ["id": "\(dockerID)"])
+            try await container.create()
+            logger.info("Container VM created successfully", metadata: ["id": "\(dockerID)"])
+
+            // Store the container
+            nativeContainers[dockerID] = container
+            nativeContainer = container
+
+            // Update needsCreate flag
+            info.needsCreate = false
+        } else {
+            // Container already created - get it
+            guard let container = nativeContainers[dockerID] else {
+                logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
+                throw ContainerManagerError.containerNotFound(id)
+            }
+            nativeContainer = container
+            attachInfo = nil
+
+            // Start the container using Containerization API
+            // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
+            // After a container exits and we call stop(), it goes back to .stopped state
+            // To restart, we must call create() again to transition .stopped -> .created
+            if info.state == "exited" {
+                logger.info("Container is exited, calling create() before start()", metadata: [
+                    "id": "\(dockerID)"
+                ])
+                try await nativeContainer.create()
+            }
         }
 
         logger.info("Starting container with Containerization API", metadata: [
@@ -397,7 +593,7 @@ public actor ContainerManager {
 
         // Spawn background monitoring task to detect when container exits
         // The task waits for the container to exit, then calls back into the actor to update state
-        let monitoringTask = Task { [weak self, logger] in
+        let monitoringTask = Task { [weak self, logger, attachInfo] in
             do {
                 logger.debug("Background monitor: waiting for container to exit", metadata: ["id": "\(dockerID)"])
                 let exitStatus = try await nativeContainer.wait(timeoutInSeconds: nil)
@@ -406,6 +602,19 @@ public actor ContainerManager {
                     "id": "\(dockerID)",
                     "exit_code": "\(exitStatus.exitCode)"
                 ])
+
+                // Signal exit to attach connection if present
+                if let attach = attachInfo {
+                    logger.debug("Signaling exit to attach connection", metadata: ["id": "\(dockerID)"])
+
+                    // Close stdout/stderr writers to finish the stream continuations
+                    try? attach.handles.stdout.close()
+                    try? attach.handles.stderr.close()
+
+                    // Signal exit
+                    attach.exitSignal.yield(())
+                    attach.exitSignal.finish()
+                }
 
                 // After wait() completes, we MUST call stop() to clean up the VM
                 // and transition the container from .started to .stopped state
@@ -423,6 +632,18 @@ public actor ContainerManager {
                     "id": "\(dockerID)",
                     "error": "\(error)"
                 ])
+
+                // Signal exit to attach connection even on error
+                if let attach = attachInfo {
+                    // Close stdout/stderr writers to finish the stream continuations
+                    try? attach.handles.stdout.close()
+                    try? attach.handles.stderr.close()
+
+                    // Signal exit
+                    attach.exitSignal.yield(())
+                    attach.exitSignal.finish()
+                }
+
                 await self?.cleanupMonitoringTask(dockerID: dockerID)
             }
         }
@@ -501,15 +722,9 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Cancel monitoring task if running and wait for it to complete
-        if let task = monitoringTasks.removeValue(forKey: dockerID) {
-            task.cancel()
-            // Wait for the task to fully complete to avoid file descriptor races
-            _ = await task.result
-        }
-
-        // Stop the container to ensure proper resource cleanup
-        // This closes file descriptors and cleans up VM resources
+        // CRITICAL: Stop the container FIRST before waiting for monitoring task
+        // This avoids deadlock where monitoring task is waiting for container to exit
+        // and we're waiting for monitoring task to finish
         if info.state == "running" || info.state == "created" {
             if force || info.state == "created" {
                 logger.info("Stopping container before removal", metadata: [
@@ -521,6 +736,14 @@ public actor ContainerManager {
                 // Already checked above, but being explicit
                 throw ContainerManagerError.containerRunning(id)
             }
+        }
+
+        // Cancel monitoring task if running and wait for it to complete
+        // Safe to wait now since we've already stopped the container above
+        if let task = monitoringTasks.removeValue(forKey: dockerID) {
+            task.cancel()
+            // Wait for the task to fully complete to avoid file descriptor races
+            _ = await task.result
         }
 
         // For exited containers, still call stop() to ensure cleanup
@@ -641,6 +864,29 @@ public actor ContainerManager {
         return logManager.getLogPaths(dockerID: dockerID)
     }
 
+    // MARK: - Helpers for ExecManager
+
+    /// Get container state by ID (for checking if container is running)
+    public func getContainerState(id: String) async -> String? {
+        guard let dockerID = resolveContainerID(id) else {
+            return nil
+        }
+        return containers[dockerID]?.state
+    }
+
+    /// Check if container is running (for log streaming)
+    public func isContainerRunning(dockerID: String) async -> Bool {
+        return containers[dockerID]?.state == "running"
+    }
+
+    /// Get native container instance by ID (for exec operations)
+    public func getNativeContainer(id: String) async -> LinuxContainer? {
+        guard let dockerID = resolveContainerID(id) else {
+            return nil
+        }
+        return nativeContainers[dockerID]
+    }
+
     // MARK: - ID Mapping
 
     /// Generate a Docker-compatible 64-character hex ID
@@ -739,6 +985,8 @@ public actor ContainerManager {
         var exitCode: Int
         var startedAt: Date?
         var finishedAt: Date?
+        let tty: Bool  // Whether container was created with TTY
+        var needsCreate: Bool  // Whether .create() was deferred (for attached containers)
     }
 
 }

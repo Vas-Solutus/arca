@@ -3,19 +3,28 @@ import Logging
 import NIO
 import NIOHTTP1
 import NIOPosix
+import ContainerBridge
 
 /// The Arca HTTP server that listens on a Unix socket
-public final class ArcaServer {
+/// @unchecked Sendable: Safe because:
+/// - Immutable properties (socketPath, router, execManager, containerManager, logger) are set during init and never modified
+/// - Mutable properties (group, channel) are only accessed from server lifecycle methods (start/shutdown)
+/// - NIO guarantees channel initializer closures are properly isolated to their event loops
+public final class ArcaServer: @unchecked Sendable {
     private let socketPath: String
     private let router: Router
+    private let execManager: ExecManager
+    private let containerManager: ContainerManager
     private let logger: Logger
 
     private var group: MultiThreadedEventLoopGroup?
     private var channel: Channel?
 
-    public init(socketPath: String, router: Router, logger: Logger) {
+    public init(socketPath: String, router: Router, execManager: ExecManager, containerManager: ContainerManager, logger: Logger) {
         self.socketPath = socketPath
         self.router = router
+        self.execManager = execManager
+        self.containerManager = containerManager
         self.logger = logger
     }
 
@@ -38,7 +47,20 @@ public final class ArcaServer {
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.configureHTTPServerPipeline().flatMap {
+                // Create Docker raw stream upgrader for exec/attach operations
+                let dockerUpgrader = DockerRawStreamUpgrader(execManager: self.execManager, containerManager: self.containerManager, logger: self.logger)
+
+                // Configure HTTP pipeline with upgrade support
+                return channel.pipeline.configureHTTPServerPipeline(
+                    withServerUpgrade: (
+                        upgraders: [dockerUpgrader],
+                        completionHandler: { context in
+                            // Upgrade completed successfully
+                            self.logger.debug("HTTP upgrade completed for connection")
+                        }
+                    )
+                ).flatMap {
+                    // Add our HTTP handler for normal (non-upgraded) requests
                     channel.pipeline.addHandler(HTTPHandler(router: self.router, logger: self.logger))
                 }
             }

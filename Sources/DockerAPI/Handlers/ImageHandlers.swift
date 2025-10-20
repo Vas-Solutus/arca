@@ -15,12 +15,8 @@ public struct ImageHandlers: Sendable {
         self.logger = logger
     }
 
-    /// Get proper error description from Swift errors
-    /// Uses CustomStringConvertible description for our error types, falls back to localizedDescription
+    /// Get error description for HTTP responses
     private func errorDescription(_ error: Error) -> String {
-        if let describable = error as? CustomStringConvertible {
-            return describable.description
-        }
         return error.localizedDescription
     }
 

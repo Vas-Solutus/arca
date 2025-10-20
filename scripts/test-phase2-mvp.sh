@@ -201,11 +201,13 @@ ATTACH_CONTAINER="arca-attach-test-$(date +%s)"
 ATTACH_ID=$(docker run -d --name "$ATTACH_CONTAINER" "$TEST_IMAGE" sh -c 'for i in 1 2 3; do echo "Line $i"; sleep 1; done')
 ATTACH_SHORT_ID="${ATTACH_ID:0:12}"
 
-echo -e "${YELLOW}Command:${NC} docker logs --follow $ATTACH_SHORT_ID (timeout 5s)"
-timeout 5s docker logs --follow "$ATTACH_SHORT_ID" > /tmp/attach_output.txt 2>&1 &
+echo -e "${YELLOW}Command:${NC} docker logs --follow $ATTACH_SHORT_ID (with 5s timeout)"
+# macOS doesn't have timeout command, so use background job + kill
+docker logs --follow "$ATTACH_SHORT_ID" > /tmp/attach_output.txt 2>&1 &
 LOG_PID=$!
 sleep 4
 kill $LOG_PID 2>/dev/null || true
+wait $LOG_PID 2>/dev/null || true
 
 if grep -q "Line 1" /tmp/attach_output.txt && grep -q "Line 2" /tmp/attach_output.txt; then
     echo -e "${YELLOW}Output:${NC}"
@@ -274,7 +276,8 @@ fi
 # Test 13: Error handling - invalid command
 print_test "Test 13: Error handling - invalid exec command"
 INVALID_OUTPUT=$(docker exec "$SHORT_ID" /nonexistent/command 2>&1)
-if echo "$INVALID_OUTPUT" | grep -qE "(not found|cannot execute|no such file)"; then
+# Accept both Docker error format and Apple Containerization framework error format
+if echo "$INVALID_OUTPUT" | grep -qE "(not found|cannot execute|no such file|Failed to find target executable)"; then
     print_success "Correctly returns error for invalid command"
 else
     echo -e "${RED}Output:${NC} $INVALID_OUTPUT"
@@ -283,7 +286,11 @@ fi
 
 # Cleanup
 print_info "Cleaning up test containers..."
-docker rm -f "$SHORT_ID" >/dev/null 2>&1
+# Get all test containers and clean them up
+for container in $(docker ps -aq --filter "name=arca-" 2>/dev/null); do
+    print_info "Removing container $container..."
+    docker rm -f "$container" 2>&1 | head -1 || true
+done
 rm -f /tmp/attach_output.txt
 
 # Print summary

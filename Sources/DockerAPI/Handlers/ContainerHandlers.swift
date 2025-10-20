@@ -16,12 +16,8 @@ public struct ContainerHandlers: Sendable {
         self.logger = logger
     }
 
-    /// Get proper error description from Swift errors
-    /// Uses CustomStringConvertible description for our error types, falls back to localizedDescription
+    /// Get error description from Swift errors
     private func errorDescription(_ error: Error) -> String {
-        if let describable = error as? CustomStringConvertible {
-            return describable.description
-        }
         return error.localizedDescription
     }
 
@@ -117,7 +113,12 @@ public struct ContainerHandlers: Sendable {
                 command: request.cmd,
                 env: request.env,
                 workingDir: request.workingDir,
-                labels: request.labels
+                labels: request.labels,
+                attachStdin: request.attachStdin ?? false,
+                attachStdout: request.attachStdout ?? false,
+                attachStderr: request.attachStderr ?? false,
+                tty: request.tty ?? false,
+                openStdin: request.openStdin ?? false
             )
 
             logger.info("Container created", metadata: [
@@ -379,6 +380,195 @@ public struct ContainerHandlers: Sendable {
         }
     }
 
+    /// Handle GET /containers/{id}/logs with streaming support
+    /// Streams container logs when follow=true
+    public func handleLogsContainerStreaming(
+        idOrName: String,
+        stdout: Bool,
+        stderr: Bool,
+        follow: Bool,
+        since: Int?,
+        until: Int?,
+        timestamps: Bool,
+        tail: String?
+    ) async -> HTTPResponseType {
+        logger.info("Handling container logs request (streaming)", metadata: [
+            "id_or_name": "\(idOrName)",
+            "follow": "\(follow)"
+        ])
+
+        // Resolve container
+        guard let dockerID = await containerManager.resolveContainer(idOrName: idOrName) else {
+            return .standard(HTTPResponse.error("No such container: \(idOrName)", status: .notFound))
+        }
+
+        // Get log file paths
+        guard let logPaths = containerManager.getLogPaths(dockerID: dockerID) else {
+            return .standard(HTTPResponse.error("No logs found for container", status: .notFound))
+        }
+
+        // If not following, use standard response
+        if !follow {
+            do {
+                let logs = try retrieveLogs(
+                    logPaths: logPaths,
+                    stdout: stdout,
+                    stderr: stderr,
+                    since: since,
+                    until: until,
+                    timestamps: timestamps,
+                    tail: tail
+                )
+                let multiplexedData = formatMultiplexedStream(logs: logs)
+                return .standard(HTTPResponse(
+                    status: .ok,
+                    headers: HTTPHeaders([("Content-Type", "application/vnd.docker.raw-stream")]),
+                    body: multiplexedData
+                ))
+            } catch {
+                return .standard(HTTPResponse.error("Failed to retrieve logs: \(error)", status: .internalServerError))
+            }
+        }
+
+        // Streaming response
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: "application/vnd.docker.raw-stream")
+
+        return .streaming(status: .ok, headers: headers) { writer in
+            do {
+                // Stream existing logs first
+                let existingLogs = try self.retrieveLogs(
+                    logPaths: logPaths,
+                    stdout: stdout,
+                    stderr: stderr,
+                    since: since,
+                    until: until,
+                    timestamps: timestamps,
+                    tail: tail
+                )
+
+                let existingData = self.formatMultiplexedStream(logs: existingLogs)
+                if !existingData.isEmpty {
+                    try await writer.write(existingData)
+                }
+
+                // If following, watch for new log entries
+                if follow {
+                    try await self.streamNewLogs(
+                        dockerID: dockerID,
+                        logPaths: logPaths,
+                        stdout: stdout,
+                        stderr: stderr,
+                        timestamps: timestamps,
+                        writer: writer
+                    )
+                }
+
+                try await writer.finish()
+            } catch {
+                self.logger.error("Log streaming error", metadata: ["error": "\(error)"])
+                try? await writer.finish()
+            }
+        }
+    }
+
+    /// Stream new log entries as they appear
+    private func streamNewLogs(
+        dockerID: String,
+        logPaths: ContainerBridge.ContainerLogManager.LogPaths,
+        stdout: Bool,
+        stderr: Bool,
+        timestamps: Bool,
+        writer: HTTPStreamWriter
+    ) async throws {
+        // Track last read positions
+        var stdoutPosition = try? getFileSize(logPaths.stdoutPath)
+        var stderrPosition = try? getFileSize(logPaths.stderrPath)
+
+        // Poll for new log data every 100ms until container exits
+        while await containerManager.isContainerRunning(dockerID: dockerID) {
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+
+            // Check stdout for new data
+            if stdout, let currentSize = try? getFileSize(logPaths.stdoutPath),
+               currentSize > (stdoutPosition ?? 0) {
+                if let newData = try? readNewLogData(
+                    path: logPaths.stdoutPath,
+                    from: stdoutPosition ?? 0,
+                    streamType: "stdout",
+                    timestamps: timestamps
+                ) {
+                    try await writer.write(newData)
+                    stdoutPosition = currentSize
+                }
+            }
+
+            // Check stderr for new data
+            if stderr, let currentSize = try? getFileSize(logPaths.stderrPath),
+               currentSize > (stderrPosition ?? 0) {
+                if let newData = try? readNewLogData(
+                    path: logPaths.stderrPath,
+                    from: stderrPosition ?? 0,
+                    streamType: "stderr",
+                    timestamps: timestamps
+                ) {
+                    try await writer.write(newData)
+                    stderrPosition = currentSize
+                }
+            }
+        }
+    }
+
+    /// Get file size in bytes
+    private func getFileSize(_ path: URL) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
+        return attributes[.size] as? UInt64 ?? 0
+    }
+
+    /// Read new log data from position to end of file
+    private func readNewLogData(path: URL, from position: UInt64, streamType: String, timestamps: Bool) throws -> Data {
+        let fileHandle = try FileHandle(forReadingFrom: path)
+        defer { try? fileHandle.close() }
+
+        try fileHandle.seek(toOffset: position)
+        let data = fileHandle.readDataToEndOfFile()
+
+        guard let content = String(data: data, encoding: .utf8) else {
+            return Data()
+        }
+
+        let lines = content.components(separatedBy: .newlines)
+        var logEntries: [LogEntry] = []
+
+        for line in lines {
+            guard !line.isEmpty else { continue }
+
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let logStream = json["stream"] as? String,
+                  let logMessage = json["log"] as? String,
+                  let timeString = json["time"] as? String else {
+                continue
+            }
+
+            let formatter = ISO8601DateFormatter()
+            guard let timestamp = formatter.date(from: timeString) else {
+                continue
+            }
+
+            if logStream == streamType {
+                logEntries.append(LogEntry(
+                    stream: logStream,
+                    message: logMessage,
+                    timestamp: timestamp,
+                    includeTimestamp: timestamps
+                ))
+            }
+        }
+
+        return formatMultiplexedStream(logs: logEntries)
+    }
+
     /// Retrieve and filter container logs from JSON log files
     /// Returns array of log entries with stream type, message, and timestamp
     private func retrieveLogs(
@@ -543,6 +733,22 @@ public struct ContainerHandlers: Sendable {
             ])
             return .failure(ContainerError.inspectFailed(errorDescription(error)))
         }
+    }
+
+    /// Handle POST /containers/{id}/resize
+    /// Resize the TTY for a container
+    public func handleResizeContainer(id: String, height: Int?, width: Int?) async -> Result<Void, ContainerError> {
+        logger.info("Handling container resize request", metadata: [
+            "id": "\(id)",
+            "height": "\(height ?? 0)",
+            "width": "\(width ?? 0)"
+        ])
+
+        // TODO: Implement container TTY resizing via Containerization API
+        // For now, just return success to prevent 404 errors
+        // The container will use default terminal size
+        logger.debug("Container resize not yet implemented, ignoring", metadata: ["id": "\(id)"])
+        return .success(())
     }
 }
 
