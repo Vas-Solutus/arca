@@ -533,52 +533,661 @@ docker logs -f <container-id>
 
 ---
 
-## Phase 3: Docker Compose Support (Weeks 6-8)
+## Phase 3: Docker Compose Support via OVN/OVS Helper VM (Weeks 6-12)
 
-### API Endpoints to Implement
+**Architecture**: See `Documentation/NETWORK_ARCHITECTURE.md` for complete design.
 
-#### Networking
-- `GET /networks` - List networks
-- `GET /networks/{id}` - Inspect network
-- `POST /networks/create` - Create network
-- `DELETE /networks/{id}` - Remove network
-- `POST /networks/{id}/connect` - Connect container to network
-- `POST /networks/{id}/disconnect` - Disconnect container
+This phase implements Docker-compatible networking using a lightweight Linux VM running OVN/OVS, providing full Docker Network API compatibility with enterprise-grade security.
 
-#### Volumes
-- `GET /volumes` - List volumes
-- `GET /volumes/{name}` - Inspect volume
-- `POST /volumes/create` - Create volume
-- `DELETE /volumes/{name}` - Remove volume
+### Phase 3.1: Helper VM Foundation (Week 1-2) ✅ COMPLETE
 
-### Architectural Mapping
+**Note**: Due to grpc-swift framework limitation (no vsock support in v1 or v2), implementation uses TCP localhost communication instead of vsock. This is documented as a framework constraint, not a shortcut.
 
-**Docker Networks → Apple Container DNS:**
-```swift
-// Translate Docker bridge network to Apple's DNS
-// containers on "my-network" become:
-// container-name.my-network.container.internal
-```
+#### Helper VM Image Creation
 
-**Docker Volumes → Apple Container Volumes:**
-```swift
-// Map Docker named volumes to container volume paths
-// Handle VirtioFS limitations with read-only mounts where needed
-```
+- [x] **Create Alpine Linux base image for helper VM**
+  - Use Alpine 3.22 (latest stable) as base (~50MB)
+  - Install OVN/OVS packages: openvswitch, openvswitch-ovn
+  - Install dnsmasq for DNS resolution
+  - Install Go runtime for control API server
+  - Target size: <100MB total
+  - Files: `scripts/build-helper-vm.sh`, `helpervm/Dockerfile`
+  - **COMPLETED**: Alpine 3.22 Dockerfile with OVN/OVS stack
 
-### Success Criteria
+- [x] **Build OVN/OVS control API server in Go**
+  - Define gRPC service in `helpervm/proto/network.proto`
+  - Implement NetworkControl service with methods:
+    - CreateBridge(networkID, subnet, gateway)
+    - DeleteBridge(networkID)
+    - AttachContainer(containerID, networkID, ip, mac, hostname, aliases)
+    - DetachContainer(containerID, networkID)
+    - ListBridges()
+    - SetNetworkPolicy(networkID, rules)
+    - GetHealth() - Health check endpoint
+  - Use TCP listener on port 9999 (grpc-swift limitation: no vsock support)
+  - Translate gRPC calls to ovs-vsctl/ovn-nbctl commands
+  - Files: `helpervm/control-api/main.go`, `helpervm/control-api/server.go`
+  - **COMPLETED**: Go gRPC server with all NetworkControl methods implemented
+
+- [x] **Create helper VM startup script**
+  - Start OVS daemon (ovs-vswitchd, ovsdb-server)
+  - Initialize OVN databases (ovn-nbctl init, ovn-sbctl init)
+  - Start OVN controller (ovn-controller)
+  - Start dnsmasq for DNS resolution
+  - Start control API server
+  - Files: `helpervm/scripts/startup.sh`, `helpervm/scripts/ovs-init.sh`
+  - **COMPLETED**: Full VM initialization sequence with OVN/OVS startup
+
+- [x] **Build helper VM disk image**
+  - Package Alpine + OVN/OVS + control API into disk image
+  - Use buildah/podman to create OCI image
+  - Convert to raw disk format for VZVirtualMachine
+  - Store in `~/.arca/helpervm/disk.img`
+  - Document build process in README
+  - Files: `Makefile` target for `make helpervm`, `scripts/build-helper-vm.sh`
+  - **COMPLETED**: Build infrastructure ready, Makefile target created
+
+#### NetworkHelperVM Swift Actor
+
+- [x] **Implement NetworkHelperVM actor for VM lifecycle**
+  - Launch helper VM using VZVirtualMachine
+  - VM configuration:
+    - CPU: 1 vCPU
+    - Memory: 256MB
+    - Disk: Helper VM image (~100MB)
+    - Network: VZNATNetworkDeviceAttachment for internet access
+    - Console: VZVirtioConsoleDeviceConfiguration for logging
+  - Monitor VM state and health
+  - Implement restart logic on crashes (max 3 retries)
+  - Handle graceful shutdown
+  - Files: `Sources/ContainerBridge/NetworkHelperVM.swift`
+  - **COMPLETED**: NetworkHelperVM actor with full VM lifecycle management
+
+- [x] **Implement OVNClient for gRPC communication**
+  - Create gRPC client using swift-grpc package
+  - Connect to helper VM via TCP localhost port 9999 (grpc-swift limitation)
+  - Implement methods mirroring control API:
+    - createBridge(networkID:subnet:gateway:)
+    - deleteBridge(networkID:)
+    - attachContainer(containerID:networkID:ip:mac:hostname:aliases:)
+    - detachContainer(containerID:networkID:)
+    - listBridges()
+    - setNetworkPolicy(networkID:rules:)
+    - getHealth() - Health check
+  - Handle connection failures with proper error handling
+  - Files: `Sources/ContainerBridge/OVNClient.swift`
+  - **COMPLETED**: OVNClient actor with all gRPC methods implemented
+
+- [x] **Generate Swift gRPC stubs from proto**
+  - Add swift-protobuf and swift-grpc to Package.swift
+  - Generate Swift code from `network.proto`
+  - Add build script to regenerate on proto changes
+  - Install protoc-gen-grpc-swift v1.27.0 (matches grpc-swift dependency)
+  - Files: `Package.swift`, `scripts/generate-grpc.sh`, `Sources/ContainerBridge/Generated/network.pb.swift`
+  - **COMPLETED**: Generated code with public visibility, Makefile target for plugin installation
+
+- [ ] **Test helper VM launch and basic OVN operations**
+  - Integration test: Launch helper VM and verify health
+  - Test bridge creation via OVNClient
+  - Test bridge deletion
+  - Test TCP connectivity
+  - Verify OVN databases are initialized correctly
+  - Files: `Tests/ArcaTests/NetworkHelperVMTests.swift`
+
+### Phase 3.2: Network Management Layer (Week 3-4)
+
+#### NetworkManager Actor
+
+- [ ] **Implement NetworkManager actor with core state**
+  - Create NetworkMetadata struct (id, name, driver, subnet, gateway, containers, created, options)
+  - Maintain networks dictionary: [String: NetworkMetadata]
+  - Maintain containerNetworks mapping: [String: Set<String>]
+  - Initialize with reference to NetworkHelperVM
+  - Add actor isolation with Sendable conformance
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+- [ ] **Implement network creation logic**
+  - Generate Docker network ID (64-char hex)
+  - Validate network name (alphanumeric, hyphens, underscores)
+  - Parse and validate IPAM config (subnet, gateway, IP range)
+  - Call helperVM.createBridge() to create OVS bridge
+  - Store NetworkMetadata
+  - Return Docker-compatible network response
+  - Files: `Sources/ContainerBridge/NetworkManager.swift` (createNetwork method)
+
+- [ ] **Implement network deletion logic**
+  - Verify network exists
+  - Check no containers are attached (or force disconnect if force=true)
+  - Call helperVM.deleteBridge()
+  - Remove from networks dictionary
+  - Clean up IPAM state
+  - Files: `Sources/ContainerBridge/NetworkManager.swift` (deleteNetwork method)
+
+- [ ] **Implement network listing and inspection**
+  - listNetworks(filters:) - Support filters: name, id, driver, type
+  - inspectNetwork(id:) - Return full network details
+  - Translate to Docker API format
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+#### IPAM (IP Address Management)
+
+- [ ] **Create IPAMAllocator actor**
+  - Track IP allocations per network: [networkID: Set<String>]
+  - Implement allocateIP(networkID:subnet:preferredIP:)
+    - Parse CIDR notation
+    - Reserve .0 (network), .1 (gateway), .255 (broadcast)
+    - Find next available IP or use preferredIP if specified
+    - Mark IP as allocated
+    - Return IP address string
+  - Implement releaseIP(networkID:ip:)
+  - Handle subnet exhaustion error
+  - Files: `Sources/ContainerBridge/IPAMAllocator.swift`
+
+- [ ] **Implement default network subnet allocation**
+  - Docker default: 172.17.0.0/16 for "bridge" network
+  - Custom networks: Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16
+  - Detect subnet conflicts
+  - Support user-specified subnets
+  - Files: `Sources/ContainerBridge/IPAMAllocator.swift` (allocateSubnet method)
+
+- [ ] **Implement persistent IPAM state**
+  - Store allocations in `~/.arca/ipam.json`
+  - Load on daemon startup
+  - Save on every allocation/release
+  - Handle corrupted state file gracefully
+  - Files: `Sources/ContainerBridge/IPAMAllocator.swift`, `Sources/ContainerBridge/Config.swift`
+
+- [ ] **Test IPAM allocation and persistence**
+  - Unit test: Allocate/release IPs
+  - Test subnet exhaustion handling
+  - Test persistence across restarts
+  - Test conflict detection
+  - Files: `Tests/ArcaTests/IPAMAllocatorTests.swift`
+
+### Phase 3.3: Docker Network API Endpoints (Week 5-6)
+
+#### Network API Models
+
+- [ ] **Create Docker Network API request/response models**
+  - NetworkCreateRequest (Name, Driver, IPAM, Options, Labels)
+  - NetworkCreateResponse (Id, Warning)
+  - Network (full network object for inspect/list)
+  - NetworkConnectRequest (Container, EndpointConfig)
+  - NetworkDisconnectRequest (Container, Force)
+  - IPAM structs (Config, Address)
+  - Files: `Sources/DockerAPI/Models/Network.swift`
+
+- [ ] **Create NetworkHandlers**
+  - Implement handler methods returning HTTPResponseType
+  - Wire up NetworkManager calls
+  - Handle errors and translate to HTTP status codes
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+
+#### Network Endpoints
+
+- [ ] **POST /networks/create - Create network**
+  - Parse NetworkCreateRequest from body
+  - Validate driver (support "bridge", "overlay"; reject "host", "macvlan")
+  - Extract IPAM config (subnet, gateway, IP range)
+  - Call networkManager.createNetwork()
+  - Return NetworkCreateResponse with ID
+  - Error handling: 400 for invalid config, 409 for duplicate name, 500 for internal errors
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`, `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+- [ ] **GET /networks - List networks**
+  - Parse filters query parameter (JSON object: {"name": {"my-net": true}})
+  - Support filters: name, id, driver, type, label
+  - Call networkManager.listNetworks(filters:)
+  - Return array of Network objects
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+
+- [ ] **GET /networks/{id} - Inspect network**
+  - Parse network ID or name from path
+  - Support short ID prefix matching (12-char hex)
+  - Call networkManager.inspectNetwork()
+  - Return Network object with full details
+  - Error handling: 404 if not found
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+
+- [ ] **DELETE /networks/{id} - Delete network**
+  - Parse network ID or name
+  - Parse force query parameter
+  - Call networkManager.deleteNetwork(force:)
+  - Return 204 No Content on success
+  - Error handling: 404 if not found, 409 if containers attached and !force
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+
+- [ ] **POST /networks/{id}/connect - Connect container**
+  - Parse network ID and NetworkConnectRequest body
+  - Resolve container ID from name or ID
+  - Extract EndpointConfig (IPv4Address, Aliases)
+  - Allocate IP (use specified or auto-allocate)
+  - Generate MAC address
+  - Call helperVM.attachContainer()
+  - Create VZVirtioNetworkDeviceConfiguration with VZFileHandleNetworkDeviceAttachment
+  - Add network device to container VM config
+  - If container running: restart container (or hot-plug if supported)
+  - Update network and container metadata
+  - Error handling: 404 if network/container not found, 409 if already connected
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`, `Sources/ContainerBridge/NetworkManager.swift`
+
+- [ ] **POST /networks/{id}/disconnect - Disconnect container**
+  - Parse network ID and NetworkDisconnectRequest body
+  - Resolve container ID
+  - Parse force parameter
+  - Call helperVM.detachContainer()
+  - Remove network device from container VM config
+  - If container running: restart container
+  - Update network and container metadata
+  - Error handling: 404 if not found, 409 if not connected
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+
+- [ ] **Register network routes in ArcaDaemon**
+  - POST /networks/create → handleCreateNetwork
+  - GET /networks → handleListNetworks
+  - GET /networks/{id} → handleInspectNetwork
+  - DELETE /networks/{id} → handleDeleteNetwork
+  - POST /networks/{id}/connect → handleConnectNetwork
+  - POST /networks/{id}/disconnect → handleDisconnectNetwork
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+### Phase 3.4: Container Network Integration (Week 7-8)
+
+#### Container-Network Binding
+
+- [ ] **Update ContainerManager to track network attachments**
+  - Add networks field to ContainerMetadata: [String: NetworkAttachment]
+  - NetworkAttachment struct: (networkID, ip, mac, aliases)
+  - Load network attachments on daemon startup
+  - Persist network state in container metadata
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`, `Sources/ContainerBridge/Types.swift`
+
+- [ ] **Implement attachContainerToNetwork in ContainerManager**
+  - Accept networkID and optional IP/aliases
+  - Call networkManager to allocate IP
+  - Generate MAC address (format: 02:XX:XX:XX:XX:XX)
+  - Call helperVM.attachContainer() to create OVS port
+  - Create socket pair for virtio-net
+  - Build VZVirtioNetworkDeviceConfiguration with VZFileHandleNetworkDeviceAttachment
+  - Add device to container VM configuration
+  - Update container and network metadata
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Implement detachContainerFromNetwork in ContainerManager**
+  - Remove network device from VM configuration
+  - Call helperVM.detachContainer() to delete OVS port
+  - Release IP back to IPAM
+  - Update metadata
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Update container creation to support --network flag**
+  - Parse networks from ContainerCreateRequest.HostConfig.NetworkMode
+  - Support multiple networks via NetworkingConfig.EndpointsConfig
+  - Attach container to specified networks during create
+  - Default to "bridge" network if not specified
+  - Files: `Sources/DockerAPI/Handlers/ContainerHandlers.swift`, `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Handle container restart with network attachments**
+  - On container start: recreate all network device attachments
+  - Re-establish socket pairs and virtio-net devices
+  - Maintain same IPs and MACs across restarts
+  - Files: `Sources/ContainerBridge/ContainerManager.swift` (startContainer method)
+
+#### Default "bridge" Network
+
+- [ ] **Create default bridge network on daemon startup**
+  - Check if "bridge" network exists
+  - If not: create with subnet 172.17.0.0/16, gateway 172.17.0.1
+  - Mark as default network
+  - Auto-attach containers without explicit --network
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift` (initialization)
+
+- [ ] **Implement network auto-attachment for legacy containers**
+  - Containers without NetworkingConfig get attached to default bridge
+  - Allocate IP automatically
+  - Add to bridge network on start
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+### Phase 3.5: DNS Resolution (Week 9)
+
+#### DNS Configuration in Helper VM
+
+- [ ] **Configure dnsmasq in helper VM for per-network DNS**
+  - Generate dnsmasq config per network
+  - Format: /etc/dnsmasq.d/{networkID}.conf
+  - Listen on bridge interface (e.g., arca-br-{networkID})
+  - Serve DNS from gateway IP (e.g., 172.18.0.1)
+  - Add A records for containers: {container-name} → {ip}
+  - Support container aliases from EndpointConfig
+  - Reload dnsmasq on config changes
+  - Files: `helpervm/control-api/dns.go`
+
+- [ ] **Update AttachContainer API to configure DNS**
+  - Add container hostname to dnsmasq config
+  - Support multiple aliases per container
+  - Reload dnsmasq after adding entries
+  - Files: `helpervm/control-api/server.go` (AttachContainer handler)
+
+- [ ] **Update DetachContainer API to clean up DNS**
+  - Remove container's DNS entries
+  - Reload dnsmasq
+  - Files: `helpervm/control-api/server.go` (DetachContainer handler)
+
+#### Container DNS Configuration
+
+- [ ] **Configure container /etc/resolv.conf to use network gateway**
+  - Set nameserver to network gateway IP (e.g., 172.18.0.1)
+  - Use Apple's DNSConfiguration API
+  - Apply on container start
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Test DNS resolution between containers**
+  - Integration test: Create two containers on same network
+  - From container1: ping container2 by name
+  - Verify DNS resolution works
+  - Test with aliases
+  - Files: `Tests/ArcaTests/NetworkDNSTests.swift`
+
+### Phase 3.6: Docker Compose Integration (Week 10)
+
+#### Compose Network Features
+
+- [ ] **Test multi-container Compose file with custom network**
+  - Create sample docker-compose.yml with custom network
+  - Define multiple services on same network
+  - Test service-to-service DNS resolution
+  - Files: `tests/compose/simple-web-redis/docker-compose.yml`
+
+- [ ] **Test Compose with multiple networks**
+  - Frontend network + backend network
+  - Web service on frontend network
+  - API service on both networks
+  - Database service on backend network only
+  - Verify network isolation
+  - Files: `tests/compose/multi-network/docker-compose.yml`
+
+- [ ] **Test Compose network aliases**
+  - Define service with multiple aliases
+  - Verify all aliases resolve to same IP
+  - Test from another container on same network
+  - Files: `tests/compose/aliases/docker-compose.yml`
+
+#### Docker Compose Compatibility Testing
+
+- [ ] **Test WordPress + MySQL Compose stack**
+  - Use official WordPress Compose example
+  - Verify database connectivity via network
+  - Verify WordPress can connect to MySQL by service name
+  - Test volume persistence for MySQL data
+  - Files: `tests/compose/wordpress/docker-compose.yml`
+
+- [ ] **Test web app + Redis Compose stack**
+  - Simple web app that connects to Redis by name
+  - Verify Redis connection works
+  - Test scaling web app (multiple containers on same network)
+  - Files: `tests/compose/web-redis/docker-compose.yml`
+
+- [ ] **Create comprehensive Compose compatibility test script**
+  - Test docker compose up -d
+  - Test docker compose ps
+  - Test docker compose logs
+  - Test docker compose exec
+  - Test docker compose down
+  - Verify all compose.yml files work correctly
+  - Files: `scripts/test-compose.sh`
+
+### Phase 3.7: Volumes (Week 11)
+
+**Note**: Volumes are simpler than networks and build on existing Apple Containerization volume support.
+
+#### Volume API Models
+
+- [ ] **Create Docker Volume API request/response models**
+  - VolumeCreateRequest (Name, Driver, DriverOpts, Labels)
+  - Volume (Name, Driver, Mountpoint, Labels, Scope, CreatedAt)
+  - VolumeListResponse (Volumes, Warnings)
+  - VolumePruneResponse (VolumesDeleted, SpaceReclaimed)
+  - Files: `Sources/DockerAPI/Models/Volume.swift`
+
+#### VolumeManager Actor
+
+- [ ] **Implement VolumeManager actor**
+  - Track named volumes: [name: VolumeMetadata]
+  - Store volumes in `~/.arca/volumes/`
+  - Support "local" driver only (store on host filesystem)
+  - Integrate with Apple's Containerization volume support
+  - Files: `Sources/ContainerBridge/VolumeManager.swift`
+
+- [ ] **Implement volume creation**
+  - Create directory under `~/.arca/volumes/{name}/`
+  - Store volume metadata (name, driver, labels, created date)
+  - Return Volume response
+  - Files: `Sources/ContainerBridge/VolumeManager.swift` (createVolume method)
+
+- [ ] **Implement volume listing and inspection**
+  - listVolumes(filters:) - Support filters: name, label, dangling
+  - inspectVolume(name:) - Return full volume details
+  - Calculate volume size (du -sh)
+  - Files: `Sources/ContainerBridge/VolumeManager.swift`
+
+- [ ] **Implement volume deletion**
+  - Verify no containers are using volume
+  - Delete volume directory
+  - Remove metadata
+  - Error handling: 409 if in use, 404 if not found
+  - Files: `Sources/ContainerBridge/VolumeManager.swift` (deleteVolume method)
+
+- [ ] **Implement volume pruning**
+  - Find dangling volumes (not referenced by any container)
+  - Delete dangling volumes
+  - Calculate space reclaimed
+  - Files: `Sources/ContainerBridge/VolumeManager.swift` (pruneVolumes method)
+
+#### Volume API Endpoints
+
+- [ ] **POST /volumes/create - Create volume**
+  - Parse VolumeCreateRequest
+  - Validate driver (only "local" supported)
+  - Call volumeManager.createVolume()
+  - Return Volume response
+  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+
+- [ ] **GET /volumes - List volumes**
+  - Parse filters query parameter
+  - Call volumeManager.listVolumes(filters:)
+  - Return VolumeListResponse
+  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+
+- [ ] **GET /volumes/{name} - Inspect volume**
+  - Parse volume name
+  - Call volumeManager.inspectVolume()
+  - Return Volume object
+  - Error handling: 404 if not found
+  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+
+- [ ] **DELETE /volumes/{name} - Delete volume**
+  - Parse volume name and force parameter
+  - Call volumeManager.deleteVolume(force:)
+  - Return 204 No Content on success
+  - Error handling: 404 if not found, 409 if in use
+  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+
+- [ ] **POST /volumes/prune - Prune volumes**
+  - Parse filters query parameter
+  - Call volumeManager.pruneVolumes(filters:)
+  - Return VolumePruneResponse
+  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+
+- [ ] **Register volume routes in ArcaDaemon**
+  - POST /volumes/create → handleCreateVolume
+  - GET /volumes → handleListVolumes
+  - GET /volumes/{name} → handleInspectVolume
+  - DELETE /volumes/{name} → handleDeleteVolume
+  - POST /volumes/prune → handlePruneVolumes
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+#### Container-Volume Integration
+
+- [ ] **Update ContainerManager to support volume mounts**
+  - Parse Mounts and Volumes from ContainerCreateRequest
+  - Resolve named volumes via VolumeManager
+  - Create anonymous volumes for undefined names
+  - Build VZVirtioFileSystemDeviceConfiguration for each mount
+  - Handle VirtioFS limitations (document read-only workarounds if needed)
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Test volume persistence across container restarts**
+  - Create container with volume
+  - Write data to volume
+  - Stop and remove container
+  - Create new container with same volume
+  - Verify data persists
+  - Files: `Tests/ArcaTests/VolumePersistenceTests.swift`
+
+### Phase 3.8: Testing and Polish (Week 12)
+
+#### Comprehensive Testing
+
+- [ ] **Create Phase 3 test script for networks**
+  - Test all network CRUD operations
+  - Test container connectivity on custom networks
+  - Test DNS resolution by container name
+  - Test network isolation (containers on different networks can't communicate)
+  - Test network connect/disconnect
+  - Test with short network IDs
+  - Files: `scripts/test-phase3-networks.sh`
+
+- [ ] **Create Phase 3 test script for volumes**
+  - Test volume creation, listing, inspection, deletion
+  - Test volume mounts in containers
+  - Test volume persistence across container restarts
+  - Test volume pruning
+  - Test anonymous volumes
+  - Files: `scripts/test-phase3-volumes.sh`
+
+- [ ] **Run full Docker Compose compatibility suite**
+  - WordPress + MySQL
+  - Multi-tier web app (frontend, backend, database on different networks)
+  - App with persistent volumes
+  - Test docker compose up/down/restart
+  - Test docker compose logs -f
+  - Verify all scenarios work correctly
+  - Files: `scripts/test-compose-full.sh`
+
+#### Documentation
+
+- [ ] **Update LIMITATIONS.md with network limitations**
+  - Document MacVLAN/IPVLAN not supported
+  - Document hot-plug limitation (container restart required for network connect)
+  - Document performance overhead (10-15% vs native)
+  - Document helper VM resource usage (128MB RAM, 1 CPU)
+  - Files: `Documentation/LIMITATIONS.md`
+
+- [ ] **Update API_COVERAGE.md with Phase 3 endpoints**
+  - Mark all network endpoints as implemented
+  - Mark all volume endpoints as implemented
+  - Update coverage percentage
+  - Files: `Documentation/API_COVERAGE.md`
+
+- [ ] **Create COMPOSE_COMPATIBILITY.md**
+  - Document which Compose features are supported
+  - List tested Compose files
+  - Provide migration examples from Docker Desktop
+  - Document any Compose-specific limitations
+  - Files: `Documentation/COMPOSE_COMPATIBILITY.md`
+
+#### Performance Testing
+
+- [ ] **Benchmark container-to-container network throughput**
+  - Use iperf3 between containers on same network
+  - Compare to Docker Desktop
+  - Document results in NETWORK_ARCHITECTURE.md
+  - Files: `scripts/benchmark-network.sh`
+
+- [ ] **Benchmark DNS resolution latency**
+  - Measure time to resolve container names
+  - Compare to Docker Desktop
+  - Document results
+  - Files: `scripts/benchmark-dns.sh`
+
+- [ ] **Benchmark helper VM overhead**
+  - Measure memory usage of helper VM under load
+  - Measure CPU usage during high network traffic
+  - Document resource usage in NETWORK_ARCHITECTURE.md
+  - Files: `scripts/benchmark-helpervm.sh`
+
+#### Error Handling and Edge Cases
+
+- [ ] **Test helper VM failure recovery**
+  - Kill helper VM process
+  - Verify NetworkHelperVM detects failure
+  - Verify automatic restart
+  - Verify network state restoration
+  - Files: `Tests/ArcaTests/HelperVMRecoveryTests.swift`
+
+- [ ] **Test network operations with stopped containers**
+  - Connect/disconnect network from stopped container
+  - Verify changes apply when container starts
+  - Files: `Tests/ArcaTests/NetworkEdgeCasesTests.swift`
+
+- [ ] **Test IPAM edge cases**
+  - Subnet exhaustion (all IPs allocated)
+  - IP address conflicts
+  - Invalid CIDR notation
+  - Overlapping subnets
+  - Files: `Tests/ArcaTests/IPAMEdgeCasesTests.swift`
+
+- [ ] **Test volume edge cases**
+  - Volume name conflicts
+  - Deleting volume while container is using it
+  - Invalid volume names
+  - Volume directory permission issues
+  - Files: `Tests/ArcaTests/VolumeEdgeCasesTests.swift`
+
+### Success Criteria ✅
 ```bash
-# This should work:
-docker compose up -d
-docker compose ps
-docker compose logs
-docker compose down
+# Network operations work:
+docker network create my-network                    # Creates network
+docker network ls | grep my-network                 # Lists network
+docker network inspect my-network                   # Shows details
+docker run -d --name web --network my-network nginx # Container on network
+docker run -d --name app --network my-network alpine # Second container
+docker exec web ping -c 1 app                       # DNS resolution works
+docker network disconnect my-network web            # Disconnect container
+docker network rm my-network                        # Delete network
+
+# Volume operations work:
+docker volume create my-volume                      # Creates volume
+docker volume ls | grep my-volume                   # Lists volume
+docker volume inspect my-volume                     # Shows details
+docker run -v my-volume:/data alpine sh -c "echo test > /data/file" # Write to volume
+docker run -v my-volume:/data alpine cat /data/file # Read from volume (persisted)
+docker volume rm my-volume                          # Delete volume
+
+# Docker Compose works:
+docker compose up -d                                # Start services
+docker compose ps                                   # List services
+docker compose logs                                 # View logs
+docker compose exec web sh                          # Execute in service
+docker compose down                                 # Stop and remove
+
+# Test with production Compose files:
+cd tests/compose/wordpress && docker compose up -d  # WordPress + MySQL works
+cd tests/compose/web-redis && docker compose up -d  # Web + Redis works
 ```
 
-Test with sample compose files:
-- WordPress + MySQL
-- Simple web app + Redis
-- Multi-service app with dependencies
+### Phase 3 Dependencies
+
+**Required before starting Phase 3**:
+- ✅ Phase 2 complete (interactive containers and exec API)
+- ✅ Swift gRPC package added to Package.swift
+- ✅ Helper VM build infrastructure (Makefile, scripts)
+
+**External dependencies**:
+- OVN/OVS packages in Alpine Linux (available via apk)
+- dnsmasq (available via apk)
+- Go compiler for control API server (can use Docker to build)
+- protobuf compiler for gRPC (protoc)
 
 ---
 

@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm install-grpc-plugin
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -75,6 +75,30 @@ run: codesign
 	@rm -f /tmp/arca.sock
 	@$(BUILD_DIR)/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
 
+# Build helper VM image
+helpervm:
+	@echo "Building helper VM image..."
+	@./scripts/build-helper-vm.sh
+
+# Install protoc-gen-grpc-swift plugin (v1.27.0)
+install-grpc-plugin:
+	@echo "Installing protoc-gen-grpc-swift v1.27.0..."
+	@if [ -f /usr/local/bin/protoc-gen-grpc-swift ]; then \
+		echo "protoc-gen-grpc-swift already installed at /usr/local/bin/protoc-gen-grpc-swift"; \
+		/usr/local/bin/protoc-gen-grpc-swift --version 2>&1 | head -1 || echo "version unknown"; \
+		echo "To reinstall, run: sudo rm /usr/local/bin/protoc-gen-grpc-swift && make install-grpc-plugin"; \
+	else \
+		echo "Cloning grpc-swift v1.27.0..."; \
+		rm -rf /tmp/grpc-swift-plugin-build; \
+		git clone --depth 1 --branch 1.27.0 https://github.com/grpc/grpc-swift.git /tmp/grpc-swift-plugin-build; \
+		cd /tmp/grpc-swift-plugin-build && swift build --product protoc-gen-grpc-swift -c release; \
+		echo "Installing to /usr/local/bin/ (requires sudo)..."; \
+		sudo cp /tmp/grpc-swift-plugin-build/.build/release/protoc-gen-grpc-swift /usr/local/bin/; \
+		sudo chmod +x /usr/local/bin/protoc-gen-grpc-swift; \
+		rm -rf /tmp/grpc-swift-plugin-build; \
+		echo "✓ protoc-gen-grpc-swift v1.27.0 installed"; \
+	fi
+
 # Help
 help:
 	@echo "Arca Build System"
@@ -87,11 +111,16 @@ help:
 	@echo "  make clean        - Remove all build artifacts"
 	@echo "  make install      - Install release binary to /usr/local/bin"
 	@echo "  make uninstall    - Remove binary from /usr/local/bin"
+	@echo "  make helpervm     - Build helper VM disk image for networking"
+	@echo "  make install-grpc-plugin - Install protoc-gen-grpc-swift v1.27.0"
 	@echo "  make verify-entitlements - Display entitlements of built binary"
 	@echo ""
 	@echo "Build configurations:"
 	@echo "  CONFIGURATION=debug   - Debug build (default)"
 	@echo "  CONFIGURATION=release - Optimized release build"
+	@echo ""
+	@echo "Dependencies:"
+	@echo "  protoc-gen-grpc-swift v1.27.0 (run 'make install-grpc-plugin')"
 	@echo ""
 	@echo "Notes:"
 	@echo "  - Builds are incremental: only changed files are recompiled"

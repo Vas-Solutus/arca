@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package arca.network;
+
+option go_package = "arca-network-api/proto";
+
+// NetworkControl service provides OVN/OVS management operations
+service NetworkControl {
+  // CreateBridge creates a new OVS bridge and OVN logical switch
+  rpc CreateBridge(CreateBridgeRequest) returns (CreateBridgeResponse);
+
+  // DeleteBridge removes an OVS bridge and OVN logical switch
+  rpc DeleteBridge(DeleteBridgeRequest) returns (DeleteBridgeResponse);
+
+  // AttachContainer attaches a container to a network
+  rpc AttachContainer(AttachContainerRequest) returns (AttachContainerResponse);
+
+  // DetachContainer detaches a container from a network
+  rpc DetachContainer(DetachContainerRequest) returns (DetachContainerResponse);
+
+  // ListBridges returns all bridges
+  rpc ListBridges(ListBridgesRequest) returns (ListBridgesResponse);
+
+  // SetNetworkPolicy sets network policies for a network
+  rpc SetNetworkPolicy(SetNetworkPolicyRequest) returns (SetNetworkPolicyResponse);
+
+  // GetHealth returns health status of the helper VM
+  rpc GetHealth(GetHealthRequest) returns (GetHealthResponse);
+}
+
+// CreateBridgeRequest creates a new network bridge
+message CreateBridgeRequest {
+  string network_id = 1;   // Docker network ID
+  string subnet = 2;        // CIDR notation (e.g., "172.18.0.0/16")
+  string gateway = 3;       // Gateway IP (e.g., "172.18.0.1")
+}
+
+message CreateBridgeResponse {
+  string bridge_name = 1;   // Name of created bridge (e.g., "arca-br-{network_id}")
+  bool success = 2;
+  string error = 3;
+}
+
+// DeleteBridgeRequest removes a network bridge
+message DeleteBridgeRequest {
+  string network_id = 1;
+}
+
+message DeleteBridgeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// AttachContainerRequest attaches a container to a network
+message AttachContainerRequest {
+  string container_id = 1;
+  string network_id = 2;
+  string ip_address = 3;    // Container's IP on this network
+  string mac_address = 4;   // Container's MAC address
+  string hostname = 5;      // Container hostname for DNS
+  repeated string aliases = 6; // Additional DNS aliases
+}
+
+message AttachContainerResponse {
+  string port_name = 1;     // OVS port name
+  bool success = 2;
+  string error = 3;
+}
+
+// DetachContainerRequest detaches a container from a network
+message DetachContainerRequest {
+  string container_id = 1;
+  string network_id = 2;
+}
+
+message DetachContainerResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ListBridgesRequest lists all bridges
+message ListBridgesRequest {
+  // No parameters needed
+}
+
+message BridgeInfo {
+  string network_id = 1;
+  string bridge_name = 2;
+  string subnet = 3;
+  string gateway = 4;
+  repeated string containers = 5; // Container IDs attached to this bridge
+}
+
+message ListBridgesResponse {
+  repeated BridgeInfo bridges = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+// SetNetworkPolicyRequest sets network policies
+message SetNetworkPolicyRequest {
+  string network_id = 1;
+  repeated NetworkPolicyRule rules = 2;
+}
+
+message NetworkPolicyRule {
+  enum Action {
+    ALLOW = 0;
+    DENY = 1;
+  }
+
+  enum Protocol {
+    TCP = 0;
+    UDP = 1;
+    ICMP = 2;
+    ANY = 3;
+  }
+
+  Action action = 1;
+  Protocol protocol = 2;
+  string source_network = 3;      // Optional: source network ID or "any"
+  string destination_network = 4; // Optional: destination network ID or "any"
+  uint32 port = 5;                // Optional: port number (0 = any)
+  uint32 priority = 6;            // Priority (higher = evaluated first)
+}
+
+message SetNetworkPolicyResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// GetHealthRequest checks helper VM health
+message GetHealthRequest {
+  // No parameters needed
+}
+
+message GetHealthResponse {
+  bool healthy = 1;
+  string ovs_status = 2;    // OVS daemon status
+  string ovn_status = 3;    // OVN controller status
+  string dnsmasq_status = 4; // dnsmasq status
+  uint64 uptime_seconds = 5; // Helper VM uptime
+}

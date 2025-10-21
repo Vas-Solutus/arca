@@ -38,6 +38,9 @@ make uninstall                 # Remove from /usr/local/bin
 
 ### Running
 ```bash
+# Development mode (recommended - uses /tmp/arca.sock, builds+signs automatically)
+make run                       # Builds, signs, runs with debug logging at /tmp/arca.sock
+
 # After building
 .build/debug/Arca daemon start
 .build/release/Arca daemon start
@@ -53,6 +56,10 @@ arca daemon start
 ```bash
 swift test                     # Run all tests
 swift test --filter ArcaTests  # Run specific test target
+
+# Integration tests with Docker CLI
+./scripts/test-phase1-mvp.sh   # Test Phase 1 container lifecycle
+./scripts/test-phase2-mvp.sh   # Test Phase 2 exec and interactive features
 ```
 
 ### Clean Build
@@ -130,6 +137,8 @@ The project is organized into four Swift Package Manager targets:
 4. **ContainerBridge** - Apple Containerization API wrapper
    - `ContainerManager.swift` - Container lifecycle management
    - `ImageManager.swift` - OCI image operations
+   - `ExecManager.swift` - Exec instance management (Phase 2)
+   - `StreamingWriter.swift` - Streaming output for attach/exec
    - `Config.swift` - Configuration management
    - `Types.swift`, `ImageTypes.swift` - Bridging types
 
@@ -158,7 +167,7 @@ The Router (`Router.swift:86-99`) normalizes API version prefixes to allow versi
 
 **Sources of truth**:
 
-1. `Documentation/DOCKER_ENGINE_API_SPEC.md` - OpenAPI specification
+1. `Documentation/DOCKER_ENGINE_v1.51.yaml` - Docker Engine API specification (OpenAPI format)
 
 All endpoint implementations must reference this spec for:
 - Exact endpoint paths and HTTP methods
@@ -198,10 +207,18 @@ All behaviors must follow these specs for:
 - Default: `/var/run/arca.sock` (NOT `/var/run/docker.sock`)
 - Enables coexistence with Docker Desktop/Colima
 - Users switch via `export DOCKER_HOST=unix:///var/run/arca.sock`
+- Development: `/tmp/arca.sock` (allows us to create a sock without escalated privileges)
+
+**HTTP Streaming Architecture**:
+- Supports both standard and streaming HTTP responses
+- `HTTPResponseType` enum: `.standard(HTTPResponse)` or `.streaming(status, headers, callback)`
+- `HTTPStreamWriter` protocol for real-time chunk writing
+- Used for: image pull progress, exec attach, container attach, log streaming
+- Docker progress format: newline-delimited JSON with progress details
 
 ## Implementation Status
 
-**Current State**: Phase 1 Complete - MVP container lifecycle working
+**Current State**: Phase 2 In Progress - Exec API implementation
 
 The codebase contains:
 - ✅ Full SwiftNIO-based Unix socket server
@@ -210,7 +227,8 @@ The codebase contains:
 - ✅ Type definitions for Docker API models
 - ✅ Basic container lifecycle (create, start, stop, list, inspect, remove, logs, wait)
 - ✅ Image operations (list, inspect, pull, remove, tag)
-- 🚧 Exec API (Phase 2)
+- ✅ Real-time streaming progress for image pulls
+- 🚧 Exec API (Phase 2) - ExecManager and models implemented
 - 🚧 Networks and Volumes (Phase 3)
 - 🚧 Build API (Phase 4)
 
@@ -222,7 +240,7 @@ The codebase contains:
 
 When implementing Docker Engine API endpoints:
 
-1. **Consult the spec**: Always reference `Documentation/DOCKER_ENGINE_API_SPEC.md`
+1. **Consult the spec**: Always reference `Documentation/DOCKER_ENGINE_v1.51.yaml`
 2. **Ensure OCI compliance**: Consult `Documentation/OCI_*_SPEC.md` files for container/image lifecycle
 3. **Route registration** (`ArcaDaemon.swift`): Register routes WITHOUT version prefix
 4. **Handler pattern**: Create async handler methods that return `HTTPResponse`
@@ -292,6 +310,17 @@ docker logs test-nginx
 docker stop test-nginx
 docker rm test-nginx
 ```
+
+### Testing During Development
+
+When implementing new endpoints, follow this workflow:
+
+1. Start daemon in development mode: `make run` (uses `/tmp/arca.sock`)
+2. Set Docker CLI to use Arca: `export DOCKER_HOST=unix:///tmp/arca.sock`
+3. Test your changes with Docker CLI commands
+4. Watch daemon logs for errors/debugging info
+5. Run integration tests: `./scripts/test-phase1-mvp.sh` or `./scripts/test-phase2-mvp.sh`
+6. Iterate on implementation based on test results
 
 ## Technology Stack
 

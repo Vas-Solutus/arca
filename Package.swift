@@ -13,6 +13,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.87.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.23.0"),
     ],
     targets: [
         // Main executable target
@@ -53,6 +54,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "GRPC", package: "grpc-swift"),
             ]
         ),
 
