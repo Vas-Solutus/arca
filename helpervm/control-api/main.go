@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"log"
 	"net"
@@ -43,9 +42,6 @@ func main() {
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Setup graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -53,7 +49,6 @@ func main() {
 		<-sigChan
 		log.Println("Received shutdown signal, stopping server...")
 		grpcServer.GracefulStop()
-		cancel()
 	}()
 
 	// Listen on TCP

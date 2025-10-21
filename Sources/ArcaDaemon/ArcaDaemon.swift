@@ -12,6 +12,7 @@ public final class ArcaDaemon {
     private var containerManager: ContainerManager?
     private var imageManager: ImageManager?
     private var execManager: ExecManager?
+    private var networkHelperVM: NetworkHelperVM?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -37,6 +38,23 @@ public final class ArcaDaemon {
 
         // Validate that kernel exists
         try configManager.validateConfig(config)
+
+        // Initialize and start Network Helper VM for OVN/OVS networking
+        logger.info("Initializing network helper VM...")
+        let networkHelperVM = NetworkHelperVM(logger: logger)
+        self.networkHelperVM = networkHelperVM
+
+        do {
+            try await networkHelperVM.start()
+            logger.info("Network helper VM started successfully")
+        } catch {
+            logger.error("Failed to start network helper VM", metadata: [
+                "error": "\(error)"
+            ])
+            // Continue without helper VM - networking features won't be available
+            // but basic container operations can still work
+            logger.warning("Daemon will continue without network helper VM - networking features disabled")
+        }
 
         // Check if socket already exists (daemon might be running)
         if ArcaServer.socketExists(at: socketPath) {
@@ -107,6 +125,20 @@ public final class ArcaDaemon {
 
         try await server.shutdown()
         self.server = nil
+
+        // Stop network helper VM if running
+        if let networkHelperVM = networkHelperVM {
+            logger.info("Stopping network helper VM...")
+            do {
+                try await networkHelperVM.stop()
+                logger.info("Network helper VM stopped")
+            } catch {
+                logger.error("Error stopping network helper VM", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+            self.networkHelperVM = nil
+        }
 
         logger.info("Arca daemon stopped")
     }

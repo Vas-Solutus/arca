@@ -3,12 +3,12 @@ import Virtualization
 import Logging
 
 /// NetworkHelperVM manages the lifecycle of the helper VM running OVN/OVS
-public actor NetworkHelperVM {
+public final class NetworkHelperVM: @unchecked Sendable {
     private let logger: Logger
-    private var vm: VZVirtualMachine?
-    private var crashCount = 0
+    private nonisolated(unsafe) var vm: VZVirtualMachine?
+    private nonisolated(unsafe) var crashCount = 0
     private let maxCrashes = 3
-    private var isShuttingDown = false
+    private nonisolated(unsafe) var isShuttingDown = false
 
     // VM configuration
     private let vmImagePath: URL
@@ -74,33 +74,63 @@ public actor NetworkHelperVM {
         }
 
         // Verify files exist
+        logger.debug("Checking for VM image at: \(vmImagePath.path)")
         guard FileManager.default.fileExists(atPath: vmImagePath.path) else {
+            logger.error("VM image not found at: \(vmImagePath.path)")
             throw NetworkHelperVMError.vmImageNotFound(vmImagePath.path)
         }
+        logger.debug("VM image found")
 
+        logger.debug("Checking for kernel at: \(kernelPath.path)")
         guard FileManager.default.fileExists(atPath: kernelPath.path) else {
+            logger.error("Kernel not found at: \(kernelPath.path)")
             throw NetworkHelperVMError.kernelNotFound(kernelPath.path)
         }
+        logger.debug("Kernel found")
 
         // Create VM configuration
-        let config = try createVMConfiguration()
+        logger.debug("Creating VM configuration...")
+        let config: VZVirtualMachineConfiguration
+        do {
+            config = try createVMConfiguration()
+            logger.debug("VM configuration created successfully")
+        } catch {
+            logger.error("Failed to create VM configuration: \(error)")
+            throw error
+        }
 
         // Create and start VM
+        logger.debug("Creating VZVirtualMachine instance...")
         let newVM = VZVirtualMachine(configuration: config)
         self.vm = newVM
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            newVM.start { result in
-                switch result {
-                case .success:
-                    Task {
-                        await self.onVMStarted()
+        // Add state observation
+        logger.debug("VM initial state: \(newVM.state)")
+
+        logger.debug("VZVirtualMachine instance created, starting VM...")
+
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                logger.debug("Calling VZVirtualMachine.start()...")
+                newVM.start { result in
+                    self.logger.debug("VM start callback invoked")
+                    switch result {
+                    case .success:
+                        self.logger.debug("VM start callback: success, state=\(newVM.state)")
+                        Task {
+                            await self.onVMStarted()
+                        }
+                        continuation.resume()
+                    case .failure(let error):
+                        self.logger.error("VM start callback: failed - \(error.localizedDescription)")
+                        continuation.resume(throwing: NetworkHelperVMError.vmStartFailed(error.localizedDescription))
                     }
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: NetworkHelperVMError.vmStartFailed(error.localizedDescription))
                 }
+                self.logger.debug("VZVirtualMachine.start() called, waiting for callback...")
             }
+        } catch {
+            logger.error("VM start failed with error: \(error)")
+            throw error
         }
 
         logger.info("Helper VM started successfully")
@@ -160,20 +190,26 @@ public actor NetworkHelperVM {
     // MARK: - Private Methods
 
     private func createVMConfiguration() throws -> VZVirtualMachineConfiguration {
+        logger.debug("Creating VZVirtualMachineConfiguration...")
         let config = VZVirtualMachineConfiguration()
 
         // CPU: 1 vCPU
+        logger.debug("Setting CPU count to 1")
         config.cpuCount = 1
 
         // Memory: 256MB
+        logger.debug("Setting memory size to 256MB")
         config.memorySize = 256 * 1024 * 1024
 
         // Bootloader (Linux)
+        logger.debug("Creating Linux bootloader with kernel: \(kernelPath.path)")
         let bootloader = VZLinuxBootLoader(kernelURL: kernelPath)
-        bootloader.commandLine = "console=hvc0 root=/dev/vda rw"
+        bootloader.commandLine = "console=hvc0 root=/dev/vda rootfstype=ext4 rw init=/sbin/init"
         config.bootLoader = bootloader
+        logger.debug("Bootloader configured")
 
         // Disk (helper VM image)
+        logger.debug("Creating disk attachment for: \(vmImagePath.path)")
         do {
             let diskAttachment = try VZDiskImageStorageDeviceAttachment(
                 url: vmImagePath,
@@ -181,37 +217,56 @@ public actor NetworkHelperVM {
             )
             let disk = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
             config.storageDevices = [disk]
+            logger.debug("Disk attachment created successfully")
         } catch {
+            logger.error("Failed to create disk attachment: \(error)")
             throw NetworkHelperVMError.vmConfigurationInvalid("Failed to create disk attachment: \(error)")
         }
 
         // Network (vmnet NAT for internet access)
+        logger.debug("Creating NAT network device")
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         networkDevice.attachment = VZNATNetworkDeviceAttachment()
         config.networkDevices = [networkDevice]
+        logger.debug("Network device configured")
 
-        // Console (virtio console)
-        let console = VZVirtioConsoleDeviceConfiguration()
+        // Serial port for console output
+        logger.debug("Creating serial port device")
         let consolePort = VZVirtioConsolePortConfiguration()
         consolePort.isConsole = true
 
-        // Attach console output handler
+        // Attach console output handler - write to a log file
+        let consoleLogPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".arca")
+            .appendingPathComponent("helpervm-console.log")
+
+        // Create or truncate console log file
+        FileManager.default.createFile(atPath: consoleLogPath.path, contents: nil)
+        let consoleLogHandle = try! FileHandle(forWritingTo: consoleLogPath)
+
         consolePort.attachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: nil,
-            fileHandleForWriting: FileHandle.standardOutput
+            fileHandleForWriting: consoleLogHandle
         )
 
+        let console = VZVirtioConsoleDeviceConfiguration()
         console.ports[0] = consolePort
         config.consoleDevices = [console]
+        logger.debug("Serial console device configured (output to \(consoleLogPath.path))")
 
         // Socket device (vsock for control API)
+        logger.debug("Creating vsock device")
         let socketDevice = VZVirtioSocketDeviceConfiguration()
         config.socketDevices = [socketDevice]
+        logger.debug("Socket device configured")
 
         // Validate configuration
+        logger.debug("Validating VM configuration...")
         do {
             try config.validate()
+            logger.debug("VM configuration validated successfully")
         } catch {
+            logger.error("VM configuration validation failed: \(error)")
             throw NetworkHelperVMError.vmConfigurationInvalid(error.localizedDescription)
         }
 

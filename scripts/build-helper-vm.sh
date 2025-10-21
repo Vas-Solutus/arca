@@ -16,9 +16,10 @@ mkdir -p "$OUTPUT_DIR"
 
 # Step 1: Generate gRPC code from proto
 echo "Step 1: Generating gRPC code from proto..."
+mkdir -p "$HELPERVM_DIR/control-api/proto"
 cd "$HELPERVM_DIR/proto"
-protoc --go_out=../control-api --go_opt=paths=source_relative \
-    --go-grpc_out=../control-api --go-grpc_opt=paths=source_relative \
+protoc --go_out=../control-api/proto --go_opt=paths=source_relative \
+    --go-grpc_out=../control-api/proto --go-grpc_opt=paths=source_relative \
     network.proto
 
 # Step 2: Build Docker/OCI image
@@ -39,10 +40,19 @@ echo "Using builder: $BUILDER"
 
 $BUILDER build -t "$IMAGE_NAME:$IMAGE_TAG" .
 
-# Step 3: Export image to tar
-echo "Step 3: Exporting image to tar..."
+# Step 3: Create temporary container and export filesystem
+echo "Step 3: Creating temporary container and exporting filesystem..."
 TEMP_TAR="$OUTPUT_DIR/helpervm-temp.tar"
-$BUILDER save -o "$TEMP_TAR" "$IMAGE_NAME:$IMAGE_TAG"
+
+# Create a temporary container from the image (doesn't start it)
+TEMP_CONTAINER=$($BUILDER create "$IMAGE_NAME:$IMAGE_TAG")
+echo "Created temporary container: $TEMP_CONTAINER"
+
+# Export the container's filesystem (this gets the merged filesystem, not layers)
+$BUILDER export "$TEMP_CONTAINER" -o "$TEMP_TAR"
+
+# Remove temporary container
+$BUILDER rm "$TEMP_CONTAINER"
 
 # Step 4: Extract filesystem from tar
 echo "Step 4: Extracting filesystem..."
@@ -51,13 +61,7 @@ mkdir -p "$TEMP_EXTRACT"
 cd "$TEMP_EXTRACT"
 tar -xf "$TEMP_TAR"
 
-# Find the layer tars and extract them in order
-for layer in $(find . -name 'layer.tar' | sort); do
-    echo "Extracting layer: $layer"
-    tar -xf "$layer" -C .
-done
-
-# Step 5: Create raw disk image
+# Step 5: Create raw disk image using Docker (macOS doesn't have ext4 tools)
 echo "Step 5: Creating raw disk image..."
 DISK_IMAGE="$OUTPUT_DIR/disk.img"
 DISK_SIZE="500M"
@@ -65,20 +69,32 @@ DISK_SIZE="500M"
 # Create empty disk image
 dd if=/dev/zero of="$DISK_IMAGE" bs=1M count=500 status=progress
 
-# Create ext4 filesystem
-mkfs.ext4 -F "$DISK_IMAGE"
+# Use Docker to create ext4 filesystem and copy files
+# We need Linux tools (mkfs.ext4, mount) which don't exist on macOS
+echo "Creating ext4 filesystem and copying files using Docker..."
+$BUILDER run --rm --privileged \
+    -v "$DISK_IMAGE:/disk.img" \
+    -v "$TEMP_EXTRACT:/rootfs:ro" \
+    alpine:3.22 \
+    sh -c '
+        # Install ext4 tools
+        apk add --no-cache e2fsprogs
 
-# Mount and copy files
-MOUNT_POINT="$OUTPUT_DIR/mnt"
-mkdir -p "$MOUNT_POINT"
-sudo mount -o loop "$DISK_IMAGE" "$MOUNT_POINT"
+        # Create ext4 filesystem
+        mkfs.ext4 -F /disk.img
 
-# Copy filesystem
-sudo cp -a "$TEMP_EXTRACT"/* "$MOUNT_POINT/" || true
+        # Mount disk image
+        mkdir -p /mnt
+        mount -o loop /disk.img /mnt
 
-# Unmount
-sudo umount "$MOUNT_POINT"
-rmdir "$MOUNT_POINT"
+        # Copy filesystem contents
+        cp -a /rootfs/* /mnt/ || true
+
+        # Unmount
+        umount /mnt
+
+        echo "Disk image creation complete"
+    '
 
 # Cleanup
 rm -rf "$TEMP_EXTRACT" "$TEMP_TAR"

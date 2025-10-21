@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm install-grpc-plugin
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm install-grpc-plugin test
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -99,6 +99,17 @@ install-grpc-plugin:
 		echo "✓ protoc-gen-grpc-swift v1.27.0 installed"; \
 	fi
 
+# Run tests
+# Helper VM tests will start the Arca daemon (which has virtualization entitlement)
+# Usage: make test [FILTER=TestName]
+test:
+	@echo "Running tests..."
+	@if [ -n "$(FILTER)" ]; then \
+		swift test --filter $(FILTER); \
+	else \
+		swift test; \
+	fi
+
 # Help
 help:
 	@echo "Arca Build System"
@@ -108,6 +119,7 @@ help:
 	@echo "  make debug        - Build and codesign debug binary"
 	@echo "  make release      - Build and codesign release binary"
 	@echo "  make run          - Build, sign, and run daemon at /tmp/arca.sock"
+	@echo "  make test         - Run all tests (helper VM tests start Arca daemon)"
 	@echo "  make clean        - Remove all build artifacts"
 	@echo "  make install      - Install release binary to /usr/local/bin"
 	@echo "  make uninstall    - Remove binary from /usr/local/bin"
