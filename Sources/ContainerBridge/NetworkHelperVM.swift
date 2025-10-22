@@ -100,14 +100,7 @@ public actor NetworkHelperVM {
             throw NetworkHelperVMError.notInitialized
         }
 
-        // Check if container already running
-        if let container = container {
-            // TODO: Check container state properly
-            logger.warning("Helper VM container already exists, stopping first...")
-            try? await container.stop()
-        }
-
-        // Ensure helper image is loaded into ImageStore
+        // Ensure helper image is loaded into ImageStore first
         logger.debug("Ensuring helper image is available in ImageStore...")
         try await ensureHelperImageLoaded()
 
@@ -124,6 +117,36 @@ public actor NetworkHelperVM {
             throw NetworkHelperVMError.helperImageNotFound(helperImageReference)
         }
 
+        // Check if container already exists (even if we don't have a reference to it)
+        // This handles cases where the daemon was restarted but container still exists on disk
+        do {
+            let existingContainer = try await manager.get(helperContainerID, image: helperImage)
+            logger.warning("Helper VM container already exists, stopping and removing it...", metadata: [
+                "containerID": "\(helperContainerID)"
+            ])
+
+            // Stop the container if it's running
+            do {
+                try await existingContainer.stop()
+                logger.debug("Stopped existing helper VM container")
+            } catch {
+                logger.debug("Container already stopped or error stopping: \(error)")
+            }
+
+            // Remove the container (not async)
+            do {
+                try manager.delete(helperContainerID)
+                logger.debug("Deleted existing helper VM container")
+            } catch {
+                logger.warning("Failed to delete existing container, will try to create anyway", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+        } catch {
+            // Container doesn't exist, which is fine
+            logger.debug("No existing helper VM container found (expected on first run)")
+        }
+
         // Create the helper container
         logger.debug("Creating helper container...")
         let newContainer: Containerization.LinuxContainer
@@ -136,6 +159,20 @@ public actor NetworkHelperVM {
                 // Configure helper VM
                 config.process.arguments = ["/usr/local/bin/startup.sh"]
                 config.hostname = "arca-network-helper"
+
+                // Configure stdio to capture output for debugging
+                let logDir = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".arca/helpervm/logs")
+
+                let stdoutPath = logDir.appendingPathComponent("stdout.log")
+                let stderrPath = logDir.appendingPathComponent("stderr.log")
+
+                // Create log writers using the same FileLogWriter we use for containers
+                let stdoutWriter = try? FileLogWriter(path: stdoutPath, stream: "stdout")
+                let stderrWriter = try? FileLogWriter(path: stderrPath, stream: "stderr")
+
+                config.process.stdout = stdoutWriter
+                config.process.stderr = stderrWriter
             }
             self.container = newContainer
             logger.info("Helper VM container created successfully", metadata: [
@@ -165,9 +202,10 @@ public actor NetworkHelperVM {
         await connectOVNClient(container: newContainer)
 
         // Start health monitoring
-        monitorTask = Task {
-            await monitorHealth()
-        }
+        // TODO: Temporarily disabled for debugging vsock connection
+        // monitorTask = Task {
+        //     await monitorHealth()
+        // }
 
         // Reset crash count on successful start
         crashCount = 0
@@ -242,16 +280,6 @@ public actor NetworkHelperVM {
 
     /// Ensure the helper VM image is loaded into the ImageStore
     private func ensureHelperImageLoaded() async throws {
-        // Check if image already exists in ImageStore
-        do {
-            _ = try await imageManager.getImage(nameOrId: helperImageReference)
-            logger.debug("Helper image already exists in ImageStore")
-            return
-        } catch {
-            // Image doesn't exist, need to load it
-            logger.info("Helper image not found in ImageStore, loading from OCI layout...")
-        }
-
         // Path to OCI layout directory
         let ociLayoutPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".arca")
@@ -262,6 +290,25 @@ public actor NetworkHelperVM {
             let error = "Helper VM OCI layout not found at \(ociLayoutPath.path). Please run 'make helpervm' to build the helper VM image."
             logger.error("\(error)")
             throw NetworkHelperVMError.helperImageNotFound(error)
+        }
+
+        // Check if image already exists in ImageStore
+        let imageExists = await imageManager.imageExists(nameOrId: helperImageReference)
+
+        if imageExists {
+            // Delete existing image to force reload from OCI layout
+            // This ensures we always use the latest built image
+            logger.info("Deleting existing helper image to reload fresh version...")
+            do {
+                _ = try await imageManager.deleteImage(nameOrId: helperImageReference, force: true)
+                logger.debug("Existing helper image deleted successfully")
+            } catch {
+                logger.warning("Failed to delete existing helper image, will try to load anyway", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+        } else {
+            logger.info("Helper image not found in ImageStore, will load from OCI layout...")
         }
 
         // Load the OCI layout into ImageStore

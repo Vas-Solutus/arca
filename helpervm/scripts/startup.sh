@@ -71,5 +71,5 @@ echo "All services started successfully"
 echo "Starting Arca Network Control API..."
 
 # Start the control API server (foreground - this keeps the container running)
-# Uses vsock for secure host-guest communication
+# Uses mdlayher/vsock library for proper vsock net.Listener support
 exec /usr/local/bin/arca-network-api --vsock-port=9999
