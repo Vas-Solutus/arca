@@ -1,15 +1,20 @@
 #!/bin/bash
 set -e
 
-echo "==================================="
+STARTUP_START=$(date +%s)
+echo "========================================================"
 echo "Arca Network Helper VM Starting..."
-echo "==================================="
+echo "Started at: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "========================================================"
 
 # Initialize Open vSwitch
+OVS_INIT_START=$(date +%s)
 /usr/local/bin/ovs-init.sh
+OVS_INIT_END=$(date +%s)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] OVS initialization completed in $((OVS_INIT_END - OVS_INIT_START))s"
 
 # Initialize OVN databases
-echo "Initializing OVN databases..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Initializing OVN databases..."
 mkdir -p /var/run/ovn
 mkdir -p /var/log/ovn
 
@@ -53,6 +58,49 @@ ovn-nbctl init || true
 echo "Initializing OVN southbound..."
 ovn-sbctl init || true
 
+# Configure OVN integration bridge with netdev datapath (userspace)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Configuring OVN integration bridge for userspace datapath..."
+
+# Delete any existing br-int first
+ovs-vsctl --if-exists del-br br-int
+
+# Retry bridge creation with exponential backoff
+# OVS may need time to fully initialize its datapath subsystem
+MAX_RETRIES=5
+RETRY_COUNT=0
+RETRY_DELAY=1
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Creating br-int with netdev datapath..."
+
+    # Try to create the bridge (may fail initially while OVS initializes)
+    ovs-vsctl add-br br-int -- set bridge br-int datapath_type=netdev 2>&1 || true
+
+    # Wait a moment for the operation to complete
+    sleep 1
+
+    # Check if bridge actually exists with correct datapath type
+    if ovs-vsctl list bridge br-int 2>/dev/null | grep -q "datapath_type.*netdev"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ br-int created successfully with netdev datapath"
+        ovs-vsctl set bridge br-int fail-mode=secure
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ br-int configured with fail-mode=secure"
+        break
+    else
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Bridge not ready yet, retrying in ${RETRY_DELAY}s..."
+            ovs-vsctl --if-exists del-br br-int  # Clean up before retry
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to create br-int after $MAX_RETRIES attempts"
+            echo "OVS logs:"
+            tail -50 /var/log/openvswitch/ovs-vswitchd.log
+            exit 1
+        fi
+    fi
+done
+
 # Start OVN controller
 echo "Starting OVN controller..."
 ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
@@ -65,10 +113,16 @@ mkdir -p /etc/dnsmasq.d
 dnsmasq --conf-file=/etc/dnsmasq.conf &
 
 # Wait for services to be ready
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for all services to stabilize..."
 sleep 2
 
-echo "All services started successfully"
-echo "Starting Arca Network Control API..."
+STARTUP_END=$(date +%s)
+TOTAL_STARTUP=$((STARTUP_END - STARTUP_START))
+echo "========================================================"
+echo "✓ All services started successfully"
+echo "✓ Total startup time: ${TOTAL_STARTUP}s"
+echo "========================================================"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Network Control API..."
 
 # Start the control API server (foreground - this keeps the container running)
 # Uses mdlayher/vsock library for proper vsock net.Listener support

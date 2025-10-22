@@ -17,6 +17,24 @@
             "name": "Release Arca",
             "program": "${workspaceFolder:arca}/.build/release/Arca",
             "preLaunchTask": "swift: Build Release Arca"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:arca}",
+            "name": "Debug ArcaTestHelper",
+            "program": "${workspaceFolder:arca}/.build/debug/ArcaTestHelper",
+            "preLaunchTask": "swift: Build Debug ArcaTestHelper"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:arca}",
+            "name": "Release ArcaTestHelper",
+            "program": "${workspaceFolder:arca}/.build/release/ArcaTestHelper",
+            "preLaunchTask": "swift: Build Release ArcaTestHelper"
         }
     ]
 }

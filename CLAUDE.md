@@ -56,6 +56,8 @@ arca daemon start
 ```bash
 swift test                     # Run all tests
 swift test --filter ArcaTests  # Run specific test target
+make test                      # Run all tests via Makefile
+make test FILTER=TestName      # Run specific test
 
 # Integration tests with Docker CLI
 ./scripts/test-phase1-mvp.sh   # Test Phase 1 container lifecycle
@@ -94,6 +96,58 @@ This creates `vminit:latest` in `~/Library/Application Support/com.apple.contain
 - Must be cross-compiled to Linux using Swift Static Linux SDK
 
 **Future improvement**: This will be automated via `arca setup` command (see `Documentation/IMPLEMENTATION_PLAN.md` Phase 0.5).
+
+### One-Time Setup: Building Kernel with TUN Support
+
+**Critical prerequisite**: Arca's helper VM requires a Linux kernel with TUN/TAP support (`CONFIG_TUN=y`) for OVS userspace networking. Pre-built kernels may not have this enabled.
+
+```bash
+# Build custom kernel with TUN support (takes 10-15 minutes)
+make kernel
+```
+
+This downloads Apple's kernel config, builds a kernel with TUN enabled, and installs it to `~/.arca/vmlinux`.
+
+**Why this is needed**:
+- OVS userspace datapath requires `/dev/net/tun` device
+- Without TUN support, bridge creation fails with "No such device"
+- See `Documentation/KERNEL_BUILD.md` for detailed information
+
+**Verification**:
+```bash
+# After building kernel, rebuild helper VM and test
+make helpervm
+make test-helper
+```
+
+### Building Helper VM (Phase 3 - Networking)
+
+**Context**: Phase 3 introduces a lightweight Linux VM running OVN/OVS for Docker-compatible networking. This helper VM provides bridge networks, network isolation, and full Docker Network API compatibility.
+
+```bash
+# Build the network helper VM OCI image
+make helpervm                  # Builds arca-network-helper:latest
+
+# Manual build (if needed)
+./scripts/build-helper-vm.sh
+```
+
+This creates an OCI image at `~/.arca/helpervm/oci-layout/` containing:
+- Open vSwitch (OVS) v3.6.0
+- Open Virtual Network (OVN) v25.09
+- gRPC control API server (Go)
+- Alpine Linux base (~50-100MB)
+
+**Architecture**: See `Documentation/NETWORK_ARCHITECTURE.md` for detailed networking design.
+
+**Prerequisites**:
+- Docker or Podman (for building the image)
+- protoc compiler with protoc-gen-go and protoc-gen-go-grpc plugins
+
+**gRPC code generation**: If you modify `helpervm/proto/network.proto`:
+```bash
+./scripts/generate-grpc.sh     # Regenerate Go and Swift gRPC code
+```
 
 ## Configuration
 
@@ -138,9 +192,12 @@ The project is organized into four Swift Package Manager targets:
    - `ContainerManager.swift` - Container lifecycle management
    - `ImageManager.swift` - OCI image operations
    - `ExecManager.swift` - Exec instance management (Phase 2)
+   - `NetworkHelperVM.swift` - Helper VM lifecycle for OVN/OVS networking (Phase 3)
+   - `OVNClient.swift` - gRPC client for network control API (Phase 3)
    - `StreamingWriter.swift` - Streaming output for attach/exec
    - `Config.swift` - Configuration management
    - `Types.swift`, `ImageTypes.swift` - Bridging types
+   - `Generated/` - Protobuf/gRPC generated code for network API
 
 ### Request Flow
 
@@ -216,9 +273,17 @@ All behaviors must follow these specs for:
 - Used for: image pull progress, exec attach, container attach, log streaming
 - Docker progress format: newline-delimited JSON with progress details
 
+**Networking Architecture (Phase 3)**:
+- Helper VM runs OVN/OVS for bridge network emulation
+- Managed as a Container via Apple Containerization framework
+- gRPC control API over vsock using `Container.dial()`
+- Each Docker network = separate OVS bridge in helper VM
+- Container VMs attach to bridges via virtio-net (VZFileHandleNetworkDeviceAttachment)
+- See `Documentation/NETWORK_ARCHITECTURE.md` for complete design
+
 ## Implementation Status
 
-**Current State**: Phase 2 In Progress - Exec API implementation
+**Current State**: Phase 3 In Progress - OVN/OVS Helper VM networking
 
 The codebase contains:
 - ✅ Full SwiftNIO-based Unix socket server
@@ -228,8 +293,9 @@ The codebase contains:
 - ✅ Basic container lifecycle (create, start, stop, list, inspect, remove, logs, wait)
 - ✅ Image operations (list, inspect, pull, remove, tag)
 - ✅ Real-time streaming progress for image pulls
-- 🚧 Exec API (Phase 2) - ExecManager and models implemented
-- 🚧 Networks and Volumes (Phase 3)
+- ✅ Exec API (Phase 2) - Complete with attach support
+- 🚧 Helper VM networking (Phase 3.1) - NetworkHelperVM, OVNClient, and gRPC API implemented
+- 🚧 Network and Volume APIs (Phase 3)
 - 🚧 Build API (Phase 4)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
@@ -274,6 +340,31 @@ When adding new Containerization API calls:
 3. Map between Docker and Containerization types using existing patterns
 4. Handle errors and translate to Docker HTTP status codes
 5. Update ID mappings for container operations
+
+### Helper VM and Networking (Phase 3)
+
+When working with the helper VM networking stack:
+
+1. **Helper VM lifecycle**: Managed by `NetworkHelperVM` class
+   - Launches as a Container using the Containerization framework
+   - Runs the `arca-network-helper:latest` OCI image
+   - Starts OVS/OVN processes and gRPC control API server
+
+2. **gRPC communication**: Use `OVNClient` for network operations
+   - Communication via `Container.dial()` over vsock (port 9999 → TCP in VM)
+   - Auto-connects when `NetworkHelperVM.ensureRunning()` succeeds
+   - All network operations are async via gRPC
+
+3. **Protobuf changes**: If modifying `helpervm/proto/network.proto`
+   - Run `./scripts/generate-grpc.sh` to regenerate code
+   - Updates both Go code (helper VM) and Swift code (Arca daemon)
+   - Generated Swift code: `Sources/ContainerBridge/Generated/network.{pb,grpc}.swift`
+   - Generated Go code: `helpervm/control-api/proto/network.{pb,grpc}.go`
+
+4. **Helper VM development**: To rebuild after changes to helper VM code
+   - Modify code in `helpervm/control-api/`, `helpervm/scripts/`, or `helpervm/config/`
+   - Run `make helpervm` to rebuild OCI image
+   - Restart Arca daemon to pick up new image
 
 ### Critical Implementation Details
 
@@ -330,15 +421,39 @@ When implementing new endpoints, follow this workflow:
 - **CLI**: swift-argument-parser
 - **Logging**: swift-log
 - **Containerization**: apple/containerization package
+- **gRPC**: grpc-swift for network control API
+- **Networking**: Open vSwitch (OVS) v3.6.0 + Open Virtual Network (OVN) v25.09
+- **Helper VM**: Alpine Linux 3.22 with Go control API server
 - **API Version**: Docker Engine API v1.51
 - **Socket Path**: `/var/run/arca.sock` (configurable via `--socket-path`)
+
+## Helper VM Directory Structure (Phase 3)
+
+The `helpervm/` directory contains everything needed for the networking helper VM:
+
+```
+helpervm/
+├── Dockerfile                  # Multi-stage build: OVS/OVN + Go control API
+├── proto/
+│   └── network.proto          # gRPC API definition (shared with Arca daemon)
+├── control-api/               # Go gRPC server
+│   ├── main.go                # Control API entry point
+│   └── proto/                 # Generated Go code (from network.proto)
+├── scripts/
+│   ├── startup.sh             # VM entrypoint: starts OVS/OVN + control API
+│   └── ovs-init.sh            # OVS/OVN initialization
+└── config/
+    └── dnsmasq.conf           # DHCP/DNS configuration for container networks
+```
+
+**Build output**: `~/.arca/helpervm/oci-layout/` - OCI image layout compatible with Containerization framework
 
 ## Known Limitations
 
 See `Documentation/LIMITATIONS.md` for full details. Key limitations:
 
 1. **Image Size Reporting**: Reports compressed (OCI blob) sizes instead of uncompressed sizes
-2. **Networking**: DNS-based networking instead of bridge networks
+2. **Networking**: Phase 3 (in progress) - OVN/OVS helper VM provides bridge networks
 3. **Volumes**: VirtioFS limitations affect some operations
 4. **Build API**: Not yet implemented
 5. **Swarm Mode**: Not supported

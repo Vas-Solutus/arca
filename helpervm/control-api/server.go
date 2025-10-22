@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"log"
 	"os/exec"
@@ -43,15 +44,21 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bridgeName := fmt.Sprintf("arca-br-%s", req.NetworkId[:12]) // Use first 12 chars for readability
+	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
+	// Use MD5 hash of network ID to ensure uniqueness with short names
+	// Format: br-{12 hex chars} = 15 chars total
+	hash := md5.Sum([]byte(req.NetworkId))
+	bridgeName := fmt.Sprintf("br-%x", hash[:6]) // 12 hex chars from 6 bytes
 
-	// Create OVS bridge
-	if err := runCommand("ovs-vsctl", "add-br", bridgeName); err != nil {
+	// Create OVS bridge with netdev datapath (userspace)
+	if err := runCommand("ovs-vsctl", "add-br", bridgeName, "--", "set", "bridge", bridgeName, "datapath_type=netdev"); err != nil {
 		return &pb.CreateBridgeResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to create OVS bridge: %v", err),
+			Error:   fmt.Sprintf("Failed to create OVS bridge with netdev datapath: %v", err),
 		}, nil
 	}
+
+	log.Printf("OVS bridge %s created successfully", bridgeName)
 
 	// Bring bridge interface up
 	if err := runCommand("ip", "link", "set", bridgeName, "up"); err != nil {
@@ -119,7 +126,10 @@ func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bridgeName := fmt.Sprintf("arca-br-%s", req.NetworkId[:12])
+	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
+	// Use MD5 hash of network ID to ensure uniqueness
+	hash := md5.Sum([]byte(req.NetworkId))
+	bridgeName := fmt.Sprintf("br-%x", hash[:6])
 
 	// Delete OVN logical switch
 	if err := runCommand("ovn-nbctl", "ls-del", req.NetworkId); err != nil {
@@ -154,7 +164,10 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	defer s.mu.Unlock()
 
 	portName := fmt.Sprintf("vport-%s", req.ContainerId[:12])
-	bridgeName := fmt.Sprintf("arca-br-%s", req.NetworkId[:12])
+	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
+	// Use MD5 hash of network ID to ensure uniqueness
+	hash := md5.Sum([]byte(req.NetworkId))
+	bridgeName := fmt.Sprintf("br-%x", hash[:6])
 
 	// Create OVS port
 	if err := runCommand("ovs-vsctl", "add-port", bridgeName, portName); err != nil {
@@ -214,7 +227,10 @@ func (s *NetworkServer) DetachContainer(ctx context.Context, req *pb.DetachConta
 	defer s.mu.Unlock()
 
 	portName := fmt.Sprintf("vport-%s", req.ContainerId[:12])
-	bridgeName := fmt.Sprintf("arca-br-%s", req.NetworkId[:12])
+	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
+	// Use MD5 hash of network ID to ensure uniqueness
+	hash := md5.Sum([]byte(req.NetworkId))
+	bridgeName := fmt.Sprintf("br-%x", hash[:6])
 
 	// Delete OVN logical switch port
 	if err := runCommand("ovn-nbctl", "lsp-del", req.ContainerId); err != nil {
@@ -356,4 +372,14 @@ func checkServiceStatus(serviceName string) string {
 func appendToFile(filename, content string) error {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("echo '%s' >> %s", content, filename))
 	return cmd.Run()
+}
+
+func getOVSLogs() string {
+	// Try to get the last 50 lines of ovs-vswitchd.log
+	cmd := exec.Command("tail", "-n", "50", "/var/log/openvswitch/ovs-vswitchd.log")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("Could not read OVS logs: %v", err)
+	}
+	return string(output)
 }

@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm install-grpc-plugin test
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm kernel install-grpc-plugin test
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -12,8 +12,9 @@ else
 	SWIFT_BUILD_FLAGS = -c debug
 endif
 
-# Binary name
+# Binary names
 BINARY = Arca
+TEST_HELPER = ArcaTestHelper
 
 # Installation directory
 INSTALL_DIR = /usr/local/bin
@@ -32,10 +33,12 @@ $(BUILD_DIR)/$(BINARY): $(SOURCES) Package.swift
 	@echo "Building $(BINARY) ($(CONFIGURATION))..."
 	@swift build $(SWIFT_BUILD_FLAGS)
 
-# Codesign the binary with entitlements
-codesign: $(BUILD_DIR)/$(BINARY)
+# Codesign the binaries with entitlements
+codesign: $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/$(TEST_HELPER)
 	@echo "Code signing $(BINARY) with entitlements..."
 	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/$(BINARY)
+	@echo "Code signing $(TEST_HELPER) with entitlements..."
+	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/$(TEST_HELPER)
 	@echo "✓ Code signing complete"
 
 # Debug build (default)
@@ -80,6 +83,11 @@ helpervm:
 	@echo "Building helper VM image..."
 	@./scripts/build-helper-vm.sh
 
+# Build kernel with TUN support
+kernel:
+	@echo "Building Linux kernel with TUN support..."
+	@./scripts/build-kernel.sh
+
 # Install protoc-gen-grpc-swift plugin (v1.27.0)
 install-grpc-plugin:
 	@echo "Installing protoc-gen-grpc-swift v1.27.0..."
@@ -110,6 +118,11 @@ test:
 		swift test; \
 	fi
 
+# Run helper VM integration tests (requires signing)
+test-helper: codesign
+	@echo "Running helper VM integration tests..."
+	@$(BUILD_DIR)/$(TEST_HELPER)
+
 # Help
 help:
 	@echo "Arca Build System"
@@ -124,6 +137,7 @@ help:
 	@echo "  make install      - Install release binary to /usr/local/bin"
 	@echo "  make uninstall    - Remove binary from /usr/local/bin"
 	@echo "  make helpervm     - Build helper VM disk image for networking"
+	@echo "  make kernel       - Build Linux kernel with TUN support (10-15 min)"
 	@echo "  make install-grpc-plugin - Install protoc-gen-grpc-swift v1.27.0"
 	@echo "  make verify-entitlements - Display entitlements of built binary"
 	@echo ""

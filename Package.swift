@@ -26,6 +26,15 @@ let package = Package(
             ]
         ),
 
+        // Test helper executable (requires signing with entitlements)
+        .executableTarget(
+            name: "ArcaTestHelper",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                "ContainerBridge",
+            ]
+        ),
+
         // Daemon server (HTTP/Unix socket server)
         .target(
             name: "ArcaDaemon",
