@@ -667,6 +667,132 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Files: `helpervm/control-api/server.go` (CreateBridge, DeleteBridge, AttachContainer)
   - **COMPLETED**: All bridges now use proper length-limited names
 
+### Phase 3.15: Routing Infrastructure Improvements (Week 2.5)
+
+**Rationale**: Before implementing the Network Management Layer, improve the HTTP routing infrastructure to make endpoint implementation cleaner and more maintainable. This gives us 80% of Vapor's benefits with 5% of the complexity, while maintaining our minimal-dependency philosophy.
+
+#### Router DSL Enhancement
+
+- [ ] **Add HTTP method convenience methods to Router**
+  - Implement `.get()`, `.post()`, `.put()`, `.delete()` methods
+  - Clean syntax: `router.get("/containers/json") { req in ... }`
+  - Replace verbose `router.register(method: .GET, pattern: ...)` calls
+  - Maintain existing route matching and path parameter extraction
+  - Files: `Sources/ArcaDaemon/Router.swift`
+
+#### Middleware Pattern
+
+- [ ] **Design middleware protocol and pipeline**
+  - Create `Middleware` protocol with `func handle(_ request: HTTPRequest, next: (HTTPRequest) async throws -> HTTPResponse) async throws -> HTTPResponse`
+  - Add middleware chain to Router: `var middlewares: [Middleware]`
+  - Implement `router.use(_ middleware: Middleware)` registration
+  - Execute middlewares in order before route handlers
+  - Files: `Sources/ArcaDaemon/Middleware.swift`, `Sources/ArcaDaemon/Router.swift`
+
+- [ ] **Implement APIVersionNormalizer middleware**
+  - Move version normalization from Router to middleware
+  - Strip `/v{major}.{minor}` prefix from request path
+  - Store original version in request context for response headers
+  - Simplifies router logic and makes version handling explicit
+  - Files: `Sources/ArcaDaemon/Middlewares/APIVersionNormalizer.swift`
+
+- [ ] **Implement RequestLogger middleware**
+  - Log incoming requests: method, path, query parameters
+  - Log response: status code, duration
+  - Use structured logging with Logger metadata
+  - Optional: filter sensitive data (auth headers, image digests)
+  - Files: `Sources/ArcaDaemon/Middlewares/RequestLogger.swift`
+
+#### Request/Response Helpers
+
+- [ ] **Add HTTPRequest convenience extensions**
+  - `func queryBool(_ key: String, default: Bool = false) -> Bool` - Parse boolean query params
+  - `func queryInt(_ key: String) -> Int?` - Parse integer query params
+  - `func queryString(_ key: String) -> String?` - Get string query params
+  - `func pathParam(_ key: String) -> String?` - Type-safe path parameter access
+  - `func jsonBody<T: Decodable>(_ type: T.Type) throws -> T` - Decode JSON body
+  - Files: `Sources/ArcaDaemon/HTTPRequest+Helpers.swift`
+
+- [ ] **Add HTTPResponse convenience static methods**
+  - `static func ok<T: Encodable>(_ value: T) -> HTTPResponse` - 200 OK with JSON
+  - `static func created<T: Encodable>(_ value: T) -> HTTPResponse` - 201 Created
+  - `static func noContent() -> HTTPResponse` - 204 No Content
+  - `static func badRequest(_ message: String) -> HTTPResponse` - 400 with error
+  - `static func notFound(_ message: String) -> HTTPResponse` - 404 with error
+  - `static func conflict(_ message: String) -> HTTPResponse` - 409 with error
+  - `static func internalError(_ message: String) -> HTTPResponse` - 500 with error
+  - Files: `Sources/ArcaDaemon/HTTPResponse+Helpers.swift`
+
+#### Refactor Existing Routes
+
+- [ ] **Migrate container routes to new DSL**
+  - Convert all container endpoint registrations in `ArcaDaemon.swift`
+  - Use new `.get()`, `.post()`, `.delete()` methods
+  - Use request helpers for query/path parameters
+  - Use response helpers for consistent JSON responses
+  - Example:
+    ```swift
+    // Old:
+    router.register(method: .GET, pattern: "/containers/json") { request in
+        let all = request.queryParameters["all"] == "true"
+        return await containerHandlers.handleListContainers(all: all)
+    }
+
+    // New:
+    router.get("/containers/json") { req in
+        let all = req.queryBool("all")
+        return try await containerHandlers.handleListContainers(all: all)
+    }
+    ```
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+- [ ] **Migrate image routes to new DSL**
+  - Convert all image endpoint registrations
+  - Use new convenience methods
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+- [ ] **Migrate system routes to new DSL**
+  - Convert version, ping, info endpoints
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+
+#### Testing
+
+- [ ] **Unit tests for Router DSL**
+  - Test `.get()`, `.post()`, `.put()`, `.delete()` registration
+  - Verify route matching with new API
+  - Test middleware execution order
+  - Files: `Tests/ArcaTests/RouterTests.swift`
+
+- [ ] **Unit tests for middleware**
+  - Test APIVersionNormalizer strips versions correctly
+  - Test RequestLogger logs requests/responses
+  - Test middleware chain execution
+  - Files: `Tests/ArcaTests/MiddlewareTests.swift`
+
+- [ ] **Unit tests for request/response helpers**
+  - Test query parameter parsing (bool, int, string)
+  - Test path parameter extraction
+  - Test JSON body decoding
+  - Test response static methods
+  - Files: `Tests/ArcaTests/HTTPHelpersTests.swift`
+
+- [ ] **Integration test with real endpoints**
+  - Verify existing endpoints still work with new DSL
+  - Test middleware applied to all routes
+  - Test logging captures requests
+  - Files: `Tests/ArcaTests/RoutingIntegrationTests.swift`
+
+#### Documentation
+
+- [ ] **Update CLAUDE.md with new routing patterns**
+  - Document new DSL syntax for route registration
+  - Provide middleware examples
+  - Show request/response helper usage
+  - Migration guide for converting old routes
+  - Files: `CLAUDE.md`
+
+**Expected Outcome**: Cleaner, more maintainable routing code with ~50% less boilerplate. This will make implementing the Network API endpoints in Phase 3.2 much faster and more pleasant.
+
 ### Phase 3.2: Network Management Layer (Week 3-4)
 
 #### NetworkManager Actor
