@@ -308,19 +308,124 @@ When implementing Docker Engine API endpoints:
 
 1. **Consult the spec**: Always reference `Documentation/DOCKER_ENGINE_v1.51.yaml`
 2. **Ensure OCI compliance**: Consult `Documentation/OCI_*_SPEC.md` files for container/image lifecycle
-3. **Route registration** (`ArcaDaemon.swift`): Register routes WITHOUT version prefix
-4. **Handler pattern**: Create async handler methods that return `HTTPResponse`
-5. **Query parameters**: Parse from `request.queryParameters` dictionary
-6. **Path parameters**: Access from `request.pathParameters` (populated by Router)
-7. **Error handling**: Return `HTTPResponse.error(message, status: .statusCode)`
-8. **JSON responses**: Use `HTTPResponse.json(codableObject)`
+3. **Route registration** (`ArcaDaemon.swift`): Use Router DSL methods (`.get()`, `.post()`, `.put()`, `.delete()`, `.head()`)
+4. **Handler pattern**: Create async handler methods that return `HTTPResponseType`
+5. **Query parameters**: Use helper methods (`queryBool()`, `queryInt()`, `queryString()`)
+6. **Path parameters**: Use helper method `pathParam("key")` for type-safe access
+7. **Request body**: Use `jsonBody(Type.self)` for automatic JSON decoding
+8. **Error handling**: Use convenience methods (`badRequest()`, `notFound()`, `internalServerError()`)
+9. **Success responses**: Use convenience methods (`ok()`, `created()`, `noContent()`)
 
-Example handler registration:
+#### Router DSL and Helper Methods
+
+The routing infrastructure provides a clean DSL and helper methods:
+
+**Route Registration** - Use HTTP method shortcuts:
 ```swift
-router.register(method: .GET, pattern: "/containers/json") { request in
-    let all = request.queryParameters["all"] == "true"
-    let response = await containerHandlers.handleListContainers(all: all)
-    return HTTPResponse.json(response.containers)
+_ = builder.get("/containers/json") { request in
+    // GET handler
+}
+
+_ = builder.post("/containers/create") { request in
+    // POST handler
+}
+
+_ = builder.delete("/containers/{id}") { request in
+    // DELETE with path parameter
+}
+```
+
+**Query Parameters** - Type-safe helpers:
+```swift
+let all = request.queryBool("all", default: false)    // Boolean with default
+let limit = request.queryInt("limit")                 // Optional Int
+let name = request.queryString("name")                // Optional String
+```
+
+**Path Parameters** - Type-safe extraction:
+```swift
+guard let id = request.pathParam("id") else {
+    return .standard(HTTPResponse.badRequest("Missing container ID"))
+}
+```
+
+**Request Body** - Automatic JSON decoding:
+```swift
+do {
+    let createRequest = try request.jsonBody(ContainerCreateRequest.self)
+    // Use createRequest...
+} catch {
+    return .standard(HTTPResponse.badRequest("Invalid request body"))
+}
+```
+
+**Response Helpers** - Concise response creation:
+```swift
+// Success responses
+return .standard(HTTPResponse.ok(containers))           // 200 with JSON
+return .standard(HTTPResponse.created(response))        // 201 with JSON
+return .standard(HTTPResponse.noContent())              // 204 no body
+
+// Error responses
+return .standard(HTTPResponse.badRequest("Missing parameter"))
+return .standard(HTTPResponse.notFound("container", id: id))
+return .standard(HTTPResponse.internalServerError(error))
+```
+
+**Complete Example**:
+```swift
+_ = builder.post("/containers/create") { request in
+    let name = request.queryString("name")
+
+    do {
+        let createRequest = try request.jsonBody(ContainerCreateRequest.self)
+        let result = await containerHandlers.handleCreateContainer(
+            request: createRequest,
+            name: name
+        )
+
+        switch result {
+        case .success(let response):
+            return .standard(HTTPResponse.created(response))
+        case .failure(let error):
+            return .standard(HTTPResponse.internalServerError(error.description))
+        }
+    } catch {
+        return .standard(HTTPResponse.badRequest("Invalid request body"))
+    }
+}
+```
+
+#### Middleware Pipeline
+
+The router supports middleware for cross-cutting concerns:
+
+**Built-in Middleware**:
+- `RequestLogger`: Logs all HTTP requests/responses with timing
+- `APIVersionNormalizer`: Strips `/v1.XX` prefixes from paths
+
+**Middleware Registration**:
+```swift
+let builder = Router.builder(logger: logger)
+    .use(RequestLogger(logger: logger))
+    .use(APIVersionNormalizer())
+    // Register routes...
+    .build()
+```
+
+**Custom Middleware**: Implement the `Middleware` protocol:
+```swift
+public struct CustomMiddleware: Middleware {
+    public func handle(_ request: HTTPRequest, next: @Sendable @escaping (HTTPRequest) async -> HTTPResponseType) async -> HTTPResponseType {
+        // Pre-processing
+        let modifiedRequest = // ...
+
+        // Call next middleware/handler
+        let response = await next(modifiedRequest)
+
+        // Post-processing
+        return response
+    }
 }
 ```
 

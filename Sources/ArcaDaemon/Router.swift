@@ -4,47 +4,66 @@ import NIOHTTP1
 import DockerAPI
 
 /// Type alias for route handler functions
-public typealias RouteHandler = (HTTPRequest) async -> HTTPResponseType
+public typealias RouteHandler = @Sendable (HTTPRequest) async -> HTTPResponseType
 
 /// A route pattern matcher and request dispatcher
-public final class Router {
+/// Routes are registered during initialization and become immutable after setup
+public final class Router: Sendable {
     private let logger: Logger
-    private var routes: [(method: HTTPMethod, pattern: RoutePattern, handler: RouteHandler)] = []
+    private let routes: [(method: HTTPMethod, pattern: RoutePattern, handler: RouteHandler)]
+    private let middlewares: [Middleware]
 
-    public init(logger: Logger) {
+    /// Initialize router with routes and middlewares registered via builder
+    fileprivate init(logger: Logger, routes: [(method: HTTPMethod, pattern: RoutePattern, handler: RouteHandler)], middlewares: [Middleware]) {
         self.logger = logger
+        self.routes = routes
+        self.middlewares = middlewares
     }
 
-    /// Register a route handler
-    public func register(method: HTTPMethod, pattern: String, handler: @escaping RouteHandler) {
-        let routePattern = RoutePattern(pattern: pattern)
-        routes.append((method: method, pattern: routePattern, handler: handler))
-        logger.debug("Registered route", metadata: [
-            "method": "\(method.rawValue)",
-            "pattern": "\(pattern)"
-        ])
+    /// Create a router builder for registering routes
+    public static func builder(logger: Logger) -> RouterBuilder {
+        return RouterBuilder(logger: logger)
     }
 
     /// Route an incoming request to the appropriate handler
     public func route(request: HTTPRequest) async -> HTTPResponseType {
-        // Normalize the path by removing API version prefix if present
-        let normalizedPath = normalizePath(request.path)
+        // Execute middleware chain before routing
+        return await executeMiddlewareChain(request: request, middlewareIndex: 0)
+    }
+
+    /// Execute middleware chain recursively
+    private func executeMiddlewareChain(request: HTTPRequest, middlewareIndex: Int) async -> HTTPResponseType {
+        // If we've executed all middlewares, proceed to route matching
+        if middlewareIndex >= middlewares.count {
+            return await handleRoute(request: request)
+        }
+
+        // Execute current middleware
+        let middleware = middlewares[middlewareIndex]
+        return await middleware.handle(request) { modifiedRequest in
+            // Continue to next middleware
+            await self.executeMiddlewareChain(request: modifiedRequest, middlewareIndex: middlewareIndex + 1)
+        }
+    }
+
+    /// Handle route matching and dispatch to handler
+    private func handleRoute(request: HTTPRequest) async -> HTTPResponseType {
+        let path = request.path
 
         logger.debug("Routing request", metadata: [
             "method": "\(request.method.rawValue)",
-            "original_path": "\(request.path)",
-            "normalized_path": "\(normalizedPath)"
+            "path": "\(path)"
         ])
 
         // Find matching route
         for route in routes {
-            if route.method == request.method && route.pattern.matches(normalizedPath) {
+            if route.method == request.method && route.pattern.matches(path) {
                 logger.debug("Route matched", metadata: [
                     "pattern": "\(route.pattern.pattern)"
                 ])
 
                 // Extract path parameters and add to request
-                let pathParams = route.pattern.extractParameters(from: normalizedPath)
+                let pathParams = route.pattern.extractParameters(from: path)
                 var requestWithParams = request
                 requestWithParams.pathParameters = pathParams
 
@@ -60,7 +79,7 @@ public final class Router {
 
         // Check if path matches any pattern but with wrong method
         for route in routes {
-            if route.pattern.matches(normalizedPath) {
+            if route.pattern.matches(path) {
                 logger.warning("Path matched but wrong method", metadata: [
                     "expected": "\(route.method.rawValue)",
                     "received": "\(request.method.rawValue)"
@@ -78,28 +97,68 @@ public final class Router {
         ])
         return .standard(HTTPResponse.error("Not found: \(request.path)", status: .notFound))
     }
+}
 
-    /// Normalize path by removing API version prefix
-    /// Examples:
-    ///   /v1.51/containers/json -> /containers/json
-    ///   /v1.24/version -> /version
-    ///   /version -> /version
-    private func normalizePath(_ path: String) -> String {
-        // Match /vX.Y/ prefix (e.g., /v1.51/, /v1.24/)
-        let versionPattern = #"^/v\d+\.\d+(/.*)?$"#
-        guard let regex = try? NSRegularExpression(pattern: versionPattern),
-              let match = regex.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) else {
-            return path
-        }
+/// Builder for constructing a Router with routes and middlewares
+public final class RouterBuilder {
+    private let logger: Logger
+    private var routes: [(method: HTTPMethod, pattern: RoutePattern, handler: RouteHandler)] = []
+    private var middlewares: [Middleware] = []
 
-        // If there's a capture group (the part after version), return it
-        if match.numberOfRanges > 1,
-           let captureRange = Range(match.range(at: 1), in: path) {
-            let captured = String(path[captureRange])
-            return captured.isEmpty ? "/" : captured
-        }
+    fileprivate init(logger: Logger) {
+        self.logger = logger
+    }
 
-        return path
+    /// Register a middleware to be executed before route handlers
+    public func use(_ middleware: Middleware) -> RouterBuilder {
+        middlewares.append(middleware)
+        logger.debug("Registered middleware", metadata: [
+            "middleware": "\(type(of: middleware))"
+        ])
+        return self
+    }
+
+    /// Register a route handler
+    public func register(method: HTTPMethod, pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        let routePattern = RoutePattern(pattern: pattern)
+        routes.append((method: method, pattern: routePattern, handler: handler))
+        logger.debug("Registered route", metadata: [
+            "method": "\(method.rawValue)",
+            "pattern": "\(pattern)"
+        ])
+        return self
+    }
+
+    // MARK: - DSL Methods
+
+    /// Register a GET route
+    public func get(_ pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        return register(method: .GET, pattern: pattern, handler: handler)
+    }
+
+    /// Register a POST route
+    public func post(_ pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        return register(method: .POST, pattern: pattern, handler: handler)
+    }
+
+    /// Register a PUT route
+    public func put(_ pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        return register(method: .PUT, pattern: pattern, handler: handler)
+    }
+
+    /// Register a DELETE route
+    public func delete(_ pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        return register(method: .DELETE, pattern: pattern, handler: handler)
+    }
+
+    /// Register a HEAD route
+    public func head(_ pattern: String, handler: @escaping RouteHandler) -> RouterBuilder {
+        return register(method: .HEAD, pattern: pattern, handler: handler)
+    }
+
+    /// Build the immutable router
+    public func build() -> Router {
+        return Router(logger: logger, routes: routes, middlewares: middlewares)
     }
 }
 

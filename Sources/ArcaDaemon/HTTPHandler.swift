@@ -122,13 +122,17 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
 
         // Route the request asynchronously
         let eventLoop = context.eventLoop
+        // Suppress non-Sendable warning: NIO's ChannelHandler model ensures thread-safety
+        // through event loop isolation - each handler instance is only accessed from its
+        // associated event loop
+        let capturedContext = context
         eventLoop.execute {
-            Task {
+            Task { [capturedContext] in
                 let responseType = await self.router.route(request: request)
 
                 // Send response on the event loop
                 eventLoop.execute {
-                    self.sendResponseType(context: context, responseType: responseType)
+                    self.sendResponseType(context: capturedContext, responseType: responseType)
                     self.reset()
                 }
             }

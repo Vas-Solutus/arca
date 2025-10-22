@@ -108,9 +108,12 @@ public final class ArcaDaemon {
         let execManager = ExecManager(containerManager: containerManager, logger: logger)
         self.execManager = execManager
 
-        // Create router and register routes
-        let router = Router(logger: logger)
-        registerRoutes(router: router, containerManager: containerManager, imageManager: imageManager, execManager: execManager)
+        // Create router builder, register middlewares and routes
+        let builder = Router.builder(logger: logger)
+            .use(RequestLogger(logger: logger))
+            .use(APIVersionNormalizer())
+        registerRoutes(builder: builder, containerManager: containerManager, imageManager: imageManager, execManager: execManager)
+        let router = builder.build()
 
         // Create and start server
         let server = ArcaServer(socketPath: socketPath, router: router, execManager: execManager, containerManager: containerManager, logger: logger)
@@ -149,7 +152,7 @@ public final class ArcaDaemon {
     }
 
     /// Register all API routes
-    private func registerRoutes(router: Router, containerManager: ContainerManager, imageManager: ImageManager, execManager: ExecManager) {
+    private func registerRoutes(builder: RouterBuilder, containerManager: ContainerManager, imageManager: ImageManager, execManager: ExecManager) {
         logger.info("Registering API routes")
 
         // Create handlers
@@ -158,7 +161,7 @@ public final class ArcaDaemon {
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
 
         // System endpoints - Ping (GET and HEAD)
-        router.register(method: .GET, pattern: "/_ping") { _ in
+        _ = builder.get("/_ping") { _ in
             let response = SystemHandlers.handlePing()
             let body = Data("OK".utf8)
             var headers = HTTPHeaders()
@@ -169,7 +172,7 @@ public final class ArcaDaemon {
             return .standard(HTTPResponse(status: .ok, headers: headers, body: body))
         }
 
-        router.register(method: .HEAD, pattern: "/_ping") { _ in
+        _ = builder.head("/_ping") { _ in
             let response = SystemHandlers.handlePing()
             var headers = HTTPHeaders()
             headers.add(name: "API-Version", value: response.apiVersion)
@@ -178,13 +181,13 @@ public final class ArcaDaemon {
             return .standard(HTTPResponse(status: .ok, headers: headers, body: nil))
         }
 
-        router.register(method: .GET, pattern: "/version") { _ in
+        _ = builder.get("/version") { _ in
             let response = SystemHandlers.handleVersion()
             return .standard(HTTPResponse.json(response))
         }
 
         // Container endpoints - List
-        router.register(method: .GET, pattern: "/containers/json") { request in
+        _ = builder.get("/containers/json") { request in
             // Validate and parse query parameters
             do {
                 let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
@@ -201,59 +204,57 @@ public final class ArcaDaemon {
                 )
 
                 if let error = listResponse.error {
-                    return .standard(HTTPResponse.error(
-                        "Failed to list containers: \(error.localizedDescription)",
-                        status: .internalServerError
+                    return .standard(HTTPResponse.internalServerError(
+                        "Failed to list containers: \(error.localizedDescription)"
                     ))
                 }
 
-                return .standard(HTTPResponse.json(listResponse.containers))
+                return .standard(HTTPResponse.ok(listResponse.containers))
             } catch let error as ValidationError {
                 return .standard(error.toHTTPResponse())
             } catch {
-                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
+                return .standard(HTTPResponse.badRequest("Invalid query parameters: \(error.localizedDescription)"))
             }
         }
 
         // Container endpoints - Create
-        router.register(method: .POST, pattern: "/containers/create") { request in
+        _ = builder.post("/containers/create") { request in
             // Parse container name from query parameters
-            let name = request.queryParameters["name"]
+            let name = request.queryString("name")
 
             // Parse JSON body
-            guard let body = request.body,
-                  let createRequest = try? JSONDecoder().decode(ContainerCreateRequest.self, from: body) else {
-                return .standard(HTTPResponse.error("Invalid or missing request body", status: .badRequest))
-            }
+            do {
+                let createRequest = try request.jsonBody(ContainerCreateRequest.self)
 
-            // Call handler
-            let result = await containerHandlers.handleCreateContainer(request: createRequest, name: name)
+                // Call handler
+                let result = await containerHandlers.handleCreateContainer(request: createRequest, name: name)
 
-            switch result {
-            case .success(let response):
-                return .standard(HTTPResponse.json(response, status: .created))
-            case .failure(let error):
-                // Return 404 for image not found so Docker CLI knows to pull
-                if case .imageNotFound = error {
-                    return .standard(HTTPResponse.error(error.description, status: .notFound))
+                switch result {
+                case .success(let response):
+                    return .standard(HTTPResponse.created(response))
+                case .failure(let error):
+                    // Return 404 for image not found so Docker CLI knows to pull
+                    if case .imageNotFound = error {
+                        return .standard(HTTPResponse.notFound(error.description))
+                    }
+                    return .standard(HTTPResponse.internalServerError(error.description))
                 }
-                return .standard(HTTPResponse.error(error.description, status: .internalServerError))
+            } catch {
+                return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
             }
         }
 
         // Container endpoints - Start
-        router.register(method: .POST, pattern: "/containers/{id}/start") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/start") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             let result = await containerHandlers.handleStartContainer(id: id)
 
             switch result {
             case .success:
-                var headers = HTTPHeaders()
-                headers.add(name: "Content-Length", value: "0")
-                return .standard(HTTPResponse(status: .noContent, headers: headers))
+                return .standard(HTTPResponse.noContent())
             case .failure(let error):
                 let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
                 return .standard(HTTPResponse.error(error.description, status: status))
@@ -261,9 +262,9 @@ public final class ArcaDaemon {
         }
 
         // Container endpoints - Stop
-        router.register(method: .POST, pattern: "/containers/{id}/stop") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/stop") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             // Validate timeout parameter
@@ -274,9 +275,7 @@ public final class ArcaDaemon {
 
                 switch result {
                 case .success:
-                    var headers = HTTPHeaders()
-                    headers.add(name: "Content-Length", value: "0")
-                    return .standard(HTTPResponse(status: .noContent, headers: headers))
+                    return .standard(HTTPResponse.noContent())
                 case .failure(let error):
                     let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
                     return .standard(HTTPResponse.error(error.description, status: status))
@@ -289,9 +288,9 @@ public final class ArcaDaemon {
         }
 
         // Container endpoints - Remove
-        router.register(method: .DELETE, pattern: "/containers/{id}") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.delete("/containers/{id}") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
@@ -311,9 +310,9 @@ public final class ArcaDaemon {
         }
 
         // Container endpoints - Inspect
-        router.register(method: .GET, pattern: "/containers/{id}/json") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.get("/containers/{id}/json") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             let result = await containerHandlers.handleInspectContainer(id: id)
@@ -328,9 +327,9 @@ public final class ArcaDaemon {
         }
 
         // Container endpoints - Logs
-        router.register(method: .GET, pattern: "/containers/{id}/logs") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.get("/containers/{id}/logs") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             // Validate query parameters
@@ -361,9 +360,9 @@ public final class ArcaDaemon {
             }
         }
 
-        router.register(method: .POST, pattern: "/containers/{id}/attach") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/attach") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             let stdout = request.queryParameters["stdout"] == "1"
@@ -382,9 +381,9 @@ public final class ArcaDaemon {
             )
         }
 
-        router.register(method: .POST, pattern: "/containers/{id}/wait") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/wait") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             // Wait for container to exit and return exit code
@@ -400,9 +399,9 @@ public final class ArcaDaemon {
             }
         }
 
-        router.register(method: .POST, pattern: "/containers/{id}/resize") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/resize") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             let height = request.queryParameters["h"].flatMap { Int($0) }
@@ -421,9 +420,9 @@ public final class ArcaDaemon {
         }
 
         // Exec endpoints
-        router.register(method: .POST, pattern: "/containers/{id}/exec") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing container ID", status: .badRequest))
+        _ = builder.post("/containers/{id}/exec") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
             // Parse JSON body
@@ -443,9 +442,9 @@ public final class ArcaDaemon {
             }
         }
 
-        router.register(method: .POST, pattern: "/exec/{id}/start") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+        _ = builder.post("/exec/{id}/start") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing exec ID"))
             }
 
             // Parse JSON body
@@ -459,9 +458,9 @@ public final class ArcaDaemon {
         }
 
         // Exec endpoints - Resize
-        router.register(method: .POST, pattern: "/exec/{id}/resize") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+        _ = builder.post("/exec/{id}/resize") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing exec ID"))
             }
 
             let height = request.queryParameters["h"].flatMap(Int.init)
@@ -471,9 +470,9 @@ public final class ArcaDaemon {
         }
 
         // Exec endpoints - Inspect
-        router.register(method: .GET, pattern: "/exec/{id}/json") { request in
-            guard let id = request.pathParameters["id"] else {
-                return .standard(HTTPResponse.error("Missing exec ID", status: .badRequest))
+        _ = builder.get("/exec/{id}/json") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing exec ID"))
             }
 
             let result = await execHandlers.handleInspectExec(execID: id)
@@ -488,7 +487,7 @@ public final class ArcaDaemon {
         }
 
         // Image endpoints
-        router.register(method: .GET, pattern: "/images/json") { request in
+        _ = builder.get("/images/json") { request in
             // Validate and parse query parameters
             do {
                 let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
@@ -517,7 +516,7 @@ public final class ArcaDaemon {
             }
         }
 
-        router.register(method: .POST, pattern: "/images/create") { request in
+        _ = builder.post("/images/create") { request in
             // Parse query parameters
             guard let fromImage = request.queryParameters["fromImage"] else {
                 return .standard(HTTPResponse.error("Missing 'fromImage' query parameter", status: .badRequest))
@@ -550,9 +549,9 @@ public final class ArcaDaemon {
             )
         }
 
-        router.register(method: .DELETE, pattern: "/images/{name}") { request in
-            guard let name = request.pathParameters["name"] else {
-                return .standard(HTTPResponse.error("Missing image name", status: .badRequest))
+        _ = builder.delete("/images/{name}") { request in
+            guard let name = request.pathParam("name") else {
+                return .standard(HTTPResponse.badRequest("Missing image name"))
             }
 
             let force = request.queryParameters["force"] == "true" || request.queryParameters["force"] == "1"
