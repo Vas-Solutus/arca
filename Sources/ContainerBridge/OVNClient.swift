@@ -3,11 +3,12 @@ import GRPC
 import Logging
 import NIO
 import NIOPosix
+import Containerization
+import ContainerizationOS
 
 /// OVNClient handles gRPC communication with the helper VM's control API via vsock
 public actor OVNClient {
     private let logger: Logger
-    private let vsockPort: UInt32 = 9999
     private var channel: GRPCChannel?
     private var eventLoopGroup: EventLoopGroup?
     private var client: Arca_Network_NetworkControlNIOClient?
@@ -33,24 +34,33 @@ public actor OVNClient {
         self.logger = logger ?? Logger(label: "arca.network.ovnclient")
     }
 
-    /// Connect to the helper VM via TCP
-    /// Note: grpc-swift does not support vsock transport. The helper VM listens on TCP localhost.
-    public func connect(vmCID: UInt32) async throws {
-        logger.info("Connecting to helper VM via TCP", metadata: ["port": "\(vsockPort)"])
+    /// Connect to the helper VM via vsock using LinuxContainer.dialVsock()
+    public func connect(container: Containerization.LinuxContainer, vsockPort: UInt32 = 9999) async throws {
+        logger.info("Connecting to helper VM via vsock (LinuxContainer.dialVsock())", metadata: [
+            "vsockPort": "\(vsockPort)"
+        ])
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.eventLoopGroup = group
 
-        let channel = try GRPCChannelPool.with(
-            target: .host("localhost", port: Int(vsockPort)),
-            transportSecurity: .plaintext,
-            eventLoopGroup: group
-        )
+        // Use LinuxContainer.dialVsock() to get a FileHandle for the vsock connection
+        logger.debug("Calling container.dialVsock(\(vsockPort))...")
+        let fileHandle = try await container.dialVsock(port: vsockPort)
+        logger.debug("container.dialVsock() successful, got file handle", metadata: [
+            "fd": "\(fileHandle.fileDescriptor)"
+        ])
+
+        // Create gRPC channel from the connected socket FileHandle
+        let channel = ClientConnection(
+            configuration: .default(
+                target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
+                eventLoopGroup: group
+            ))
 
         self.channel = channel
         self.client = Arca_Network_NetworkControlNIOClient(channel: channel)
 
-        logger.info("Connected to helper VM control API")
+        logger.info("Connected to helper VM control API via vsock")
     }
 
     /// Disconnect from the helper VM

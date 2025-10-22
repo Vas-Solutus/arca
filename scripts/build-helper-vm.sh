@@ -8,11 +8,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 HELPERVM_DIR="$PROJECT_ROOT/helpervm"
 OUTPUT_DIR="$HOME/.arca/helpervm"
-IMAGE_NAME="arca-helpervm"
+IMAGE_NAME="arca-network-helper"
 IMAGE_TAG="latest"
+OCI_LAYOUT_DIR="$OUTPUT_DIR/oci-layout"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
+
+# Clean and recreate OCI layout directory
+if [ -d "$OCI_LAYOUT_DIR" ]; then
+    echo "Removing existing OCI layout directory..."
+    rm -rf "$OCI_LAYOUT_DIR"
+fi
+mkdir -p "$OCI_LAYOUT_DIR"
 
 # Step 1: Generate gRPC code from proto
 echo "Step 1: Generating gRPC code from proto..."
@@ -22,11 +30,11 @@ protoc --go_out=../control-api/proto --go_opt=paths=source_relative \
     --go-grpc_out=../control-api/proto --go-grpc_opt=paths=source_relative \
     network.proto
 
-# Step 2: Build Docker/OCI image
+# Step 2: Build OCI image
 echo "Step 2: Building OCI image..."
 cd "$HELPERVM_DIR"
 
-# Use Docker if available, otherwise podman
+# Determine which builder to use
 if command -v docker &> /dev/null; then
     BUILDER="docker"
 elif command -v podman &> /dev/null; then
@@ -38,68 +46,87 @@ fi
 
 echo "Using builder: $BUILDER"
 
+# Build the image
 $BUILDER build -t "$IMAGE_NAME:$IMAGE_TAG" .
 
-# Step 3: Create temporary container and export filesystem
-echo "Step 3: Creating temporary container and exporting filesystem..."
-TEMP_TAR="$OUTPUT_DIR/helpervm-temp.tar"
+# Detect Docker socket path for skopeo
+DOCKER_SOCKET=""
+if [ "$BUILDER" = "docker" ]; then
+    # Get the active docker context endpoint
+    DOCKER_ENDPOINT=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || echo "")
+    if [ -n "$DOCKER_ENDPOINT" ]; then
+        # Strip the unix:// prefix to get the socket path
+        DOCKER_SOCKET="${DOCKER_ENDPOINT#unix://}"
+        echo "Detected Docker socket: $DOCKER_SOCKET"
+    fi
+fi
 
-# Create a temporary container from the image (doesn't start it)
-TEMP_CONTAINER=$($BUILDER create "$IMAGE_NAME:$IMAGE_TAG")
-echo "Created temporary container: $TEMP_CONTAINER"
+# Step 3: Save as OCI Image Layout
+echo "Step 3: Saving image as OCI Image Layout..."
 
-# Export the container's filesystem (this gets the merged filesystem, not layers)
-$BUILDER export "$TEMP_CONTAINER" -o "$TEMP_TAR"
+if command -v skopeo &> /dev/null; then
+    # Method 1: Use skopeo (preferred - creates proper OCI layout)
+    echo "Using skopeo to export OCI layout..."
+    if [ -n "$DOCKER_SOCKET" ] && [ "$BUILDER" = "docker" ]; then
+        # Use explicit socket path for non-standard Docker setups (Colima, etc)
+        skopeo --insecure-policy copy --src-daemon-host "unix://$DOCKER_SOCKET" \
+            "docker-daemon:$IMAGE_NAME:$IMAGE_TAG" "oci:$OCI_LAYOUT_DIR:$IMAGE_TAG"
+    else
+        # Use default socket path
+        skopeo copy "docker-daemon:$IMAGE_NAME:$IMAGE_TAG" "oci:$OCI_LAYOUT_DIR:$IMAGE_TAG"
+    fi
 
-# Remove temporary container
-$BUILDER rm "$TEMP_CONTAINER"
+elif [ "$BUILDER" = "podman" ]; then
+    # Method 2: Use podman push to OCI layout
+    echo "Using podman to export OCI layout..."
+    podman push "$IMAGE_NAME:$IMAGE_TAG" "oci:$OCI_LAYOUT_DIR:$IMAGE_TAG"
+fi
 
-# Step 4: Extract filesystem from tar
-echo "Step 4: Extracting filesystem..."
-TEMP_EXTRACT="$OUTPUT_DIR/extract"
-mkdir -p "$TEMP_EXTRACT"
-cd "$TEMP_EXTRACT"
-tar -xf "$TEMP_TAR"
+# Fix index.json for Apple Containerization framework compatibility
+echo "Fixing index.json for Apple Containerization framework..."
+INDEX_FILE="$OCI_LAYOUT_DIR/index.json"
+if [ -f "$INDEX_FILE" ]; then
+    # Use python to:
+    # 1. Add mediaType field to the index
+    # 2. Fix the image reference annotation to include image name
+    python3 -c "
+import json
+with open('$INDEX_FILE', 'r') as f:
+    data = json.load(f)
 
-# Step 5: Create raw disk image using Docker (macOS doesn't have ext4 tools)
-echo "Step 5: Creating raw disk image..."
-DISK_IMAGE="$OUTPUT_DIR/disk.img"
-DISK_SIZE="500M"
+# Add mediaType if missing
+if 'mediaType' not in data:
+    data['mediaType'] = 'application/vnd.oci.image.index.v1+json'
 
-# Create empty disk image
-dd if=/dev/zero of="$DISK_IMAGE" bs=1M count=500 status=progress
+# Fix image reference in manifest annotations
+if 'manifests' in data:
+    for manifest in data['manifests']:
+        if 'annotations' in manifest:
+            ref_name = manifest['annotations'].get('org.opencontainers.image.ref.name', '')
+            # If ref_name is just a tag (e.g., 'latest'), prepend the image name
+            if ref_name and ':' not in ref_name and '/' not in ref_name:
+                manifest['annotations']['org.opencontainers.image.ref.name'] = '$IMAGE_NAME:' + ref_name
+                print(f\"Fixed image reference: {ref_name} -> $IMAGE_NAME:{ref_name}\")
 
-# Use Docker to create ext4 filesystem and copy files
-# We need Linux tools (mkfs.ext4, mount) which don't exist on macOS
-echo "Creating ext4 filesystem and copying files using Docker..."
-$BUILDER run --rm --privileged \
-    -v "$DISK_IMAGE:/disk.img" \
-    -v "$TEMP_EXTRACT:/rootfs:ro" \
-    alpine:3.22 \
-    sh -c '
-        # Install ext4 tools
-        apk add --no-cache e2fsprogs
+# Reorder to put mediaType after schemaVersion
+ordered_data = {'schemaVersion': data['schemaVersion'], 'mediaType': data['mediaType']}
+ordered_data.update({k: v for k, v in data.items() if k not in ['schemaVersion', 'mediaType']})
 
-        # Create ext4 filesystem
-        mkfs.ext4 -F /disk.img
+with open('$INDEX_FILE', 'w') as f:
+    json.dump(ordered_data, f, indent=2)
+print('index.json fixed for Apple Containerization framework')
+"
+fi
 
-        # Mount disk image
-        mkdir -p /mnt
-        mount -o loop /disk.img /mnt
-
-        # Copy filesystem contents
-        cp -a /rootfs/* /mnt/ || true
-
-        # Unmount
-        umount /mnt
-
-        echo "Disk image creation complete"
-    '
-
-# Cleanup
-rm -rf "$TEMP_EXTRACT" "$TEMP_TAR"
-
-echo "Helper VM disk image created at: $DISK_IMAGE"
-echo "Image size: $(du -h "$DISK_IMAGE" | cut -f1)"
+echo ""
+echo "✓ Helper VM OCI image built successfully"
+echo "  Image: $IMAGE_NAME:$IMAGE_TAG"
+echo "  OCI Layout: $OCI_LAYOUT_DIR"
+echo "  Size: $(du -sh "$OCI_LAYOUT_DIR" 2>/dev/null | cut -f1 || echo 'N/A')"
+echo ""
+echo "Next steps:"
+echo "  1. The OCI Image Layout is ready at: $OCI_LAYOUT_DIR"
+echo "  2. When Arca daemon starts, NetworkHelperVM will load this into the ImageStore"
+echo "  3. The helper VM will be available as: $IMAGE_NAME:$IMAGE_TAG"
 echo ""
 echo "Build complete!"

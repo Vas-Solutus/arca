@@ -539,9 +539,13 @@ docker logs -f <container-id>
 
 This phase implements Docker-compatible networking using a lightweight Linux VM running OVN/OVS, providing full Docker Network API compatibility with enterprise-grade security.
 
-### Phase 3.1: Helper VM Foundation (Week 1-2) ✅ COMPLETE
+### Phase 3.1: Helper VM Foundation (Week 1-2) 🚧 IN PROGRESS
 
-**Note**: Due to grpc-swift framework limitation (no vsock support in v1 or v2), implementation uses TCP localhost communication instead of vsock. This is documented as a framework constraint, not a shortcut.
+**Architecture Change**: The helper VM is now managed as a **Container** using the Apple Containerization framework, not a manual VZVirtualMachine. This provides:
+- Built-in vsock support via `Container.dial()` for gRPC communication
+- No custom kernel needed (uses standard containerization kernel)
+- Simpler lifecycle management (no manual VM configuration)
+- Consistent with how we manage application containers
 
 #### Helper VM Image Creation
 
@@ -564,10 +568,10 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
     - ListBridges()
     - SetNetworkPolicy(networkID, rules)
     - GetHealth() - Health check endpoint
-  - Use TCP listener on port 9999 (grpc-swift limitation: no vsock support)
+  - Use **vsock listener** on port 9999 for host-VM communication
   - Translate gRPC calls to ovs-vsctl/ovn-nbctl commands
   - Files: `helpervm/control-api/main.go`, `helpervm/control-api/server.go`
-  - **COMPLETED**: Go gRPC server with all NetworkControl methods implemented
+  - **COMPLETED**: Go gRPC server with vsock support and all NetworkControl methods implemented
 
 - [x] **Create helper VM startup script**
   - Start OVS daemon (ovs-vswitchd, ovsdb-server)
@@ -578,34 +582,36 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Files: `helpervm/scripts/startup.sh`, `helpervm/scripts/ovs-init.sh`
   - **COMPLETED**: Full VM initialization sequence with OVN/OVS startup
 
-- [x] **Build helper VM disk image**
-  - Package Alpine + OVN/OVS + control API into disk image
+- [x] **Build helper VM OCI image**
+  - Package Alpine + OVN/OVS + control API into OCI container image
   - Use buildah/podman to create OCI image
-  - Convert to raw disk format for VZVirtualMachine
-  - Store in `~/.arca/helpervm/disk.img`
+  - Store as standard OCI image (managed by Containerization framework's ImageStore)
+  - Tag as `arca-network-helper:latest`
   - Document build process in README
   - Files: `Makefile` target for `make helpervm`, `scripts/build-helper-vm.sh`
   - **COMPLETED**: Build infrastructure ready, Makefile target created
 
 #### NetworkHelperVM Swift Actor
 
-- [x] **Implement NetworkHelperVM actor for VM lifecycle**
-  - Launch helper VM using VZVirtualMachine
-  - VM configuration:
+- [ ] **Implement NetworkHelperVM actor for Container lifecycle**
+  - Launch helper VM as a **ClientContainer** using Containerization framework
+  - Container configuration:
+    - Image: `arca-network-helper:latest`
     - CPU: 1 vCPU
     - Memory: 256MB
-    - Disk: Helper VM image (~100MB)
-    - Network: VZNATNetworkDeviceAttachment for internet access
-    - Console: VZVirtioConsoleDeviceConfiguration for logging
-  - Monitor VM state and health
+    - Network: NAT networking for internet access (built into Containerization)
+    - Process: `/usr/local/bin/startup.sh` (init script)
+  - Monitor container state and health via OVNClient.getHealth()
   - Implement restart logic on crashes (max 3 retries)
-  - Handle graceful shutdown
+  - Handle graceful shutdown via ClientContainer.stop()
   - Files: `Sources/ContainerBridge/NetworkHelperVM.swift`
-  - **COMPLETED**: NetworkHelperVM actor with full VM lifecycle management
+  - **Status**: Needs rewrite to use ClientContainer instead of VZVirtualMachine
 
-- [x] **Implement OVNClient for gRPC communication**
-  - Create gRPC client using swift-grpc package
-  - Connect to helper VM via TCP localhost port 9999 (grpc-swift limitation)
+- [ ] **Update OVNClient to use Container.dial() for vsock**
+  - Update connect() method to accept ClientContainer reference
+  - Use `container.dial(9999)` to get FileHandle for vsock connection
+  - Create gRPC channel from FileHandle using `.connectedSocket(NIOBSDSocket.Handle(fd))`
+  - Remove TCP-based connection code
   - Implement methods mirroring control API:
     - createBridge(networkID:subnet:gateway:)
     - deleteBridge(networkID:)
@@ -616,7 +622,7 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
     - getHealth() - Health check
   - Handle connection failures with proper error handling
   - Files: `Sources/ContainerBridge/OVNClient.swift`
-  - **COMPLETED**: OVNClient actor with all gRPC methods implemented
+  - **Status**: Needs update to use Container.dial() instead of manual vsock/TCP
 
 - [x] **Generate Swift gRPC stubs from proto**
   - Add swift-protobuf and swift-grpc to Package.swift
@@ -626,11 +632,12 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Files: `Package.swift`, `scripts/generate-grpc.sh`, `Sources/ContainerBridge/Generated/network.pb.swift`
   - **COMPLETED**: Generated code with public visibility, Makefile target for plugin installation
 
-- [ ] **Test helper VM launch and basic OVN operations**
-  - Integration test: Launch helper VM and verify health
+- [ ] **Test helper VM container launch and basic OVN operations**
+  - Integration test: Launch helper VM as ClientContainer and verify health
+  - Test Container.dial() connectivity to gRPC API
   - Test bridge creation via OVNClient
   - Test bridge deletion
-  - Test TCP connectivity
+  - Test vsock communication via Container.dial()
   - Verify OVN databases are initialized correctly
   - Files: `Tests/ArcaTests/NetworkHelperVMTests.swift`
 

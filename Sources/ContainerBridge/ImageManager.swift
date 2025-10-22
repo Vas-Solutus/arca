@@ -36,6 +36,22 @@ public actor ImageManager {
         logger.info("ImageManager initialized")
     }
 
+    /// Load images from an OCI Image Layout directory into the ImageStore
+    public func loadFromOCILayout(directory: URL) async throws -> [Containerization.Image] {
+        logger.info("Loading images from OCI layout", metadata: [
+            "directory": "\(directory.path)"
+        ])
+
+        let loadedImages = try await imageStore.load(from: directory)
+
+        logger.info("Successfully loaded images from OCI layout", metadata: [
+            "count": "\(loadedImages.count)",
+            "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
+        ])
+
+        return loadedImages
+    }
+
     // MARK: - Image Listing
 
     /// List all images

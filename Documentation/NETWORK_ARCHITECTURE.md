@@ -2,15 +2,16 @@
 
 ## Executive Summary
 
-Arca implements Docker-compatible networking using a lightweight Linux VM running Open vSwitch (OVS) and Open Virtual Network (OVN). This architecture provides:
+Arca implements Docker-compatible networking using a lightweight Linux VM running Open vSwitch (OVS) and Open Virtual Network (OVN), **managed by the Apple Containerization framework**. This architecture provides:
 
 - **Full Docker Network API compatibility** - Bridge, overlay, and custom networks
 - **True network isolation** - Separate OVS bridges per Docker network
 - **Superior security** - VM-per-container isolation + OVN distributed firewall
 - **Production-grade SDN** - Mature stack used by OpenStack and Kubernetes
+- **Proven vsock communication** - Uses Apple's `Container.dial()` for host-VM gRPC
 - **Future-proof** - Multi-host overlay support for potential clustering
 
-This design leverages the same VM-based approach used by Apple's Containerization framework while providing enterprise-grade networking capabilities that differentiate Arca from Docker Desktop, Podman Desktop, Colima, and OrbStack.
+This design **fully leverages the Containerization framework** for both container VMs and the helper VM, providing enterprise-grade networking capabilities that differentiate Arca from Docker Desktop, Podman Desktop, Colima, and OrbStack.
 
 ---
 
@@ -26,15 +27,15 @@ This design leverages the same VM-based approach used by Apple's Containerizatio
 │  │ Arca Daemon (Swift)                                        │   │
 │  │  - Docker API Server (SwiftNIO)                            │   │
 │  │  - NetworkManager (Swift actor)                            │   │
-│  │  - NetworkHelperVM (VM lifecycle management)               │   │
-│  │  - OVNClient (gRPC client via TCP localhost)               │   │
+│  │  - OVNClient (gRPC via Container.dial() over vsock)        │   │
 │  └────────────────────────────────────────────────────────────┘   │
 │                              ↓                                      │
-│                      gRPC over TCP localhost                        │
-│                       (grpc-swift limitation)                       │
+│                    gRPC over vsock via Container.dial()             │
+│                    (Apple Containerization framework)               │
 │                              ↓                                      │
 │  ┌────────────────────────────────────────────────────────────┐   │
-│  │ Network Helper VM (Alpine Linux ~50-100MB)                 │   │
+│  │ Network Helper VM (Managed as Container)                   │   │
+│  │ Alpine Linux ~50-100MB                                     │   │
 │  │                                                             │   │
 │  │  ┌──────────────────────────────────────────────────────┐  │   │
 │  │  │ OVN/OVS Stack                                        │  │   │
@@ -114,24 +115,31 @@ actor NetworkManager {
 
 #### 2. NetworkHelperVM (Swift Actor)
 
-**Purpose**: Manage the lifecycle of the helper VM and provide abstraction over OVN API.
+**Purpose**: Manage the lifecycle of the helper VM using the Containerization framework.
 
 **Responsibilities**:
-- Launch/stop the Alpine Linux helper VM
+- Launch/stop helper VM as a Container (not raw VZVirtualMachine)
 - Monitor helper VM health
-- Provide Swift-native API for OVN operations
-- Handle gRPC/vsock communication with helper VM
-- Manage VM resources (CPU, memory, disk)
-- Handle VM recovery on failure
+- Provide Swift-native API for OVN operations via `Container.dial()`
+- Handle vsock communication using proven Apple infrastructure
+- Manage container resources (CPU, memory, disk)
+- Handle container recovery on failure
+
+**Key Insight**: The helper VM is just another **Container** managed by the Containerization framework, not a manually-managed VZVirtualMachine. This gives us:
+- Proven vsock communication via `Container.dial(port)`
+- Standard container lifecycle management
+- No need to debug VZVirtioSocketDevice ourselves
 
 **API**:
 ```swift
 actor NetworkHelperVM {
+    private var helperContainer: ClientContainer?
+
     func start() async throws
     func stop() async throws
     func isHealthy() async -> Bool
 
-    // OVN Bridge Operations
+    // OVN Bridge Operations (via OVNClient)
     func createBridge(networkID: String, subnet: String, gateway: String) async throws
     func deleteBridge(networkID: String) async throws
     func listBridges() async throws -> [BridgeInfo]
@@ -142,7 +150,7 @@ actor NetworkHelperVM {
         networkID: String,
         ip: String,
         mac: String
-    ) async throws -> VZNetworkDeviceConfiguration
+    ) async throws
 
     func detachContainer(containerID: String, networkID: String) async throws
 
@@ -153,23 +161,34 @@ actor NetworkHelperVM {
 
 #### 3. OVNClient (Swift)
 
-**Purpose**: Low-level gRPC client for communicating with the helper VM's control API.
+**Purpose**: Low-level gRPC client for communicating with the helper VM's control API via vsock.
 
 **Responsibilities**:
-- Establish and maintain gRPC connection over TCP localhost
+- Establish gRPC connection using `Container.dial(port)` (vsock)
 - Serialize/deserialize protocol buffer messages
 - Handle connection failures and retries
 - Provide type-safe API for OVN operations
 
-**Note**: Uses TCP instead of vsock due to grpc-swift framework limitation (no vsock support in v1 or v2).
+**Key Change**: Uses **vsock via `Container.dial()`** instead of manual socket management. This is the proven Apple approach used by their container project.
 
 **Implementation**:
 ```swift
 actor OVNClient {
-    private let vsockPort: UInt32 = 9999  // Port number (TCP localhost)
-    private var connection: GRPCChannel?
+    private let vsockPort: UInt32 = 9999
+    private var channel: GRPCChannel?
+    private weak var helperContainer: ClientContainer?
 
-    func connect(vmCID: UInt32) async throws  // vmCID parameter kept for future vsock support
+    // Connect via Container.dial() for proven vsock communication
+    func connect(container: ClientContainer) async throws {
+        let fileHandle = try await container.dial(vsockPort)
+        let channel = try GRPCChannelPool.with(
+            target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
+            transportSecurity: .plaintext,
+            eventLoopGroup: group
+        )
+        self.channel = channel
+    }
+
     func disconnect() async throws
 
     // OVN Operations (mirrors helper VM API)
@@ -193,8 +212,8 @@ actor OVNClient {
    - `ovn-southbound`: Physical flow programming
 
 2. **Control API Server** (Go):
-   - gRPC server listening on TCP localhost port 9999
-   - Note: Uses TCP instead of vsock due to grpc-swift framework limitation
+   - gRPC server listening on **vsock port 9999**
+   - Uses native Linux vsock sockets (AF_VSOCK)
    - Translates API calls to OVS/OVN CLI commands
    - Manages bridge creation/deletion
    - Configures container network attachments
@@ -204,12 +223,14 @@ actor OVNClient {
    - dnsmasq for DNS resolution within networks
    - DHCP server for IP allocation (optional, can use static IPs)
 
-**VM Specifications**:
-- **Base Image**: Alpine Linux 3.22 (latest stable, ~50MB)
+**Container Specifications**:
+- **Base Image**: Alpine Linux 3.22 OCI image (latest stable, ~50MB)
 - **Memory**: 128MB minimum, 256MB recommended
 - **CPU**: 1 vCPU
 - **Disk**: 500MB (includes OVN/OVS binaries)
-- **Network**: vmnet NAT + vsock for control plane
+- **Network**: Standard containerization networking + vsock for control plane
+- **Managed By**: Apple Containerization framework (ClientContainer)
+- **Kernel**: Standard containerization kernel (no custom build needed)
 
 ---
 
@@ -662,51 +683,54 @@ func main() {
 }
 ```
 
-### VM Launch in Swift
+### Helper VM Launch Using Containerization Framework
 
 ```swift
-func launchHelperVM() async throws -> VZVirtualMachine {
-    let config = VZVirtualMachineConfiguration()
-
-    // CPU
-    config.cpuCount = 1
-
-    // Memory
-    config.memorySize = 256 * 1024 * 1024 // 256MB
-
-    // Bootloader
-    let bootloader = VZLinuxBootLoader(kernelURL: kernelURL)
-    bootloader.commandLine = "console=hvc0"
-    config.bootLoader = bootloader
-
-    // Disk (helper VM image)
-    let diskAttachment = try VZDiskImageStorageDeviceAttachment(
-        url: helperVMImageURL,
-        readOnly: false
+func launchHelperVM() async throws -> ClientContainer {
+    // Build helper VM configuration (OCI image with OVN/OVS)
+    let helperConfig = ContainerConfiguration(
+        id: "arca-network-helper",
+        platform: .init(os: "linux", architecture: "arm64"),
+        root: .init(path: "/"), // OCI image root
+        mounts: [], // No special mounts needed
+        process: .init(
+            commandLine: ["/usr/local/bin/startup.sh"], // Start OVN/OVS + gRPC server
+            environment: []
+        )
     )
-    let disk = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
-    config.storageDevices = [disk]
 
-    // Network (vmnet NAT for internet access)
-    let networkDevice = VZVirtioNetworkDeviceConfiguration()
-    networkDevice.attachment = VZNATNetworkDeviceAttachment()
-    config.networkDevices = [networkDevice]
+    // Create helper VM as a Container (managed by Containerization framework)
+    let helperContainer = try await ClientContainer.create(
+        configuration: helperConfig,
+        kernel: standardKernel // Use standard containerization kernel
+    )
 
-    // Console
-    let console = VZVirtioConsoleDeviceConfiguration()
-    let consolePort = VZVirtioConsolePortConfiguration()
-    consolePort.isConsole = true
-    console.ports = [consolePort]
-    config.consoleDevices = [console]
+    // Start the container
+    try await helperContainer.bootstrap(stdio: [nil, nil, nil])
 
-    try config.validate()
+    // Wait for gRPC server to be ready
+    try await Task.sleep(for: .seconds(5))
 
-    let vm = VZVirtualMachine(configuration: config)
-    try await vm.start()
+    return helperContainer
+}
 
-    return vm
+// Connect to helper VM via vsock
+func connectToHelperVM(container: ClientContainer) async throws -> OVNClient {
+    let client = OVNClient()
+
+    // Use Container.dial() for proven vsock communication!
+    try await client.connect(container: container)
+
+    return client
 }
 ```
+
+**Key Benefits of This Approach**:
+- ✅ **No manual VZVirtualMachine management** - Containerization handles it
+- ✅ **Proven vsock infrastructure** - `Container.dial()` just works
+- ✅ **Consistent with container VMs** - Same framework for all VMs
+- ✅ **No custom kernel needed** - Use standard containerization kernel
+- ✅ **Simpler codebase** - Remove VsockListener, VsockRelay, etc.
 
 ---
 

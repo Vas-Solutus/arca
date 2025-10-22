@@ -71,5 +71,5 @@ echo "All services started successfully"
 echo "Starting Arca Network Control API..."
 
 # Start the control API server (foreground - this keeps the container running)
-# Note: Uses TCP instead of vsock due to grpc-swift limitation
-exec /usr/local/bin/arca-network-api --port=:9999
+# Uses vsock for secure host-guest communication
+exec /usr/local/bin/arca-network-api --vsock-port=9999

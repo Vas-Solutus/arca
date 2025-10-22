@@ -39,23 +39,6 @@ public final class ArcaDaemon {
         // Validate that kernel exists
         try configManager.validateConfig(config)
 
-        // Initialize and start Network Helper VM for OVN/OVS networking
-        logger.info("Initializing network helper VM...")
-        let networkHelperVM = NetworkHelperVM(logger: logger)
-        self.networkHelperVM = networkHelperVM
-
-        do {
-            try await networkHelperVM.start()
-            logger.info("Network helper VM started successfully")
-        } catch {
-            logger.error("Failed to start network helper VM", metadata: [
-                "error": "\(error)"
-            ])
-            // Continue without helper VM - networking features won't be available
-            // but basic container operations can still work
-            logger.warning("Daemon will continue without network helper VM - networking features disabled")
-        }
-
         // Check if socket already exists (daemon might be running)
         if ArcaServer.socketExists(at: socketPath) {
             logger.warning("Socket file already exists", metadata: [
@@ -80,6 +63,28 @@ public final class ArcaDaemon {
                 "error": "\(error)"
             ])
             // Continue anyway - we can still serve API requests
+        }
+
+        // Initialize and start Network Helper VM for OVN/OVS networking
+        logger.info("Initializing network helper VM...")
+        let networkHelperVM = NetworkHelperVM(
+            imageManager: imageManager,
+            kernelPath: config.kernelPath,
+            logger: logger
+        )
+        self.networkHelperVM = networkHelperVM
+
+        do {
+            try await networkHelperVM.initialize()
+            try await networkHelperVM.start()
+            logger.info("Network helper VM started successfully")
+        } catch {
+            logger.error("Failed to start network helper VM", metadata: [
+                "error": "\(error)"
+            ])
+            // Continue without helper VM - networking features won't be available
+            // but basic container operations can still work
+            logger.warning("Daemon will continue without network helper VM - networking features disabled")
         }
 
         // Initialize ContainerManager with kernel path from config

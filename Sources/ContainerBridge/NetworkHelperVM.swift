@@ -1,286 +1,299 @@
 import Foundation
-import Virtualization
+import Containerization
+import ContainerizationOS
+import ContainerizationOCI
 import Logging
 
 /// NetworkHelperVM manages the lifecycle of the helper VM running OVN/OVS
-public final class NetworkHelperVM: @unchecked Sendable {
+/// The helper VM is managed as a Container using the Containerization framework
+public actor NetworkHelperVM {
     private let logger: Logger
-    private nonisolated(unsafe) var vm: VZVirtualMachine?
-    private nonisolated(unsafe) var crashCount = 0
+    private let imageManager: ImageManager
+    private let kernelPath: String
+    private var containerManager: Containerization.ContainerManager?
+    private var container: Containerization.LinuxContainer?
+    private var crashCount = 0
     private let maxCrashes = 3
-    private nonisolated(unsafe) var isShuttingDown = false
+    private var isShuttingDown = false
+    private var ovnClient: OVNClient?
+    private var monitorTask: Task<Void, Never>?
 
-    // VM configuration
-    private let vmImagePath: URL
-    private let kernelPath: URL
-    private let vmCID: UInt32 = 3  // vsock context ID for helper VM
+    // Container configuration
+    private let helperImageReference = "arca-network-helper:latest"
+    private let helperContainerID = "arca-network-helper"
+    private let vsockPort: UInt32 = 9999  // gRPC API port
 
     public enum NetworkHelperVMError: Error, CustomStringConvertible {
-        case vmNotRunning
-        case vmImageNotFound(String)
-        case kernelNotFound(String)
-        case vmConfigurationInvalid(String)
-        case vmStartFailed(String)
+        case containerNotRunning
+        case helperImageNotFound(String)
+        case containerCreationFailed(String)
+        case containerStartFailed(String)
         case tooManyCrashes
         case healthCheckFailed
+        case dialFailed(String)
+        case notInitialized
 
         public var description: String {
             switch self {
-            case .vmNotRunning:
-                return "Helper VM is not running"
-            case .vmImageNotFound(let path):
-                return "Helper VM image not found at: \(path)"
-            case .kernelNotFound(let path):
-                return "Kernel not found at: \(path)"
-            case .vmConfigurationInvalid(let reason):
-                return "VM configuration invalid: \(reason)"
-            case .vmStartFailed(let reason):
-                return "Failed to start helper VM: \(reason)"
+            case .containerNotRunning:
+                return "Helper VM container is not running"
+            case .helperImageNotFound(let ref):
+                return "Helper VM image not found: \(ref)"
+            case .containerCreationFailed(let reason):
+                return "Failed to create helper VM container: \(reason)"
+            case .containerStartFailed(let reason):
+                return "Failed to start helper VM container: \(reason)"
             case .tooManyCrashes:
                 return "Helper VM crashed too many times (max: 3)"
             case .healthCheckFailed:
                 return "Helper VM health check failed"
+            case .dialFailed(let reason):
+                return "Failed to dial helper VM: \(reason)"
+            case .notInitialized:
+                return "NetworkHelperVM not initialized"
             }
         }
     }
 
-    public init(logger: Logger? = nil) {
+    public init(imageManager: ImageManager, kernelPath: String, logger: Logger? = nil) {
+        self.imageManager = imageManager
+        self.kernelPath = kernelPath
         self.logger = logger ?? Logger(label: "arca.network.helpervm")
 
-        // Helper VM image location
-        let arcaDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".arca")
-        self.vmImagePath = arcaDir
-            .appendingPathComponent("helpervm")
-            .appendingPathComponent("disk.img")
-
-        // Kernel location (shared with containerization)
-        self.kernelPath = arcaDir.appendingPathComponent("vmlinux")
-
         logger?.info("NetworkHelperVM initialized", metadata: [
-            "vmImagePath": "\(vmImagePath.path)",
-            "kernelPath": "\(kernelPath.path)"
+            "imageReference": "\(helperImageReference)",
+            "kernelPath": "\(kernelPath)",
+            "vsockPort": "\(vsockPort)"
         ])
     }
 
-    /// Start the helper VM
-    public func start() async throws {
-        logger.info("Starting helper VM...")
+    /// Initialize the ContainerManager for the helper VM
+    public func initialize() async throws {
+        logger.info("Initializing NetworkHelperVM ContainerManager...")
 
-        // Check if VM already running
-        if vm?.state == .running {
-            logger.warning("Helper VM already running")
-            return
+        // Verify kernel file exists
+        guard FileManager.default.fileExists(atPath: kernelPath) else {
+            throw NetworkHelperVMError.containerCreationFailed("Kernel not found at \(kernelPath)")
         }
 
-        // Verify files exist
-        logger.debug("Checking for VM image at: \(vmImagePath.path)")
-        guard FileManager.default.fileExists(atPath: vmImagePath.path) else {
-            logger.error("VM image not found at: \(vmImagePath.path)")
-            throw NetworkHelperVMError.vmImageNotFound(vmImagePath.path)
-        }
-        logger.debug("VM image found")
+        // Create kernel configuration
+        let kernel = Kernel(
+            path: URL(fileURLWithPath: kernelPath),
+            platform: detectSystemPlatform(),
+            commandline: Kernel.CommandLine(debug: false, panic: 0)
+        )
 
-        logger.debug("Checking for kernel at: \(kernelPath.path)")
-        guard FileManager.default.fileExists(atPath: kernelPath.path) else {
-            logger.error("Kernel not found at: \(kernelPath.path)")
-            throw NetworkHelperVMError.kernelNotFound(kernelPath.path)
-        }
-        logger.debug("Kernel found")
+        // Initialize the container manager for helper VM
+        containerManager = try await Containerization.ContainerManager(
+            kernel: kernel,
+            initfsReference: "vminit:latest"
+        )
 
-        // Create VM configuration
-        logger.debug("Creating VM configuration...")
-        let config: VZVirtualMachineConfiguration
-        do {
-            config = try createVMConfiguration()
-            logger.debug("VM configuration created successfully")
-        } catch {
-            logger.error("Failed to create VM configuration: \(error)")
-            throw error
-        }
-
-        // Create and start VM
-        logger.debug("Creating VZVirtualMachine instance...")
-        let newVM = VZVirtualMachine(configuration: config)
-        self.vm = newVM
-
-        // Add state observation
-        logger.debug("VM initial state: \(newVM.state)")
-
-        logger.debug("VZVirtualMachine instance created, starting VM...")
-
-        do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                logger.debug("Calling VZVirtualMachine.start()...")
-                newVM.start { result in
-                    self.logger.debug("VM start callback invoked")
-                    switch result {
-                    case .success:
-                        self.logger.debug("VM start callback: success, state=\(newVM.state)")
-                        Task {
-                            await self.onVMStarted()
-                        }
-                        continuation.resume()
-                    case .failure(let error):
-                        self.logger.error("VM start callback: failed - \(error.localizedDescription)")
-                        continuation.resume(throwing: NetworkHelperVMError.vmStartFailed(error.localizedDescription))
-                    }
-                }
-                self.logger.debug("VZVirtualMachine.start() called, waiting for callback...")
-            }
-        } catch {
-            logger.error("VM start failed with error: \(error)")
-            throw error
-        }
-
-        logger.info("Helper VM started successfully")
-
-        // Start health monitoring
-        Task {
-            await monitorHealth()
-        }
+        logger.info("NetworkHelperVM ContainerManager initialized successfully")
     }
 
-    /// Stop the helper VM
+    /// Start the helper VM container
+    public func start() async throws {
+        logger.info("Starting helper VM container...")
+
+        guard var manager = containerManager else {
+            throw NetworkHelperVMError.notInitialized
+        }
+
+        // Check if container already running
+        if let container = container {
+            // TODO: Check container state properly
+            logger.warning("Helper VM container already exists, stopping first...")
+            try? await container.stop()
+        }
+
+        // Ensure helper image is loaded into ImageStore
+        logger.debug("Ensuring helper image is available in ImageStore...")
+        try await ensureHelperImageLoaded()
+
+        // Get the helper image
+        logger.debug("Retrieving helper image", metadata: ["image": "\(helperImageReference)"])
+        let helperImage: Containerization.Image
+        do {
+            helperImage = try await imageManager.getImage(nameOrId: helperImageReference)
+        } catch {
+            logger.error("Failed to find helper image", metadata: [
+                "image": "\(helperImageReference)",
+                "error": "\(error)"
+            ])
+            throw NetworkHelperVMError.helperImageNotFound(helperImageReference)
+        }
+
+        // Create the helper container
+        logger.debug("Creating helper container...")
+        let newContainer: Containerization.LinuxContainer
+        do {
+            newContainer = try await manager.create(
+                helperContainerID,
+                image: helperImage,
+                rootfsSizeInBytes: 2 * 1024 * 1024 * 1024  // 2 GB for helper VM
+            ) { config in
+                // Configure helper VM
+                config.process.arguments = ["/usr/local/bin/startup.sh"]
+                config.hostname = "arca-network-helper"
+            }
+            self.container = newContainer
+            logger.info("Helper VM container created successfully", metadata: [
+                "containerID": "\(helperContainerID)"
+            ])
+        } catch {
+            logger.error("Failed to create helper container: \(error)")
+            throw NetworkHelperVMError.containerCreationFailed(error.localizedDescription)
+        }
+
+        // Start the container
+        logger.debug("Starting helper container...")
+        do {
+            try await newContainer.create()
+            try await newContainer.start()
+            logger.info("Helper VM container started successfully")
+        } catch {
+            logger.error("Failed to start helper container: \(error)")
+            throw NetworkHelperVMError.containerStartFailed(error.localizedDescription)
+        }
+
+        // Wait for services to initialize
+        logger.info("Waiting for helper VM services to initialize...")
+        try await Task.sleep(for: .seconds(10))
+
+        // Connect OVN client via vsock
+        await connectOVNClient(container: newContainer)
+
+        // Start health monitoring
+        monitorTask = Task {
+            await monitorHealth()
+        }
+
+        // Reset crash count on successful start
+        crashCount = 0
+        logger.info("Helper VM fully initialized and ready")
+    }
+
+    /// Stop the helper VM container
     public func stop() async throws {
-        logger.info("Stopping helper VM...")
+        logger.info("Stopping helper VM container...")
 
         isShuttingDown = true
 
-        guard let vm = vm else {
-            logger.warning("No VM to stop")
-            return
-        }
+        // Cancel monitoring task
+        monitorTask?.cancel()
+        monitorTask = nil
 
-        guard vm.state == .running else {
-            logger.warning("VM not running (state: \(vm.state))")
-            return
-        }
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            vm.stop { error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
+        // Disconnect OVN client first
+        if let client = ovnClient {
+            logger.info("Disconnecting OVN client...")
+            do {
+                try await client.disconnect()
+            } catch {
+                logger.warning("Error disconnecting OVN client: \(error)")
             }
+            ovnClient = nil
         }
 
-        self.vm = nil
-        logger.info("Helper VM stopped")
+        guard let container = container else {
+            logger.warning("No container to stop")
+            return
+        }
+
+        // Stop the container
+        do {
+            try await container.stop()
+            logger.info("Helper VM container stopped")
+        } catch {
+            logger.error("Error stopping container: \(error)")
+            throw error
+        }
+
+        self.container = nil
     }
 
     /// Check if helper VM is healthy
     public func isHealthy() async -> Bool {
-        guard let vm = vm, vm.state == .running else {
+        guard let _ = container else {
             return false
         }
 
-        // TODO: Add actual health check via gRPC GetHealth call
-        // For now, just check if VM is running
-        return true
+        // Check health via OVN client
+        if let client = ovnClient {
+            do {
+                let health = try await client.getHealth()
+                return health.healthy
+            } catch {
+                logger.warning("Health check failed: \(error)")
+                return false
+            }
+        }
+
+        // If no OVN client yet, assume unhealthy
+        return false
     }
 
-    /// Get the VM's vsock CID for connections
-    public func getVMCID() -> UInt32 {
-        return vmCID
+    /// Get the OVN client for network operations
+    public func getOVNClient() -> OVNClient? {
+        return ovnClient
     }
 
     // MARK: - Private Methods
 
-    private func createVMConfiguration() throws -> VZVirtualMachineConfiguration {
-        logger.debug("Creating VZVirtualMachineConfiguration...")
-        let config = VZVirtualMachineConfiguration()
-
-        // CPU: 1 vCPU
-        logger.debug("Setting CPU count to 1")
-        config.cpuCount = 1
-
-        // Memory: 256MB
-        logger.debug("Setting memory size to 256MB")
-        config.memorySize = 256 * 1024 * 1024
-
-        // Bootloader (Linux)
-        logger.debug("Creating Linux bootloader with kernel: \(kernelPath.path)")
-        let bootloader = VZLinuxBootLoader(kernelURL: kernelPath)
-        bootloader.commandLine = "console=hvc0 root=/dev/vda rootfstype=ext4 rw init=/sbin/init"
-        config.bootLoader = bootloader
-        logger.debug("Bootloader configured")
-
-        // Disk (helper VM image)
-        logger.debug("Creating disk attachment for: \(vmImagePath.path)")
+    /// Ensure the helper VM image is loaded into the ImageStore
+    private func ensureHelperImageLoaded() async throws {
+        // Check if image already exists in ImageStore
         do {
-            let diskAttachment = try VZDiskImageStorageDeviceAttachment(
-                url: vmImagePath,
-                readOnly: false
-            )
-            let disk = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
-            config.storageDevices = [disk]
-            logger.debug("Disk attachment created successfully")
+            _ = try await imageManager.getImage(nameOrId: helperImageReference)
+            logger.debug("Helper image already exists in ImageStore")
+            return
         } catch {
-            logger.error("Failed to create disk attachment: \(error)")
-            throw NetworkHelperVMError.vmConfigurationInvalid("Failed to create disk attachment: \(error)")
+            // Image doesn't exist, need to load it
+            logger.info("Helper image not found in ImageStore, loading from OCI layout...")
         }
 
-        // Network (vmnet NAT for internet access)
-        logger.debug("Creating NAT network device")
-        let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        networkDevice.attachment = VZNATNetworkDeviceAttachment()
-        config.networkDevices = [networkDevice]
-        logger.debug("Network device configured")
-
-        // Serial port for console output
-        logger.debug("Creating serial port device")
-        let consolePort = VZVirtioConsolePortConfiguration()
-        consolePort.isConsole = true
-
-        // Attach console output handler - write to a log file
-        let consoleLogPath = FileManager.default.homeDirectoryForCurrentUser
+        // Path to OCI layout directory
+        let ociLayoutPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".arca")
-            .appendingPathComponent("helpervm-console.log")
+            .appendingPathComponent("helpervm")
+            .appendingPathComponent("oci-layout")
 
-        // Create or truncate console log file
-        FileManager.default.createFile(atPath: consoleLogPath.path, contents: nil)
-        let consoleLogHandle = try! FileHandle(forWritingTo: consoleLogPath)
-
-        consolePort.attachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: nil,
-            fileHandleForWriting: consoleLogHandle
-        )
-
-        let console = VZVirtioConsoleDeviceConfiguration()
-        console.ports[0] = consolePort
-        config.consoleDevices = [console]
-        logger.debug("Serial console device configured (output to \(consoleLogPath.path))")
-
-        // Socket device (vsock for control API)
-        logger.debug("Creating vsock device")
-        let socketDevice = VZVirtioSocketDeviceConfiguration()
-        config.socketDevices = [socketDevice]
-        logger.debug("Socket device configured")
-
-        // Validate configuration
-        logger.debug("Validating VM configuration...")
-        do {
-            try config.validate()
-            logger.debug("VM configuration validated successfully")
-        } catch {
-            logger.error("VM configuration validation failed: \(error)")
-            throw NetworkHelperVMError.vmConfigurationInvalid(error.localizedDescription)
+        guard FileManager.default.fileExists(atPath: ociLayoutPath.path) else {
+            let error = "Helper VM OCI layout not found at \(ociLayoutPath.path). Please run 'make helpervm' to build the helper VM image."
+            logger.error("\(error)")
+            throw NetworkHelperVMError.helperImageNotFound(error)
         }
 
-        return config
+        // Load the OCI layout into ImageStore
+        logger.info("Loading helper VM image from OCI layout...", metadata: [
+            "path": "\(ociLayoutPath.path)"
+        ])
+
+        do {
+            let loadedImages = try await imageManager.loadFromOCILayout(directory: ociLayoutPath)
+            logger.info("Helper VM image loaded successfully", metadata: [
+                "count": "\(loadedImages.count)",
+                "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
+            ])
+        } catch {
+            logger.error("Failed to load helper VM image from OCI layout", metadata: [
+                "error": "\(error)"
+            ])
+            throw NetworkHelperVMError.containerCreationFailed("Failed to load helper VM image: \(error)")
+        }
     }
 
-    private func onVMStarted() {
-        logger.info("Helper VM started, waiting for services to initialize...")
-        crashCount = 0
+    private func connectOVNClient(container: Containerization.LinuxContainer) async {
+        logger.info("Connecting OVN client via vsock (container.dialVsock())...")
 
-        // Give the VM time to boot and start services
-        Task {
-            try? await Task.sleep(for: .seconds(5))
-            logger.info("Helper VM should be ready")
+        let client = OVNClient(logger: logger)
+        self.ovnClient = client
+
+        do {
+            try await client.connect(container: container, vsockPort: vsockPort)
+            logger.info("OVN client connected successfully via vsock")
+        } catch {
+            logger.error("Failed to connect OVN client: \(error)")
         }
     }
 
@@ -318,13 +331,15 @@ public final class NetworkHelperVM: @unchecked Sendable {
         // TODO: Restore network state after restart
         logger.info("Helper VM restarted successfully")
     }
-}
 
-/// Console handler for VM output
-private class ConsoleHandler {
-    let logger: Logger
+    // MARK: - Platform Detection
 
-    init(logger: Logger) {
-        self.logger = logger
+    /// Detect the current system platform
+    private func detectSystemPlatform() -> SystemPlatform {
+        #if arch(arm64)
+        return SystemPlatform.linuxArm
+        #else
+        return SystemPlatform.linuxAmd
+        #endif
     }
 }
