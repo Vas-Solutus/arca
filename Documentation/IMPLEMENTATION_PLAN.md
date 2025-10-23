@@ -950,47 +950,193 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - POST /networks/{id}/disconnect → handleDisconnectNetwork
   - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
 
-### Phase 3.4: Container Network Integration (Week 7-8)
+### Phase 3.4: TAP-over-vsock Container Network Integration (Week 7-10)
 
-#### Container-Network Binding
+**Architecture**: Implement TAP devices in containers forwarded over vsock to helper VM for OVS bridge attachment. Uses pure Swift throughout (vminit, Arca daemon, helper VM).
 
-- [ ] **Update ContainerManager to track network attachments**
-  - Add networks field to ContainerMetadata: [String: NetworkAttachment]
-  - NetworkAttachment struct: (networkID, ip, mac, aliases)
-  - Load network attachments on daemon startup
-  - Persist network state in container metadata
-  - Files: `Sources/ContainerBridge/ContainerManager.swift`, `Sources/ContainerBridge/Types.swift`
+**Reference**: See `Documentation/NETWORK_ARCHITECTURE.md` for complete TAP-over-vsock design.
 
-- [ ] **Implement attachContainerToNetwork in ContainerManager**
-  - Accept networkID and optional IP/aliases
-  - Call networkManager to allocate IP
-  - Generate MAC address (format: 02:XX:XX:XX:XX:XX)
-  - Call helperVM.attachContainer() to create OVS port
-  - Create socket pair for virtio-net
-  - Build VZVirtioNetworkDeviceConfiguration with VZFileHandleNetworkDeviceAttachment
-  - Add device to container VM configuration
-  - Update container and network metadata
+#### Task 1: Implement TAPForwarder in vminit (Week 7)
+
+- [ ] **Add TAPForwarder.swift to vminit**
+  - Create TAP device using ioctl TUNSETIFF on `/dev/net/tun`
+  - Configure as `IFF_TAP | IFF_NO_PI` (TAP mode, no protocol info)
+  - Set interface name to `eth0`
+  - Bring interface up with `SIOCSIFFLAGS` (IFF_UP | IFF_RUNNING)
+  - Connect to macOS host via `VsockType(cid: VsockType.hostCID, port: containerPort)`
+  - Implement bidirectional forwarding loops (TAP → vsock, vsock → TAP)
+  - Use 64KB buffers for frame forwarding
+  - Files: `vminitd/Sources/vminitd/TAPForwarder.swift`
+
+- [ ] **Wire TAPForwarder into vminit startup**
+  - Parse environment variable `ARCA_NETWORK_PORT` on startup
+  - If set, initialize and start TAPForwarder with specified port
+  - Configure IP address from `ARCA_NETWORK_IP` env var
+  - Set up default route via `ARCA_NETWORK_GATEWAY`
+  - Use existing vminit Application lifecycle
+  - Files: `vminitd/Sources/vminitd/Application.swift`
+
+- [ ] **Rebuild vminit with TAP support**
+  - Cross-compile with Swift Static Linux SDK
+  - Package into `vminit:latest` OCI image
+  - Test TAP device creation in isolated VM
+  - Verify vsock connection to host works
+  - Files: Containerization package Makefile (`make vminitd`, `make init`)
+
+#### Task 2: Implement NetworkBridge in Arca Daemon (Week 7-8)
+
+- [ ] **Create NetworkBridge actor**
+  - Track active relays: `[containerID: RelayTask]`
+  - Manage port allocation (baseContainerPort: 20000, baseHelperPort: 30000)
+  - Implement `attachContainer()` to start relay task
+  - Implement `detachContainer()` to stop and cleanup relay
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift`
+
+- [ ] **Implement VsockListener for macOS host**
+  - Create listener on vsock port using AF_VSOCK socket
+  - Accept connections from container VMs (guest → host direction)
+  - Return Socket handle for relay
+  - Handle concurrent connections (one per container)
+  - Files: `Sources/ContainerBridge/VsockListener.swift`
+
+- [ ] **Implement bidirectional relay logic**
+  - `runRelay()` method: accept from container, dial to helper VM
+  - `relayForward()`: read from container vsock, write to helper vsock
+  - `relayBackward()`: read from helper vsock, write to container vsock
+  - Use 64KB buffers, async tasks for each direction
+  - Handle connection failures and cleanup gracefully
+  - Log relay statistics (bytes transferred, errors)
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift`
+
+- [ ] **Integrate NetworkBridge with NetworkManager**
+  - Add NetworkBridge instance to NetworkManager
+  - Call `networkBridge.attachContainer()` when connecting to network
+  - Pass helper VM's LinuxContainer for dialVsock()
+  - Store containerPort in network attachment metadata
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+#### Task 3: Implement NetworkControlServer for Helper VM (Week 8-9)
+
+- [ ] **Create Swift executable target for helper VM**
+  - Add `NetworkControlServer` target to Package.swift
+  - Configure for cross-compilation to Linux (static binary)
+  - Add swift-log dependency for logging
+  - Set up build in Makefile with Swift Static Linux SDK
+  - Files: `Package.swift`, `Makefile`, `helpervm/Sources/NetworkControl/main.swift`
+
+- [ ] **Implement vsock listener and TAP creation in Swift**
+  - Listen on ports 30000-30099 concurrently (100 simultaneous containers)
+  - Accept connection from host for each container
+  - Create TAP device with unique name (`tap0`, `tap1`, etc.)
+  - Attach TAP to OVS bridge via `ovs-vsctl add-port`
+  - Bring TAP interface up
+  - Files: `helpervm/Sources/NetworkControl/NetworkControlServer.swift`
+
+- [ ] **Implement frame forwarding: vsock ↔ TAP**
+  - `forwardVsockToTAP()`: read from vsock, write to TAP fd
+  - `forwardTAPToVsock()`: read from TAP fd, write to vsock
+  - Use async tasks for concurrent forwarding
+  - Handle errors and reconnection logic
+  - Files: `helpervm/Sources/NetworkControl/NetworkControlServer.swift`
+
+- [ ] **Replace Go control API with Swift NetworkControlServer**
+  - Remove `helpervm/control-api/` directory (Go code)
+  - Remove `helpervm/proto/` directory (gRPC proto)
+  - Update helper VM Dockerfile to copy Swift binary
+  - Update startup script to launch NetworkControlServer instead of Go server
+  - Remove Go, protoc from Dockerfile dependencies
+  - Files: `helpervm/Dockerfile`, `helpervm/scripts/startup.sh`
+
+- [ ] **Add OVS bridge management commands**
+  - Implement `createBridge()` to run `ovs-vsctl add-br`
+  - Implement `deleteBridge()` to run `ovs-vsctl del-br`
+  - Implement `attachToBridge()` to run `ovs-vsctl add-port`
+  - Use Process() to execute ovs-vsctl commands
+  - Parse command output for errors
+  - Files: `helpervm/Sources/NetworkControl/OVSManager.swift`
+
+#### Task 4: Update ContainerManager for Network Attachment (Week 9)
+
+- [ ] **Modify createContainer to support network configuration**
+  - Parse network config from ContainerCreateRequest
+  - Allocate vsock ports via NetworkBridge
+  - Set environment variables for vminit:
+    - `ARCA_NETWORK_PORT=<containerPort>`
+    - `ARCA_NETWORK_IP=<allocatedIP>`
+    - `ARCA_NETWORK_GATEWAY=<gatewayIP>`
+  - vminit will read these and start TAPForwarder
   - Files: `Sources/ContainerBridge/ContainerManager.swift`
 
-- [ ] **Implement detachContainerFromNetwork in ContainerManager**
-  - Remove network device from VM configuration
-  - Call helperVM.detachContainer() to delete OVS port
+- [ ] **Implement attachContainerToNetwork**
+  - Allocate IP from IPAM for specified network
+  - Generate MAC address (format: `02:XX:XX:XX:XX:XX`)
+  - Allocate vsock ports (containerPort, helperPort)
+  - Call `networkBridge.attachContainer()` to start relay
+  - Tell helper VM which bridge to attach TAP to (via gRPC or shared state)
+  - Store network attachment in container metadata
+  - **Note**: Container must be restarted to apply network changes (vminit starts TAPForwarder on boot)
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Implement detachContainerFromNetwork**
+  - Stop NetworkBridge relay task for this container
+  - Tell helper VM to detach TAP from bridge
   - Release IP back to IPAM
-  - Update metadata
+  - Remove network attachment from metadata
+  - Restart container to apply changes
   - Files: `Sources/ContainerBridge/ContainerManager.swift`
-
-- [ ] **Update container creation to support --network flag**
-  - Parse networks from ContainerCreateRequest.HostConfig.NetworkMode
-  - Support multiple networks via NetworkingConfig.EndpointsConfig
-  - Attach container to specified networks during create
-  - Default to "bridge" network if not specified
-  - Files: `Sources/DockerAPI/Handlers/ContainerHandlers.swift`, `Sources/ContainerBridge/ContainerManager.swift`
 
 - [ ] **Handle container restart with network attachments**
-  - On container start: recreate all network device attachments
-  - Re-establish socket pairs and virtio-net devices
+  - On container start: read network attachments from metadata
+  - Set environment variables for each network
+  - vminit will recreate TAPForwarder on boot
+  - NetworkBridge will re-establish relay on vsock connection
   - Maintain same IPs and MACs across restarts
   - Files: `Sources/ContainerBridge/ContainerManager.swift` (startContainer method)
+
+#### Task 5: Integration and Testing (Week 10)
+
+- [ ] **Test TAP device creation in container**
+  - Launch container with `ARCA_NETWORK_PORT` env var
+  - Exec into container: `ip addr show` should show eth0 TAP
+  - Verify interface has correct IP address
+  - Verify default route points to gateway
+  - Files: Integration test or manual verification
+
+- [ ] **Test vsock relay in Arca daemon**
+  - Verify NetworkBridge accepts connection on port 20001
+  - Verify relay to helper VM on port 30001 succeeds
+  - Monitor logs for relay start/stop events
+  - Test with multiple concurrent containers
+  - Files: `Tests/ArcaTests/NetworkBridgeTests.swift`
+
+- [ ] **Test helper VM TAP and OVS attachment**
+  - Verify helper VM creates TAP device on vsock connection
+  - Run `ovs-vsctl show` in helper VM to see bridge ports
+  - Verify TAP is attached to correct bridge
+  - Files: Integration test
+
+- [ ] **Test end-to-end container networking**
+  - Create network: `docker network create test-net`
+  - Create two containers: `docker run --network test-net alpine`
+  - From container1: `ping <container2-ip>`
+  - Verify packets flow: container1 → vsock → host → helper VM → OVS → helper VM → host → vsock → container2
+  - Test DNS resolution by container name
+  - Files: `scripts/test-network-tap-vsock.sh`
+
+- [ ] **Test network attachment/detachment**
+  - Create container without network
+  - Attach to network: `docker network connect test-net <container>`
+  - Verify connectivity works after restart
+  - Detach: `docker network disconnect test-net <container>`
+  - Verify container has no network access
+  - Files: `scripts/test-network-connect-disconnect.sh`
+
+- [ ] **Performance testing**
+  - Benchmark container-to-container throughput with iperf3
+  - Measure latency with ping
+  - Compare to Docker Desktop performance
+  - Document results in NETWORK_ARCHITECTURE.md
+  - Files: `scripts/benchmark-network.sh`
 
 #### Default "bridge" Network
 

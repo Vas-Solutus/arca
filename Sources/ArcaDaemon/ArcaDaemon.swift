@@ -121,6 +121,7 @@ public final class ArcaDaemon {
             let nm = NetworkManager(
                 helperVM: helperVM,
                 ipamAllocator: ipamAllocator,
+                containerManager: containerManager,
                 logger: logger
             )
             self.networkManager = nm
@@ -203,7 +204,7 @@ public final class ArcaDaemon {
         let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
-        let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, logger: logger) }
+        let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -713,10 +714,13 @@ public final class ArcaDaemon {
                 do {
                     let connectRequest = try request.jsonBody(NetworkConnectRequest.self)
 
+                    // Resolve container name from ID
+                    let containerName = await containerManager.getContainerName(dockerID: connectRequest.container) ?? connectRequest.container
+
                     let result = await networkHandlers.handleConnectNetwork(
                         networkID: id,
                         containerID: connectRequest.container,
-                        containerName: connectRequest.container,  // TODO: Resolve container name from ID
+                        containerName: containerName,
                         endpointConfig: connectRequest.endpointConfig
                     )
 

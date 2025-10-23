@@ -7,6 +7,7 @@ import Logging
 public actor NetworkManager {
     private let helperVM: NetworkHelperVM
     private let ipamAllocator: IPAMAllocator
+    private let containerManager: ContainerManager
     private let logger: Logger
 
     // Network state tracking
@@ -68,9 +69,10 @@ public actor NetworkManager {
         }
     }
 
-    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, logger: Logger) {
+    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, logger: Logger) {
         self.helperVM = helperVM
         self.ipamAllocator = ipamAllocator
+        self.containerManager = containerManager
         self.logger = logger
     }
 
@@ -320,6 +322,18 @@ public actor NetworkManager {
             "mac": "\(mac)"
         ])
 
+        // Update ContainerManager's network attachment tracking
+        try await containerManager.attachContainerToNetwork(
+            dockerID: containerID,
+            networkID: resolvedNetworkID,
+            ip: ip,
+            mac: mac,
+            aliases: aliases
+        )
+
+        // Track IP allocation
+        await ipamAllocator.trackAllocation(networkID: resolvedNetworkID, containerID: containerID, ip: ip)
+
         // Update metadata
         metadata.containers.insert(containerID)
         networks[resolvedNetworkID] = metadata
@@ -369,6 +383,12 @@ public actor NetworkManager {
         }
 
         try await ovnClient.detachContainer(containerID: containerID, networkID: resolvedNetworkID)
+
+        // Update ContainerManager's network attachment tracking
+        try await containerManager.detachContainerFromNetwork(
+            dockerID: containerID,
+            networkID: resolvedNetworkID
+        )
 
         // Release IP address (tracked internally by IPAMAllocator)
         await ipamAllocator.releaseIP(networkID: resolvedNetworkID, containerID: containerID)

@@ -127,8 +127,16 @@ public actor IPAMAllocator {
         let startOctet: UInt8 = 2
         let maxHosts = calculateMaxHosts(prefixLength: prefixLength)
 
+        // Parse base IP octets
+        let baseOctets = baseIP.split(separator: ".").compactMap { UInt8($0) }
+        guard baseOctets.count == 4 else {
+            throw IPAMError.invalidSubnet(subnet)
+        }
+
+        // For /16 networks, we iterate through the last octet
+        // For 172.18.0.0/16, we generate IPs like 172.18.0.2, 172.18.0.3, etc.
         for i in startOctet..<min(startOctet + maxHosts, 254) {
-            let ip = "\(baseIP.dropLast(2))\(i)"  // Replace last octet
+            let ip = "\(baseOctets[0]).\(baseOctets[1]).\(baseOctets[2]).\(i)"
 
             // Skip if already allocated
             if allocatedIPs.contains(ip) {

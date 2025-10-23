@@ -70,32 +70,35 @@ make clean                     # Remove all build artifacts
 swift package clean            # Swift-only clean
 ```
 
-### One-Time Setup: Building vminit
+### One-Time Setup: Building Custom vminit with Networking Support
 
-**Critical prerequisite**: Arca requires the `vminit:latest` init system image before ContainerManager can initialize containers. This is a one-time setup.
+**Critical prerequisite**: Arca requires a custom `vminit:latest` init system image with networking support before containers can use Arca's networking features.
 
 ```bash
-# Navigate to containerization package
-cd .build/checkouts/containerization
-
 # Install Swift Static Linux SDK (one-time, ~5 minutes)
+cd .build/checkouts/containerization/vminitd
 make cross-prep
+cd /Users/kiener/code/arca
 
-# Build vminitd binaries (cross-compiled to Linux)
-make vminitd
+# Build arca-tap-forwarder (cross-compiled to Linux)
+make tap-forwarder
 
-# Package into vminit:latest OCI image
-make init
+# Build custom vminit:latest with arca-tap-forwarder included
+make vminit
 ```
 
-This creates `vminit:latest` in `~/Library/Application Support/com.apple.containerization/`.
+This creates `vminit:latest` OCI image containing:
+- `/sbin/vminitd` - Apple's init system (PID 1)
+- `/sbin/vmexec` - Apple's exec helper
+- `/sbin/arca-tap-forwarder` - Arca's TAP networking forwarder (Phase 3.4+)
 
 **Why this is needed**:
 - vminit runs as PID 1 inside each container's Linux VM
 - Provides gRPC API over vsock for container management
-- Must be cross-compiled to Linux using Swift Static Linux SDK
+- arca-tap-forwarder enables container networking via TAP-over-vsock
+- All components must be cross-compiled to Linux using Swift Static Linux SDK
 
-**Future improvement**: This will be automated via `arca setup` command (see `Documentation/IMPLEMENTATION_PLAN.md` Phase 0.5).
+**Important**: The custom vminit is used transparently by ALL containers. The TAP forwarder runs in the init system, not in user container space.
 
 ### One-Time Setup: Building Kernel with TUN Support
 

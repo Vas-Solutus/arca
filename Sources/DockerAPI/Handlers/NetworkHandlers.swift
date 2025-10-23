@@ -7,10 +7,12 @@ import NIOHTTP1
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct NetworkHandlers: Sendable {
     private let networkManager: NetworkManager
+    private let containerManager: ContainerManager
     private let logger: Logger
 
-    public init(networkManager: NetworkManager, logger: Logger) {
+    public init(networkManager: NetworkManager, containerManager: ContainerManager, logger: Logger) {
         self.networkManager = networkManager
+        self.containerManager = containerManager
         self.logger = logger
     }
 
