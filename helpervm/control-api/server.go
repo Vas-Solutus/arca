@@ -18,14 +18,16 @@ type NetworkServer struct {
 	mu           sync.RWMutex
 	bridges      map[string]*BridgeMetadata
 	containerMap map[string]map[string]bool // networkID -> containerID -> exists
+	relayManager *TAPRelayManager
 	startTime    time.Time
 }
 
 // BridgeMetadata stores metadata about a network bridge
 type BridgeMetadata struct {
-	NetworkID string
-	Subnet    string
-	Gateway   string
+	NetworkID  string
+	BridgeName string // The actual br-XXXX name
+	Subnet     string
+	Gateway    string
 }
 
 // NewNetworkServer creates a new NetworkServer
@@ -33,6 +35,7 @@ func NewNetworkServer() *NetworkServer {
 	return &NetworkServer{
 		bridges:      make(map[string]*BridgeMetadata),
 		containerMap: make(map[string]map[string]bool),
+		relayManager: NewTAPRelayManager(),
 		startTime:    time.Now(),
 	}
 }
@@ -105,9 +108,10 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 
 	// Store metadata
 	s.bridges[req.NetworkId] = &BridgeMetadata{
-		NetworkID: req.NetworkId,
-		Subnet:    req.Subnet,
-		Gateway:   req.Gateway,
+		NetworkID:  req.NetworkId,
+		BridgeName: bridgeName,
+		Subnet:     req.Subnet,
+		Gateway:    req.Gateway,
 	}
 	s.containerMap[req.NetworkId] = make(map[string]bool)
 

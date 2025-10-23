@@ -59,6 +59,7 @@ message AttachContainerRequest {
   string mac_address = 4;   // Container's MAC address
   string hostname = 5;      // Container hostname for DNS
   repeated string aliases = 6; // Additional DNS aliases
+  uint32 vsock_port = 7;    // Vsock port for TAP packet relay (helper VM listens here)
 }
 
 message AttachContainerResponse {
