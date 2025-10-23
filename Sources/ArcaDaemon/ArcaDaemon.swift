@@ -13,6 +13,8 @@ public final class ArcaDaemon {
     private var imageManager: ImageManager?
     private var execManager: ExecManager?
     private var networkHelperVM: NetworkHelperVM?
+    private var networkManager: NetworkManager?
+    private var ipamAllocator: IPAMAllocator?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -108,11 +110,47 @@ public final class ArcaDaemon {
         let execManager = ExecManager(containerManager: containerManager, logger: logger)
         self.execManager = execManager
 
+        // Initialize IPAM allocator for network IP management
+        let ipamAllocator = IPAMAllocator(logger: logger)
+        self.ipamAllocator = ipamAllocator
+
+        // Initialize NetworkManager if helper VM is available
+        var networkManager: NetworkManager? = nil
+        if let helperVM = self.networkHelperVM {
+            logger.info("Initializing network manager...")
+            let nm = NetworkManager(
+                helperVM: helperVM,
+                ipamAllocator: ipamAllocator,
+                logger: logger
+            )
+            self.networkManager = nm
+            networkManager = nm
+
+            do {
+                try await nm.initialize()
+                logger.info("Network manager initialized successfully")
+            } catch {
+                logger.error("Failed to initialize network manager", metadata: [
+                    "error": "\(error)"
+                ])
+                // Continue without network manager - networking features won't be available
+                logger.warning("Daemon will continue without network manager - networking features disabled")
+                self.networkManager = nil
+                networkManager = nil
+            }
+        }
+
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
             .use(RequestLogger(logger: logger))
             .use(APIVersionNormalizer())
-        registerRoutes(builder: builder, containerManager: containerManager, imageManager: imageManager, execManager: execManager)
+        registerRoutes(
+            builder: builder,
+            containerManager: containerManager,
+            imageManager: imageManager,
+            execManager: execManager,
+            networkManager: networkManager
+        )
         let router = builder.build()
 
         // Create and start server
@@ -152,13 +190,20 @@ public final class ArcaDaemon {
     }
 
     /// Register all API routes
-    private func registerRoutes(builder: RouterBuilder, containerManager: ContainerManager, imageManager: ImageManager, execManager: ExecManager) {
+    private func registerRoutes(
+        builder: RouterBuilder,
+        containerManager: ContainerManager,
+        imageManager: ImageManager,
+        execManager: ExecManager,
+        networkManager: NetworkManager?
+    ) {
         logger.info("Registering API routes")
 
         // Create handlers
         let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
+        let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, logger: logger) }
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -579,7 +624,152 @@ public final class ArcaDaemon {
             }
         }
 
-        logger.info("Registered 17 routes")
+        // Network endpoints
+        if let networkHandlers = networkHandlers {
+            _ = builder.get("/networks") { request in
+                do {
+                    let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
+
+                    let result = await networkHandlers.handleListNetworks(filters: filters)
+
+                    switch result {
+                    case .success(let networks):
+                        return .standard(HTTPResponse.ok(networks))
+                    case .failure(let error):
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid filters parameter"))
+                }
+            }
+
+            _ = builder.get("/networks/{id}") { request in
+                guard let id = request.pathParam("id") else {
+                    return .standard(HTTPResponse.badRequest("Missing network ID"))
+                }
+
+                let result = await networkHandlers.handleInspectNetwork(id: id)
+
+                switch result {
+                case .success(let network):
+                    return .standard(HTTPResponse.ok(network))
+                case .failure(let error):
+                    if case .notFound = error {
+                        return .standard(HTTPResponse.notFound(error.description))
+                    }
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+
+            _ = builder.post("/networks/create") { request in
+                do {
+                    let createRequest = try request.jsonBody(NetworkCreateRequest.self)
+
+                    let result = await networkHandlers.handleCreateNetwork(request: createRequest)
+
+                    switch result {
+                    case .success(let response):
+                        return .standard(HTTPResponse.created(response))
+                    case .failure(let error):
+                        if case .conflict = error {
+                            return .standard(HTTPResponse.conflict(error.description))
+                        } else if case .invalidRequest = error {
+                            return .standard(HTTPResponse.badRequest(error.description))
+                        }
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
+                }
+            }
+
+            _ = builder.delete("/networks/{id}") { request in
+                guard let id = request.pathParam("id") else {
+                    return .standard(HTTPResponse.badRequest("Missing network ID"))
+                }
+
+                let force = request.queryBool("force")
+
+                let result = await networkHandlers.handleDeleteNetwork(id: id, force: force)
+
+                switch result {
+                case .success:
+                    return .standard(HTTPResponse.noContent())
+                case .failure(let error):
+                    if case .notFound = error {
+                        return .standard(HTTPResponse.notFound(error.description))
+                    } else if case .conflict = error {
+                        return .standard(HTTPResponse.conflict(error.description))
+                    }
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+
+            _ = builder.post("/networks/{id}/connect") { request in
+                guard let id = request.pathParam("id") else {
+                    return .standard(HTTPResponse.badRequest("Missing network ID"))
+                }
+
+                do {
+                    let connectRequest = try request.jsonBody(NetworkConnectRequest.self)
+
+                    let result = await networkHandlers.handleConnectNetwork(
+                        networkID: id,
+                        containerID: connectRequest.container,
+                        containerName: connectRequest.container,  // TODO: Resolve container name from ID
+                        endpointConfig: connectRequest.endpointConfig
+                    )
+
+                    switch result {
+                    case .success:
+                        return .standard(HTTPResponse.json([String: String](), status: .ok))  // Docker returns empty object
+                    case .failure(let error):
+                        if case .notFound = error {
+                            return .standard(HTTPResponse.notFound(error.description))
+                        } else if case .conflict = error {
+                            return .standard(HTTPResponse.conflict(error.description))
+                        }
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
+                }
+            }
+
+            _ = builder.post("/networks/{id}/disconnect") { request in
+                guard let id = request.pathParam("id") else {
+                    return .standard(HTTPResponse.badRequest("Missing network ID"))
+                }
+
+                do {
+                    let disconnectRequest = try request.jsonBody(NetworkDisconnectRequest.self)
+
+                    let result = await networkHandlers.handleDisconnectNetwork(
+                        networkID: id,
+                        containerID: disconnectRequest.container,
+                        force: disconnectRequest.force ?? false
+                    )
+
+                    switch result {
+                    case .success:
+                        return .standard(HTTPResponse.json([String: String](), status: .ok))  // Docker returns empty object
+                    case .failure(let error):
+                        if case .notFound = error {
+                            return .standard(HTTPResponse.notFound(error.description))
+                        } else if case .conflict = error {
+                            return .standard(HTTPResponse.conflict(error.description))
+                        }
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
+                }
+            }
+
+            logger.info("Registered 23 routes (including 6 network routes)")
+        } else {
+            logger.info("Registered 17 routes (network routes skipped - NetworkManager not available)")
+        }
     }
 
     /// Check if the daemon is running
