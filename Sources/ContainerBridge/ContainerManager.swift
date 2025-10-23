@@ -899,33 +899,12 @@ public actor ContainerManager {
         containerInfo.networkAttachments[networkID] = attachment
         containers[dockerID] = containerInfo
 
-        // If container is running or created, we need to recreate it with new network config
-        let wasRunning = containerInfo.state == "running"
-
-        if containerInfo.state == "running" || containerInfo.state == "created" {
-            logger.info("Recreating container to apply network attachment", metadata: [
-                "container": "\(dockerID)",
-                "state": "\(containerInfo.state)"
-            ])
-
-            // Stop if running
-            if wasRunning {
-                try await stopContainer(id: dockerID, timeout: nil)
-            }
-
-            // Recreate the container with new network configuration
-            try await recreateContainerWithNetworks(dockerID: dockerID)
-
-            // Restart if it was running
-            if wasRunning {
-                try await startContainer(id: dockerID)
-            }
-        }
+        // With TAP-over-vsock architecture, no container recreation needed
+        // TAP devices are created dynamically via NetworkBridge.attachContainerToNetwork
 
         logger.info("Container attached to network", metadata: [
             "container": "\(dockerID)",
-            "network": "\(networkID)",
-            "recreated": "\(wasRunning || containerInfo.state == \"created\")"
+            "network": "\(networkID)"
         ])
     }
 
@@ -968,86 +947,6 @@ public actor ContainerManager {
         return containers[dockerID]?.name
     }
 
-    /// Recreate a container with updated network configuration
-    /// This destroys the existing LinuxContainer and creates a new one with network interfaces
-    private func recreateContainerWithNetworks(dockerID: String) async throws {
-        guard let containerInfo = containers[dockerID] else {
-            throw ContainerManagerError.containerNotFound(dockerID)
-        }
-
-        guard let manager = nativeManager else {
-            throw ContainerManagerError.notInitialized
-        }
-
-        logger.info("Recreating container with network configuration", metadata: [
-            "container": "\(dockerID)",
-            "networks": "\(containerInfo.networkAttachments.count)"
-        ])
-
-        // Get the native container
-        guard let oldContainer = nativeContainers[dockerID] else {
-            throw ContainerManagerError.containerNotFound("Native container not found")
-        }
-
-        // Delete the old container (this stops the VM if running)
-        try manager.delete(dockerID)
-        nativeContainers.removeValue(forKey: dockerID)
-
-        // Get the image
-        let containerImage = try await imageManager.getImage(nameOrId: containerInfo.image)
-
-        // Recreate the container with network interfaces
-        let container = try await manager.create(
-            dockerID,
-            image: containerImage,
-            rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-        ) { config in
-            // Restore original configuration
-            config.process.arguments = containerInfo.command
-            config.process.environmentVariables += containerInfo.env
-            config.process.workingDirectory = containerInfo.workingDir
-            config.hostname = containerInfo.name ?? dockerID
-            config.process.terminal = containerInfo.tty
-
-            // Add network interfaces
-            for (networkID, attachment) in containerInfo.networkAttachments {
-                logger.debug("Adding network interface", metadata: [
-                    "container": "\(dockerID)",
-                    "network": "\(networkID)",
-                    "ip": "\(attachment.ip)",
-                    "mac": "\(attachment.mac)"
-                ])
-
-                // Create a BridgeNetworkInterface for this attachment
-                let interface = BridgeNetworkInterface(
-                    networkID: networkID,
-                    address: attachment.ip,
-                    gateway: nil,  // Gateway is managed by helper VM
-                    macAddress: attachment.mac
-                )
-                config.interfaces.append(interface)
-            }
-
-            // Configure logging (reuse existing log writers)
-            if let (stdoutWriter, stderrWriter) = logWriters[dockerID] {
-                config.process.stdout = stdoutWriter
-                if !containerInfo.tty {
-                    config.process.stderr = stderrWriter
-                }
-            }
-        }
-
-        // Call .create() to set up the VM with new network configuration
-        try await container.create()
-
-        // Store the new native container
-        nativeContainers[dockerID] = container
-
-        logger.info("Container recreated with network configuration", metadata: [
-            "container": "\(dockerID)"
-        ])
-    }
-
     // MARK: - Helpers for ExecManager
 
     /// Get container state by ID (for checking if container is running)
@@ -1067,6 +966,15 @@ public actor ContainerManager {
     public func getNativeContainer(id: String) async -> LinuxContainer? {
         guard let dockerID = resolveContainerID(id) else {
             return nil
+        }
+        return nativeContainers[dockerID]
+    }
+
+    /// Get LinuxContainer instance by Docker ID (for network operations)
+    /// This is an alias for getNativeContainer but with a clearer name for networking context
+    public func getLinuxContainer(dockerID: String) async throws -> LinuxContainer? {
+        guard containers[dockerID] != nil else {
+            throw ContainerManagerError.containerNotFound(dockerID)
         }
         return nativeContainers[dockerID]
     }
@@ -1189,61 +1097,6 @@ public actor ContainerManager {
         }
     }
 
-    /// Bridge network interface for connecting containers to OVS bridges via socket pair
-    private struct BridgeNetworkInterface: Interface {
-        let networkID: String
-        let address: String
-        let gateway: String?
-        let macAddress: String
-        let socketPair: (FileHandle, FileHandle)  // (containerEnd, bridgeEnd)
-
-        func device() throws -> VZVirtioNetworkDeviceConfiguration {
-            let config = VZVirtioNetworkDeviceConfiguration()
-
-            // Set MAC address
-            guard let mac = VZMACAddress(string: macAddress) else {
-                throw ContainerManagerError.invalidConfiguration("Invalid MAC address: \(macAddress)")
-            }
-            config.macAddress = mac
-
-            // Use file handle attachment with container end of socket pair
-            // The bridge end will be connected to OVS via the helper VM
-            let attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: socketPair.0 as NSFileHandle)
-            attachment.maximumTransmissionUnit = 1500
-            config.attachment = attachment
-
-            return config
-        }
-    }
-
-    /// Create a socket pair for container-to-bridge networking
-    private func createNetworkSocketPair() throws -> (FileHandle, FileHandle) {
-        var sockets: [Int32] = [0, 0]
-
-        // Create a UNIX datagram socket pair
-        guard socketpair(AF_UNIX, SOCK_DGRAM, 0, &sockets) == 0 else {
-            throw ContainerManagerError.socketCreationFailed(String(cString: strerror(errno)))
-        }
-
-        // Configure socket buffers for optimal performance
-        // SO_RCVBUF should be 4x SO_SNDBUF for best performance
-        let sendBufSize: Int32 = 65536  // 64KB
-        let recvBufSize: Int32 = 262144  // 256KB (4x send buffer)
-
-        for socket in sockets {
-            var sendBuf = sendBufSize
-            var recvBuf = recvBufSize
-            setsockopt(socket, SOL_SOCKET, SO_SNDBUF, &sendBuf, socklen_t(MemoryLayout<Int32>.size))
-            setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &recvBuf, socklen_t(MemoryLayout<Int32>.size))
-        }
-
-        // Wrap in FileHandles
-        let containerEnd = FileHandle(fileDescriptor: sockets[0], closeOnDealloc: true)
-        let bridgeEnd = FileHandle(fileDescriptor: sockets[1], closeOnDealloc: true)
-
-        return (containerEnd, bridgeEnd)
-    }
-
 }
 
 // MARK: - Errors
@@ -1257,7 +1110,6 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case containerRunning(String)
     case imageNotFound(String)
     case invalidConfiguration(String)
-    case socketCreationFailed(String)
 
     public var description: String {
         switch self {
@@ -1277,8 +1129,6 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
             return "Invalid configuration: \(msg)"
-        case .socketCreationFailed(let msg):
-            return "Failed to create network socket: \(msg)"
         }
     }
 }

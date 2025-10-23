@@ -24,207 +24,207 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
 }
 
 /// Request to attach container to a network
-struct Arca_Tapforwarder_V1_AttachNetworkRequest: Sendable {
+public struct Arca_Tapforwarder_V1_AttachNetworkRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Network interface name (e.g., "eth0", "eth1")
-  var device: String = String()
+  public var device: String = String()
 
   /// vsock port for data plane (packet forwarding)
-  var vsockPort: UInt32 = 0
+  public var vsockPort: UInt32 = 0
 
   /// IP address to assign to this interface (e.g., "172.18.0.2")
-  var ipAddress: String = String()
+  public var ipAddress: String = String()
 
   /// Network gateway IP (e.g., "172.18.0.1")
-  var gateway: String = String()
+  public var gateway: String = String()
 
   /// Network mask in CIDR notation (e.g., 24 for /24)
   /// If not specified, defaults to /24
-  var netmask: UInt32 = 0
+  public var netmask: UInt32 = 0
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
-struct Arca_Tapforwarder_V1_AttachNetworkResponse: Sendable {
+public struct Arca_Tapforwarder_V1_AttachNetworkResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Success status
-  var success: Bool = false
+  public var success: Bool = false
 
   /// Error message if success = false
-  var error: String = String()
+  public var error: String = String()
 
   /// MAC address assigned to the interface
-  var macAddress: String = String()
+  public var macAddress: String = String()
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
 /// Request to detach container from a network
-struct Arca_Tapforwarder_V1_DetachNetworkRequest: Sendable {
+public struct Arca_Tapforwarder_V1_DetachNetworkRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Network interface name to remove (e.g., "eth0")
-  var device: String = String()
+  public var device: String = String()
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
-struct Arca_Tapforwarder_V1_DetachNetworkResponse: Sendable {
+public struct Arca_Tapforwarder_V1_DetachNetworkResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Success status
-  var success: Bool = false
+  public var success: Bool = false
 
   /// Error message if success = false
-  var error: String = String()
+  public var error: String = String()
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
 /// Request to list all attached networks
-struct Arca_Tapforwarder_V1_ListNetworksRequest: Sendable {
+public struct Arca_Tapforwarder_V1_ListNetworksRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
-struct Arca_Tapforwarder_V1_ListNetworksResponse: Sendable {
+public struct Arca_Tapforwarder_V1_ListNetworksResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var networks: [Arca_Tapforwarder_V1_NetworkInfo] = []
+  public var networks: [Arca_Tapforwarder_V1_NetworkInfo] = []
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
-struct Arca_Tapforwarder_V1_NetworkInfo: Sendable {
+public struct Arca_Tapforwarder_V1_NetworkInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Interface name
-  var device: String = String()
+  public var device: String = String()
 
   /// IP address
-  var ipAddress: String = String()
+  public var ipAddress: String = String()
 
   /// Gateway
-  var gateway: String = String()
+  public var gateway: String = String()
 
   /// vsock port for data plane
-  var vsockPort: UInt32 = 0
+  public var vsockPort: UInt32 = 0
 
   /// MAC address
-  var macAddress: String = String()
+  public var macAddress: String = String()
 
   /// Packet statistics
-  var stats: Arca_Tapforwarder_V1_PacketStats {
+  public var stats: Arca_Tapforwarder_V1_PacketStats {
     get {return _stats ?? Arca_Tapforwarder_V1_PacketStats()}
     set {_stats = newValue}
   }
   /// Returns true if `stats` has been explicitly set.
-  var hasStats: Bool {return self._stats != nil}
+  public var hasStats: Bool {return self._stats != nil}
   /// Clears the value of `stats`. Subsequent reads from it will return its default value.
-  mutating func clearStats() {self._stats = nil}
+  public mutating func clearStats() {self._stats = nil}
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 
   fileprivate var _stats: Arca_Tapforwarder_V1_PacketStats? = nil
 }
 
-struct Arca_Tapforwarder_V1_PacketStats: Sendable {
+public struct Arca_Tapforwarder_V1_PacketStats: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Packets sent (TAP -> vsock)
-  var packetsSent: UInt64 = 0
+  public var packetsSent: UInt64 = 0
 
   /// Packets received (vsock -> TAP)
-  var packetsReceived: UInt64 = 0
+  public var packetsReceived: UInt64 = 0
 
   /// Bytes sent
-  var bytesSent: UInt64 = 0
+  public var bytesSent: UInt64 = 0
 
   /// Bytes received
-  var bytesReceived: UInt64 = 0
+  public var bytesReceived: UInt64 = 0
 
   /// Send errors
-  var sendErrors: UInt64 = 0
+  public var sendErrors: UInt64 = 0
 
   /// Receive errors
-  var receiveErrors: UInt64 = 0
+  public var receiveErrors: UInt64 = 0
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
 /// Request forwarder status
-struct Arca_Tapforwarder_V1_GetStatusRequest: Sendable {
+public struct Arca_Tapforwarder_V1_GetStatusRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 }
 
-struct Arca_Tapforwarder_V1_GetStatusResponse: Sendable {
+public struct Arca_Tapforwarder_V1_GetStatusResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// Forwarder version
-  var version: String = String()
+  public var version: String = String()
 
   /// Number of active network interfaces
-  var activeNetworks: UInt32 = 0
+  public var activeNetworks: UInt32 = 0
 
   /// Uptime in seconds
-  var uptimeSeconds: UInt64 = 0
+  public var uptimeSeconds: UInt64 = 0
 
   /// Overall packet statistics
-  var totalStats: Arca_Tapforwarder_V1_PacketStats {
+  public var totalStats: Arca_Tapforwarder_V1_PacketStats {
     get {return _totalStats ?? Arca_Tapforwarder_V1_PacketStats()}
     set {_totalStats = newValue}
   }
   /// Returns true if `totalStats` has been explicitly set.
-  var hasTotalStats: Bool {return self._totalStats != nil}
+  public var hasTotalStats: Bool {return self._totalStats != nil}
   /// Clears the value of `totalStats`. Subsequent reads from it will return its default value.
-  mutating func clearTotalStats() {self._totalStats = nil}
+  public mutating func clearTotalStats() {self._totalStats = nil}
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  public init() {}
 
   fileprivate var _totalStats: Arca_Tapforwarder_V1_PacketStats? = nil
 }
@@ -234,10 +234,10 @@ struct Arca_Tapforwarder_V1_GetStatusResponse: Sendable {
 fileprivate let _protobuf_package = "arca.tapforwarder.v1"
 
 extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".AttachNetworkRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}vsock_port\0\u{3}ip_address\0\u{1}gateway\0\u{1}netmask\0")
+  public static let protoMessageName: String = _protobuf_package + ".AttachNetworkRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}vsock_port\0\u{3}ip_address\0\u{1}gateway\0\u{1}netmask\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -253,7 +253,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.device.isEmpty {
       try visitor.visitSingularStringField(value: self.device, fieldNumber: 1)
     }
@@ -272,7 +272,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_AttachNetworkRequest, rhs: Arca_Tapforwarder_V1_AttachNetworkRequest) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_AttachNetworkRequest, rhs: Arca_Tapforwarder_V1_AttachNetworkRequest) -> Bool {
     if lhs.device != rhs.device {return false}
     if lhs.vsockPort != rhs.vsockPort {return false}
     if lhs.ipAddress != rhs.ipAddress {return false}
@@ -284,10 +284,10 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
 }
 
 extension Arca_Tapforwarder_V1_AttachNetworkResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".AttachNetworkResponse"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}mac_address\0")
+  public static let protoMessageName: String = _protobuf_package + ".AttachNetworkResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}mac_address\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -301,7 +301,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkResponse: SwiftProtobuf.Message, Swi
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if self.success != false {
       try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
     }
@@ -314,7 +314,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkResponse: SwiftProtobuf.Message, Swi
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_AttachNetworkResponse, rhs: Arca_Tapforwarder_V1_AttachNetworkResponse) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_AttachNetworkResponse, rhs: Arca_Tapforwarder_V1_AttachNetworkResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.macAddress != rhs.macAddress {return false}
@@ -324,10 +324,10 @@ extension Arca_Tapforwarder_V1_AttachNetworkResponse: SwiftProtobuf.Message, Swi
 }
 
 extension Arca_Tapforwarder_V1_DetachNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".DetachNetworkRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0")
+  public static let protoMessageName: String = _protobuf_package + ".DetachNetworkRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -339,14 +339,14 @@ extension Arca_Tapforwarder_V1_DetachNetworkRequest: SwiftProtobuf.Message, Swif
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.device.isEmpty {
       try visitor.visitSingularStringField(value: self.device, fieldNumber: 1)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_DetachNetworkRequest, rhs: Arca_Tapforwarder_V1_DetachNetworkRequest) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_DetachNetworkRequest, rhs: Arca_Tapforwarder_V1_DetachNetworkRequest) -> Bool {
     if lhs.device != rhs.device {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -354,10 +354,10 @@ extension Arca_Tapforwarder_V1_DetachNetworkRequest: SwiftProtobuf.Message, Swif
 }
 
 extension Arca_Tapforwarder_V1_DetachNetworkResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".DetachNetworkResponse"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0")
+  public static let protoMessageName: String = _protobuf_package + ".DetachNetworkResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -370,7 +370,7 @@ extension Arca_Tapforwarder_V1_DetachNetworkResponse: SwiftProtobuf.Message, Swi
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if self.success != false {
       try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
     }
@@ -380,7 +380,7 @@ extension Arca_Tapforwarder_V1_DetachNetworkResponse: SwiftProtobuf.Message, Swi
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_DetachNetworkResponse, rhs: Arca_Tapforwarder_V1_DetachNetworkResponse) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_DetachNetworkResponse, rhs: Arca_Tapforwarder_V1_DetachNetworkResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -389,29 +389,29 @@ extension Arca_Tapforwarder_V1_DetachNetworkResponse: SwiftProtobuf.Message, Swi
 }
 
 extension Arca_Tapforwarder_V1_ListNetworksRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".ListNetworksRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+  public static let protoMessageName: String = _protobuf_package + ".ListNetworksRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     // Load everything into unknown fields
     while try decoder.nextFieldNumber() != nil {}
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_ListNetworksRequest, rhs: Arca_Tapforwarder_V1_ListNetworksRequest) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_ListNetworksRequest, rhs: Arca_Tapforwarder_V1_ListNetworksRequest) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
 extension Arca_Tapforwarder_V1_ListNetworksResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".ListNetworksResponse"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}networks\0")
+  public static let protoMessageName: String = _protobuf_package + ".ListNetworksResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}networks\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -423,14 +423,14 @@ extension Arca_Tapforwarder_V1_ListNetworksResponse: SwiftProtobuf.Message, Swif
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.networks.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.networks, fieldNumber: 1)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_ListNetworksResponse, rhs: Arca_Tapforwarder_V1_ListNetworksResponse) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_ListNetworksResponse, rhs: Arca_Tapforwarder_V1_ListNetworksResponse) -> Bool {
     if lhs.networks != rhs.networks {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -438,10 +438,10 @@ extension Arca_Tapforwarder_V1_ListNetworksResponse: SwiftProtobuf.Message, Swif
 }
 
 extension Arca_Tapforwarder_V1_NetworkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".NetworkInfo"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}ip_address\0\u{1}gateway\0\u{3}vsock_port\0\u{3}mac_address\0\u{1}stats\0")
+  public static let protoMessageName: String = _protobuf_package + ".NetworkInfo"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}ip_address\0\u{1}gateway\0\u{3}vsock_port\0\u{3}mac_address\0\u{1}stats\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -458,7 +458,7 @@ extension Arca_Tapforwarder_V1_NetworkInfo: SwiftProtobuf.Message, SwiftProtobuf
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     // The use of inline closures is to circumvent an issue where the compiler
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
@@ -484,7 +484,7 @@ extension Arca_Tapforwarder_V1_NetworkInfo: SwiftProtobuf.Message, SwiftProtobuf
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_NetworkInfo, rhs: Arca_Tapforwarder_V1_NetworkInfo) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_NetworkInfo, rhs: Arca_Tapforwarder_V1_NetworkInfo) -> Bool {
     if lhs.device != rhs.device {return false}
     if lhs.ipAddress != rhs.ipAddress {return false}
     if lhs.gateway != rhs.gateway {return false}
@@ -497,10 +497,10 @@ extension Arca_Tapforwarder_V1_NetworkInfo: SwiftProtobuf.Message, SwiftProtobuf
 }
 
 extension Arca_Tapforwarder_V1_PacketStats: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".PacketStats"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}packets_sent\0\u{3}packets_received\0\u{3}bytes_sent\0\u{3}bytes_received\0\u{3}send_errors\0\u{3}receive_errors\0")
+  public static let protoMessageName: String = _protobuf_package + ".PacketStats"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}packets_sent\0\u{3}packets_received\0\u{3}bytes_sent\0\u{3}bytes_received\0\u{3}send_errors\0\u{3}receive_errors\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -517,7 +517,7 @@ extension Arca_Tapforwarder_V1_PacketStats: SwiftProtobuf.Message, SwiftProtobuf
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if self.packetsSent != 0 {
       try visitor.visitSingularUInt64Field(value: self.packetsSent, fieldNumber: 1)
     }
@@ -539,7 +539,7 @@ extension Arca_Tapforwarder_V1_PacketStats: SwiftProtobuf.Message, SwiftProtobuf
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_PacketStats, rhs: Arca_Tapforwarder_V1_PacketStats) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_PacketStats, rhs: Arca_Tapforwarder_V1_PacketStats) -> Bool {
     if lhs.packetsSent != rhs.packetsSent {return false}
     if lhs.packetsReceived != rhs.packetsReceived {return false}
     if lhs.bytesSent != rhs.bytesSent {return false}
@@ -552,29 +552,29 @@ extension Arca_Tapforwarder_V1_PacketStats: SwiftProtobuf.Message, SwiftProtobuf
 }
 
 extension Arca_Tapforwarder_V1_GetStatusRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".GetStatusRequest"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+  public static let protoMessageName: String = _protobuf_package + ".GetStatusRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     // Load everything into unknown fields
     while try decoder.nextFieldNumber() != nil {}
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_GetStatusRequest, rhs: Arca_Tapforwarder_V1_GetStatusRequest) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_GetStatusRequest, rhs: Arca_Tapforwarder_V1_GetStatusRequest) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
 extension Arca_Tapforwarder_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".GetStatusResponse"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}active_networks\0\u{3}uptime_seconds\0\u{3}total_stats\0")
+  public static let protoMessageName: String = _protobuf_package + ".GetStatusResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}active_networks\0\u{3}uptime_seconds\0\u{3}total_stats\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -589,7 +589,7 @@ extension Arca_Tapforwarder_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftPr
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     // The use of inline closures is to circumvent an issue where the compiler
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
@@ -609,7 +609,7 @@ extension Arca_Tapforwarder_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftPr
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: Arca_Tapforwarder_V1_GetStatusResponse, rhs: Arca_Tapforwarder_V1_GetStatusResponse) -> Bool {
+  public static func ==(lhs: Arca_Tapforwarder_V1_GetStatusResponse, rhs: Arca_Tapforwarder_V1_GetStatusResponse) -> Bool {
     if lhs.version != rhs.version {return false}
     if lhs.activeNetworks != rhs.activeNetworks {return false}
     if lhs.uptimeSeconds != rhs.uptimeSeconds {return false}

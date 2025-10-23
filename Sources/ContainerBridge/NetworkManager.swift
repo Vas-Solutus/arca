@@ -8,6 +8,7 @@ public actor NetworkManager {
     private let helperVM: NetworkHelperVM
     private let ipamAllocator: IPAMAllocator
     private let containerManager: ContainerManager
+    private let networkBridge: NetworkBridge
     private let logger: Logger
 
     // Network state tracking
@@ -15,6 +16,7 @@ public actor NetworkManager {
     private var networks: [String: NetworkMetadata] = [:]  // Network ID -> Metadata
     private var networksByName: [String: String] = [:]  // Name -> Network ID
     private var containerNetworks: [String: Set<String>] = [:]  // Container ID -> Set of Network IDs
+    private var deviceCounter: [String: Int] = [:]  // Container ID -> next device index (eth0, eth1, etc.)
 
     /// Metadata for a Docker network
     public struct NetworkMetadata: Sendable {
@@ -69,10 +71,11 @@ public actor NetworkManager {
         }
     }
 
-    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, logger: Logger) {
+    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, networkBridge: NetworkBridge, logger: Logger) {
         self.helperVM = helperVM
         self.ipamAllocator = ipamAllocator
         self.containerManager = containerManager
+        self.networkBridge = networkBridge
         self.logger = logger
     }
 
@@ -316,10 +319,35 @@ public actor NetworkManager {
             aliases: aliases
         )
 
-        logger.debug("Container attached to bridge", metadata: [
+        logger.debug("Container attached to OVS bridge", metadata: [
             "port": "\(portName)",
             "ip": "\(ip)",
             "mac": "\(mac)"
+        ])
+
+        // Determine device name (eth0, eth1, etc.)
+        let deviceIndex = deviceCounter[containerID] ?? 0
+        let device = "eth\(deviceIndex)"
+        deviceCounter[containerID] = deviceIndex + 1
+
+        // Get container's LinuxContainer reference for vsock communication
+        guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
+            throw NetworkManagerError.containerNotFound(containerID)
+        }
+
+        // Attach container to network via NetworkBridge (creates TAP device and starts relay)
+        try await networkBridge.attachContainerToNetwork(
+            container: container,
+            containerID: containerID,
+            networkID: resolvedNetworkID,
+            ipAddress: ip,
+            gateway: metadata.gateway,
+            device: device
+        )
+
+        logger.info("TAP device created and relay started", metadata: [
+            "device": "\(device)",
+            "ip": "\(ip)"
         ])
 
         // Update ContainerManager's network attachment tracking
@@ -383,6 +411,31 @@ public actor NetworkManager {
         }
 
         try await ovnClient.detachContainer(containerID: containerID, networkID: resolvedNetworkID)
+
+        // Detach container from network via NetworkBridge (stops relay and removes TAP device)
+        if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
+            do {
+                try await networkBridge.detachContainerFromNetwork(
+                    container: container,
+                    containerID: containerID,
+                    networkID: resolvedNetworkID
+                )
+                logger.info("TAP device removed and relay stopped", metadata: [
+                    "containerID": "\(containerID)",
+                    "networkID": "\(resolvedNetworkID)"
+                ])
+            } catch {
+                logger.error("Failed to detach via NetworkBridge", metadata: [
+                    "error": "\(error)"
+                ])
+                // Continue with cleanup even if NetworkBridge detachment fails
+            }
+        } else {
+            logger.warning("Container not found for NetworkBridge detachment", metadata: [
+                "containerID": "\(containerID)"
+            ])
+            // Continue with cleanup even if container reference is not available
+        }
 
         // Update ContainerManager's network attachment tracking
         try await containerManager.detachContainerFromNetwork(
@@ -471,6 +524,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case notConnected(String, String)
     case ipAllocationFailed(String)
     case helperVMNotReady
+    case containerNotFound(String)
 
     public var description: String {
         switch self {
@@ -496,6 +550,8 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "IP allocation failed: \(reason)"
         case .helperVMNotReady:
             return "Network helper VM is not ready or OVN client is not connected"
+        case .containerNotFound(let id):
+            return "Container not found: \(id)"
         }
     }
 }

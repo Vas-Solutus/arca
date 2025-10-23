@@ -15,7 +15,7 @@ import SwiftProtobuf
 /// Runs on vsock port 5555 in container's init system namespace
 ///
 /// Usage: instantiate `Arca_Tapforwarder_V1_TAPForwarderClient`, then call methods of this protocol to make API calls.
-internal protocol Arca_Tapforwarder_V1_TAPForwarderClientProtocol: GRPCClient {
+public protocol Arca_Tapforwarder_V1_TAPForwarderClientProtocol: GRPCClient {
   var serviceName: String { get }
   var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? { get }
 
@@ -41,7 +41,7 @@ internal protocol Arca_Tapforwarder_V1_TAPForwarderClientProtocol: GRPCClient {
 }
 
 extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
-  internal var serviceName: String {
+  public var serviceName: String {
     return "arca.tapforwarder.v1.TAPForwarder"
   }
 
@@ -51,7 +51,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
   ///   - request: Request to send to AttachNetwork.
   ///   - callOptions: Call options.
   /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  internal func attachNetwork(
+  public func attachNetwork(
     _ request: Arca_Tapforwarder_V1_AttachNetworkRequest,
     callOptions: CallOptions? = nil
   ) -> UnaryCall<Arca_Tapforwarder_V1_AttachNetworkRequest, Arca_Tapforwarder_V1_AttachNetworkResponse> {
@@ -69,7 +69,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
   ///   - request: Request to send to DetachNetwork.
   ///   - callOptions: Call options.
   /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  internal func detachNetwork(
+  public func detachNetwork(
     _ request: Arca_Tapforwarder_V1_DetachNetworkRequest,
     callOptions: CallOptions? = nil
   ) -> UnaryCall<Arca_Tapforwarder_V1_DetachNetworkRequest, Arca_Tapforwarder_V1_DetachNetworkResponse> {
@@ -87,7 +87,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
   ///   - request: Request to send to ListNetworks.
   ///   - callOptions: Call options.
   /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  internal func listNetworks(
+  public func listNetworks(
     _ request: Arca_Tapforwarder_V1_ListNetworksRequest,
     callOptions: CallOptions? = nil
   ) -> UnaryCall<Arca_Tapforwarder_V1_ListNetworksRequest, Arca_Tapforwarder_V1_ListNetworksResponse> {
@@ -105,7 +105,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
   ///   - request: Request to send to GetStatus.
   ///   - callOptions: Call options.
   /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  internal func getStatus(
+  public func getStatus(
     _ request: Arca_Tapforwarder_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
   ) -> UnaryCall<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse> {
@@ -122,16 +122,16 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
 extension Arca_Tapforwarder_V1_TAPForwarderClient: @unchecked Sendable {}
 
 @available(*, deprecated, renamed: "Arca_Tapforwarder_V1_TAPForwarderNIOClient")
-internal final class Arca_Tapforwarder_V1_TAPForwarderClient: Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
+public final class Arca_Tapforwarder_V1_TAPForwarderClient: Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
   private let lock = Lock()
   private var _defaultCallOptions: CallOptions
   private var _interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol?
-  internal let channel: GRPCChannel
-  internal var defaultCallOptions: CallOptions {
+  public let channel: GRPCChannel
+  public var defaultCallOptions: CallOptions {
     get { self.lock.withLock { return self._defaultCallOptions } }
     set { self.lock.withLockVoid { self._defaultCallOptions = newValue } }
   }
-  internal var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? {
+  public var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? {
     get { self.lock.withLock { return self._interceptors } }
     set { self.lock.withLockVoid { self._interceptors = newValue } }
   }
@@ -142,7 +142,7 @@ internal final class Arca_Tapforwarder_V1_TAPForwarderClient: Arca_Tapforwarder_
   ///   - channel: `GRPCChannel` to the service host.
   ///   - defaultCallOptions: Options to use for each service call if the user doesn't provide them.
   ///   - interceptors: A factory providing interceptors for each RPC.
-  internal init(
+  public init(
     channel: GRPCChannel,
     defaultCallOptions: CallOptions = CallOptions(),
     interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? = nil
@@ -153,10 +153,10 @@ internal final class Arca_Tapforwarder_V1_TAPForwarderClient: Arca_Tapforwarder_
   }
 }
 
-internal struct Arca_Tapforwarder_V1_TAPForwarderNIOClient: Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
-  internal var channel: GRPCChannel
-  internal var defaultCallOptions: CallOptions
-  internal var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol?
+public struct Arca_Tapforwarder_V1_TAPForwarderNIOClient: Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
+  public var channel: GRPCChannel
+  public var defaultCallOptions: CallOptions
+  public var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol?
 
   /// Creates a client for the arca.tapforwarder.v1.TAPForwarder service.
   ///
@@ -164,7 +164,7 @@ internal struct Arca_Tapforwarder_V1_TAPForwarderNIOClient: Arca_Tapforwarder_V1
   ///   - channel: `GRPCChannel` to the service host.
   ///   - defaultCallOptions: Options to use for each service call if the user doesn't provide them.
   ///   - interceptors: A factory providing interceptors for each RPC.
-  internal init(
+  public init(
     channel: GRPCChannel,
     defaultCallOptions: CallOptions = CallOptions(),
     interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? = nil
@@ -178,7 +178,7 @@ internal struct Arca_Tapforwarder_V1_TAPForwarderNIOClient: Arca_Tapforwarder_V1
 /// TAPForwarder service manages TAP network devices and packet forwarding
 /// Runs on vsock port 5555 in container's init system namespace
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
-internal protocol Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol: GRPCClient {
+public protocol Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol: GRPCClient {
   static var serviceDescriptor: GRPCServiceDescriptor { get }
   var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? { get }
 
@@ -205,15 +205,15 @@ internal protocol Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol: GRPCClie
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
-  internal static var serviceDescriptor: GRPCServiceDescriptor {
+  public static var serviceDescriptor: GRPCServiceDescriptor {
     return Arca_Tapforwarder_V1_TAPForwarderClientMetadata.serviceDescriptor
   }
 
-  internal var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? {
+  public var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? {
     return nil
   }
 
-  internal func makeAttachNetworkCall(
+  public func makeAttachNetworkCall(
     _ request: Arca_Tapforwarder_V1_AttachNetworkRequest,
     callOptions: CallOptions? = nil
   ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_AttachNetworkRequest, Arca_Tapforwarder_V1_AttachNetworkResponse> {
@@ -225,7 +225,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func makeDetachNetworkCall(
+  public func makeDetachNetworkCall(
     _ request: Arca_Tapforwarder_V1_DetachNetworkRequest,
     callOptions: CallOptions? = nil
   ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_DetachNetworkRequest, Arca_Tapforwarder_V1_DetachNetworkResponse> {
@@ -237,7 +237,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func makeListNetworksCall(
+  public func makeListNetworksCall(
     _ request: Arca_Tapforwarder_V1_ListNetworksRequest,
     callOptions: CallOptions? = nil
   ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_ListNetworksRequest, Arca_Tapforwarder_V1_ListNetworksResponse> {
@@ -249,7 +249,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func makeGetStatusCall(
+  public func makeGetStatusCall(
     _ request: Arca_Tapforwarder_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
   ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse> {
@@ -264,7 +264,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
-  internal func attachNetwork(
+  public func attachNetwork(
     _ request: Arca_Tapforwarder_V1_AttachNetworkRequest,
     callOptions: CallOptions? = nil
   ) async throws -> Arca_Tapforwarder_V1_AttachNetworkResponse {
@@ -276,7 +276,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func detachNetwork(
+  public func detachNetwork(
     _ request: Arca_Tapforwarder_V1_DetachNetworkRequest,
     callOptions: CallOptions? = nil
   ) async throws -> Arca_Tapforwarder_V1_DetachNetworkResponse {
@@ -288,7 +288,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func listNetworks(
+  public func listNetworks(
     _ request: Arca_Tapforwarder_V1_ListNetworksRequest,
     callOptions: CallOptions? = nil
   ) async throws -> Arca_Tapforwarder_V1_ListNetworksResponse {
@@ -300,7 +300,7 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
     )
   }
 
-  internal func getStatus(
+  public func getStatus(
     _ request: Arca_Tapforwarder_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
   ) async throws -> Arca_Tapforwarder_V1_GetStatusResponse {
@@ -314,12 +314,12 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
-internal struct Arca_Tapforwarder_V1_TAPForwarderAsyncClient: Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
-  internal var channel: GRPCChannel
-  internal var defaultCallOptions: CallOptions
-  internal var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol?
+public struct Arca_Tapforwarder_V1_TAPForwarderAsyncClient: Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
+  public var channel: GRPCChannel
+  public var defaultCallOptions: CallOptions
+  public var interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol?
 
-  internal init(
+  public init(
     channel: GRPCChannel,
     defaultCallOptions: CallOptions = CallOptions(),
     interceptors: Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol? = nil
@@ -330,7 +330,7 @@ internal struct Arca_Tapforwarder_V1_TAPForwarderAsyncClient: Arca_Tapforwarder_
   }
 }
 
-internal protocol Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol: Sendable {
+public protocol Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtocol: Sendable {
 
   /// - Returns: Interceptors to use when invoking 'attachNetwork'.
   func makeAttachNetworkInterceptors() -> [ClientInterceptor<Arca_Tapforwarder_V1_AttachNetworkRequest, Arca_Tapforwarder_V1_AttachNetworkResponse>]
@@ -345,8 +345,8 @@ internal protocol Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProto
   func makeGetStatusInterceptors() -> [ClientInterceptor<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse>]
 }
 
-internal enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
-  internal static let serviceDescriptor = GRPCServiceDescriptor(
+public enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
+  public static let serviceDescriptor = GRPCServiceDescriptor(
     name: "TAPForwarder",
     fullName: "arca.tapforwarder.v1.TAPForwarder",
     methods: [
@@ -357,26 +357,26 @@ internal enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
     ]
   )
 
-  internal enum Methods {
-    internal static let attachNetwork = GRPCMethodDescriptor(
+  public enum Methods {
+    public static let attachNetwork = GRPCMethodDescriptor(
       name: "AttachNetwork",
       path: "/arca.tapforwarder.v1.TAPForwarder/AttachNetwork",
       type: GRPCCallType.unary
     )
 
-    internal static let detachNetwork = GRPCMethodDescriptor(
+    public static let detachNetwork = GRPCMethodDescriptor(
       name: "DetachNetwork",
       path: "/arca.tapforwarder.v1.TAPForwarder/DetachNetwork",
       type: GRPCCallType.unary
     )
 
-    internal static let listNetworks = GRPCMethodDescriptor(
+    public static let listNetworks = GRPCMethodDescriptor(
       name: "ListNetworks",
       path: "/arca.tapforwarder.v1.TAPForwarder/ListNetworks",
       type: GRPCCallType.unary
     )
 
-    internal static let getStatus = GRPCMethodDescriptor(
+    public static let getStatus = GRPCMethodDescriptor(
       name: "GetStatus",
       path: "/arca.tapforwarder.v1.TAPForwarder/GetStatus",
       type: GRPCCallType.unary
@@ -384,229 +384,3 @@ internal enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
   }
 }
 
-/// TAPForwarder service manages TAP network devices and packet forwarding
-/// Runs on vsock port 5555 in container's init system namespace
-///
-/// To build a server, implement a class that conforms to this protocol.
-internal protocol Arca_Tapforwarder_V1_TAPForwarderProvider: CallHandlerProvider {
-  var interceptors: Arca_Tapforwarder_V1_TAPForwarderServerInterceptorFactoryProtocol? { get }
-
-  /// Attach container to a network by creating a TAP device and starting forwarding
-  func attachNetwork(request: Arca_Tapforwarder_V1_AttachNetworkRequest, context: StatusOnlyCallContext) -> EventLoopFuture<Arca_Tapforwarder_V1_AttachNetworkResponse>
-
-  /// Detach container from a network by stopping forwarding and destroying TAP device
-  func detachNetwork(request: Arca_Tapforwarder_V1_DetachNetworkRequest, context: StatusOnlyCallContext) -> EventLoopFuture<Arca_Tapforwarder_V1_DetachNetworkResponse>
-
-  /// List all currently attached networks
-  func listNetworks(request: Arca_Tapforwarder_V1_ListNetworksRequest, context: StatusOnlyCallContext) -> EventLoopFuture<Arca_Tapforwarder_V1_ListNetworksResponse>
-
-  /// Get status and statistics for the TAP forwarder
-  func getStatus(request: Arca_Tapforwarder_V1_GetStatusRequest, context: StatusOnlyCallContext) -> EventLoopFuture<Arca_Tapforwarder_V1_GetStatusResponse>
-}
-
-extension Arca_Tapforwarder_V1_TAPForwarderProvider {
-  internal var serviceName: Substring {
-    return Arca_Tapforwarder_V1_TAPForwarderServerMetadata.serviceDescriptor.fullName[...]
-  }
-
-  /// Determines, calls and returns the appropriate request handler, depending on the request's method.
-  /// Returns nil for methods not handled by this service.
-  internal func handle(
-    method name: Substring,
-    context: CallHandlerContext
-  ) -> GRPCServerHandlerProtocol? {
-    switch name {
-    case "AttachNetwork":
-      return UnaryServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_AttachNetworkRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_AttachNetworkResponse>(),
-        interceptors: self.interceptors?.makeAttachNetworkInterceptors() ?? [],
-        userFunction: self.attachNetwork(request:context:)
-      )
-
-    case "DetachNetwork":
-      return UnaryServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_DetachNetworkRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_DetachNetworkResponse>(),
-        interceptors: self.interceptors?.makeDetachNetworkInterceptors() ?? [],
-        userFunction: self.detachNetwork(request:context:)
-      )
-
-    case "ListNetworks":
-      return UnaryServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_ListNetworksRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_ListNetworksResponse>(),
-        interceptors: self.interceptors?.makeListNetworksInterceptors() ?? [],
-        userFunction: self.listNetworks(request:context:)
-      )
-
-    case "GetStatus":
-      return UnaryServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_GetStatusRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_GetStatusResponse>(),
-        interceptors: self.interceptors?.makeGetStatusInterceptors() ?? [],
-        userFunction: self.getStatus(request:context:)
-      )
-
-    default:
-      return nil
-    }
-  }
-}
-
-/// TAPForwarder service manages TAP network devices and packet forwarding
-/// Runs on vsock port 5555 in container's init system namespace
-///
-/// To implement a server, implement an object which conforms to this protocol.
-@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
-internal protocol Arca_Tapforwarder_V1_TAPForwarderAsyncProvider: CallHandlerProvider, Sendable {
-  static var serviceDescriptor: GRPCServiceDescriptor { get }
-  var interceptors: Arca_Tapforwarder_V1_TAPForwarderServerInterceptorFactoryProtocol? { get }
-
-  /// Attach container to a network by creating a TAP device and starting forwarding
-  func attachNetwork(
-    request: Arca_Tapforwarder_V1_AttachNetworkRequest,
-    context: GRPCAsyncServerCallContext
-  ) async throws -> Arca_Tapforwarder_V1_AttachNetworkResponse
-
-  /// Detach container from a network by stopping forwarding and destroying TAP device
-  func detachNetwork(
-    request: Arca_Tapforwarder_V1_DetachNetworkRequest,
-    context: GRPCAsyncServerCallContext
-  ) async throws -> Arca_Tapforwarder_V1_DetachNetworkResponse
-
-  /// List all currently attached networks
-  func listNetworks(
-    request: Arca_Tapforwarder_V1_ListNetworksRequest,
-    context: GRPCAsyncServerCallContext
-  ) async throws -> Arca_Tapforwarder_V1_ListNetworksResponse
-
-  /// Get status and statistics for the TAP forwarder
-  func getStatus(
-    request: Arca_Tapforwarder_V1_GetStatusRequest,
-    context: GRPCAsyncServerCallContext
-  ) async throws -> Arca_Tapforwarder_V1_GetStatusResponse
-}
-
-@available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
-extension Arca_Tapforwarder_V1_TAPForwarderAsyncProvider {
-  internal static var serviceDescriptor: GRPCServiceDescriptor {
-    return Arca_Tapforwarder_V1_TAPForwarderServerMetadata.serviceDescriptor
-  }
-
-  internal var serviceName: Substring {
-    return Arca_Tapforwarder_V1_TAPForwarderServerMetadata.serviceDescriptor.fullName[...]
-  }
-
-  internal var interceptors: Arca_Tapforwarder_V1_TAPForwarderServerInterceptorFactoryProtocol? {
-    return nil
-  }
-
-  internal func handle(
-    method name: Substring,
-    context: CallHandlerContext
-  ) -> GRPCServerHandlerProtocol? {
-    switch name {
-    case "AttachNetwork":
-      return GRPCAsyncServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_AttachNetworkRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_AttachNetworkResponse>(),
-        interceptors: self.interceptors?.makeAttachNetworkInterceptors() ?? [],
-        wrapping: { try await self.attachNetwork(request: $0, context: $1) }
-      )
-
-    case "DetachNetwork":
-      return GRPCAsyncServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_DetachNetworkRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_DetachNetworkResponse>(),
-        interceptors: self.interceptors?.makeDetachNetworkInterceptors() ?? [],
-        wrapping: { try await self.detachNetwork(request: $0, context: $1) }
-      )
-
-    case "ListNetworks":
-      return GRPCAsyncServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_ListNetworksRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_ListNetworksResponse>(),
-        interceptors: self.interceptors?.makeListNetworksInterceptors() ?? [],
-        wrapping: { try await self.listNetworks(request: $0, context: $1) }
-      )
-
-    case "GetStatus":
-      return GRPCAsyncServerHandler(
-        context: context,
-        requestDeserializer: ProtobufDeserializer<Arca_Tapforwarder_V1_GetStatusRequest>(),
-        responseSerializer: ProtobufSerializer<Arca_Tapforwarder_V1_GetStatusResponse>(),
-        interceptors: self.interceptors?.makeGetStatusInterceptors() ?? [],
-        wrapping: { try await self.getStatus(request: $0, context: $1) }
-      )
-
-    default:
-      return nil
-    }
-  }
-}
-
-internal protocol Arca_Tapforwarder_V1_TAPForwarderServerInterceptorFactoryProtocol: Sendable {
-
-  /// - Returns: Interceptors to use when handling 'attachNetwork'.
-  ///   Defaults to calling `self.makeInterceptors()`.
-  func makeAttachNetworkInterceptors() -> [ServerInterceptor<Arca_Tapforwarder_V1_AttachNetworkRequest, Arca_Tapforwarder_V1_AttachNetworkResponse>]
-
-  /// - Returns: Interceptors to use when handling 'detachNetwork'.
-  ///   Defaults to calling `self.makeInterceptors()`.
-  func makeDetachNetworkInterceptors() -> [ServerInterceptor<Arca_Tapforwarder_V1_DetachNetworkRequest, Arca_Tapforwarder_V1_DetachNetworkResponse>]
-
-  /// - Returns: Interceptors to use when handling 'listNetworks'.
-  ///   Defaults to calling `self.makeInterceptors()`.
-  func makeListNetworksInterceptors() -> [ServerInterceptor<Arca_Tapforwarder_V1_ListNetworksRequest, Arca_Tapforwarder_V1_ListNetworksResponse>]
-
-  /// - Returns: Interceptors to use when handling 'getStatus'.
-  ///   Defaults to calling `self.makeInterceptors()`.
-  func makeGetStatusInterceptors() -> [ServerInterceptor<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse>]
-}
-
-internal enum Arca_Tapforwarder_V1_TAPForwarderServerMetadata {
-  internal static let serviceDescriptor = GRPCServiceDescriptor(
-    name: "TAPForwarder",
-    fullName: "arca.tapforwarder.v1.TAPForwarder",
-    methods: [
-      Arca_Tapforwarder_V1_TAPForwarderServerMetadata.Methods.attachNetwork,
-      Arca_Tapforwarder_V1_TAPForwarderServerMetadata.Methods.detachNetwork,
-      Arca_Tapforwarder_V1_TAPForwarderServerMetadata.Methods.listNetworks,
-      Arca_Tapforwarder_V1_TAPForwarderServerMetadata.Methods.getStatus,
-    ]
-  )
-
-  internal enum Methods {
-    internal static let attachNetwork = GRPCMethodDescriptor(
-      name: "AttachNetwork",
-      path: "/arca.tapforwarder.v1.TAPForwarder/AttachNetwork",
-      type: GRPCCallType.unary
-    )
-
-    internal static let detachNetwork = GRPCMethodDescriptor(
-      name: "DetachNetwork",
-      path: "/arca.tapforwarder.v1.TAPForwarder/DetachNetwork",
-      type: GRPCCallType.unary
-    )
-
-    internal static let listNetworks = GRPCMethodDescriptor(
-      name: "ListNetworks",
-      path: "/arca.tapforwarder.v1.TAPForwarder/ListNetworks",
-      type: GRPCCallType.unary
-    )
-
-    internal static let getStatus = GRPCMethodDescriptor(
-      name: "GetStatus",
-      path: "/arca.tapforwarder.v1.TAPForwarder/GetStatus",
-      type: GRPCCallType.unary
-    )
-  }
-}

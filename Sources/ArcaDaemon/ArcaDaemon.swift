@@ -118,10 +118,18 @@ public final class ArcaDaemon {
         var networkManager: NetworkManager? = nil
         if let helperVM = self.networkHelperVM {
             logger.info("Initializing network manager...")
+
+            // Create NetworkBridge for TAP device management and packet relay
+            let networkBridge = NetworkBridge(
+                helperVM: helperVM,
+                logger: logger
+            )
+
             let nm = NetworkManager(
                 helperVM: helperVM,
                 ipamAllocator: ipamAllocator,
                 containerManager: containerManager,
+                networkBridge: networkBridge,
                 logger: logger
             )
             self.networkManager = nm

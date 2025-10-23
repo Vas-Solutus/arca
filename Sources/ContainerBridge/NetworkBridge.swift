@@ -109,17 +109,22 @@ public actor NetworkBridge {
                 "mac": "\(response.macAddress)"
             ])
 
-            // 3. Start data plane relay task
+            // 3. Get helper VM container for relay
+            guard let helperVMContainer = await helperVM.getContainer() else {
+                throw BridgeError.attachmentFailed("Helper VM container not available")
+            }
+
+            // 4. Start data plane relay task
             let relayTask = Task {
                 await self.runRelay(
                     containerID: containerID,
                     containerPort: containerPort,
-                    helperVMContainer: helperVM.container!,
+                    helperVMContainer: helperVMContainer,
                     helperPort: helperPort
                 )
             }
 
-            // 4. Track this attachment
+            // 5. Track this attachment
             if attachments[containerID] == nil {
                 attachments[containerID] = [:]
             }

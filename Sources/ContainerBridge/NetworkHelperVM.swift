@@ -276,6 +276,11 @@ public actor NetworkHelperVM {
         return ovnClient
     }
 
+    /// Get the LinuxContainer instance for the helper VM (for vsock operations)
+    public func getContainer() -> Containerization.LinuxContainer? {
+        return container
+    }
+
     // MARK: - Private Methods
 
     /// Ensure the helper VM image is loaded into the ImageStore
