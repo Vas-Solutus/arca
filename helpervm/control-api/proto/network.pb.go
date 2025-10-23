@@ -346,6 +346,7 @@ type AttachContainerRequest struct {
 	MacAddress    string                 `protobuf:"bytes,4,opt,name=mac_address,json=macAddress,proto3" json:"mac_address,omitempty"` // Container's MAC address
 	Hostname      string                 `protobuf:"bytes,5,opt,name=hostname,proto3" json:"hostname,omitempty"`                       // Container hostname for DNS
 	Aliases       []string               `protobuf:"bytes,6,rep,name=aliases,proto3" json:"aliases,omitempty"`                         // Additional DNS aliases
+	VsockPort     uint32                 `protobuf:"varint,7,opt,name=vsock_port,json=vsockPort,proto3" json:"vsock_port,omitempty"`   // Vsock port for TAP packet relay (helper VM listens here)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -420,6 +421,13 @@ func (x *AttachContainerRequest) GetAliases() []string {
 		return x.Aliases
 	}
 	return nil
+}
+
+func (x *AttachContainerRequest) GetVsockPort() uint32 {
+	if x != nil {
+		return x.VsockPort
+	}
+	return 0
 }
 
 type AttachContainerResponse struct {
@@ -1082,7 +1090,7 @@ const file_network_proto_rawDesc = "" +
 	"network_id\x18\x01 \x01(\tR\tnetworkId\"F\n" +
 	"\x14DeleteBridgeResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\xd0\x01\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xef\x01\n" +
 	"\x16AttachContainerRequest\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1d\n" +
 	"\n" +
@@ -1092,7 +1100,9 @@ const file_network_proto_rawDesc = "" +
 	"\vmac_address\x18\x04 \x01(\tR\n" +
 	"macAddress\x12\x1a\n" +
 	"\bhostname\x18\x05 \x01(\tR\bhostname\x12\x18\n" +
-	"\aaliases\x18\x06 \x03(\tR\aaliases\"f\n" +
+	"\aaliases\x18\x06 \x03(\tR\aaliases\x12\x1d\n" +
+	"\n" +
+	"vsock_port\x18\a \x01(\rR\tvsockPort\"f\n" +
 	"\x17AttachContainerResponse\x12\x1b\n" +
 	"\tport_name\x18\x01 \x01(\tR\bportName\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x14\n" +

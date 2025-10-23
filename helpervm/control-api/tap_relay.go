@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
 	"fmt"
 	"log"
 	"net"
@@ -30,7 +29,7 @@ func NewTAPRelayManager() *TAPRelayManager {
 
 // StartRelay starts a vsock listener for TAP packet relay
 // This is called when a container is attached to a network
-func (m *TAPRelayManager) StartRelay(port uint32, networkID string, containerID string, macAddress string) error {
+func (m *TAPRelayManager) StartRelay(port uint32, bridgeName string, networkID string, containerID string, macAddress string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -39,7 +38,7 @@ func (m *TAPRelayManager) StartRelay(port uint32, networkID string, containerID 
 		return fmt.Errorf("relay already running on port %d", port)
 	}
 
-	log.Printf("Starting TAP relay on vsock port %d for container %s on network %s", port, containerID, networkID)
+	log.Printf("Starting TAP relay on vsock port %d for container %s on network %s (bridge: %s)", port, containerID, networkID, bridgeName)
 
 	// Create vsock listener
 	listener, err := vsock.Listen(port, nil)
@@ -80,7 +79,7 @@ func (m *TAPRelayManager) StartRelay(port uint32, networkID string, containerID 
 				log.Printf("Accepted vsock connection on port %d", port)
 
 				// Handle this connection in a separate goroutine
-				go m.handleConnection(conn, networkID, containerID, macAddress, port)
+				go m.handleConnection(conn, bridgeName, networkID, containerID, macAddress, port)
 			}
 		}
 	}()
@@ -104,13 +103,10 @@ func (m *TAPRelayManager) StopRelay(port uint32) error {
 }
 
 // handleConnection handles a single vsock connection for TAP packet relay
-func (m *TAPRelayManager) handleConnection(conn net.Conn, networkID string, containerID string, macAddress string, port uint32) {
+func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, networkID string, containerID string, macAddress string, port uint32) {
 	defer conn.Close()
 
-	log.Printf("Handling TAP relay connection for container %s on network %s (port %d)", containerID, networkID, port)
-
-	// Get bridge name from network ID
-	bridgeName := getBridgeName(networkID)
+	log.Printf("Handling TAP relay connection for container %s on network %s (bridge: %s, port %d)", containerID, networkID, bridgeName, port)
 
 	// Create OVS internal port for this container
 	// Format: port-{short-container-id}

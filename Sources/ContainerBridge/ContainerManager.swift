@@ -393,7 +393,7 @@ public actor ContainerManager {
     /// - Full 64-char Docker IDs
     /// - Short IDs (minimum 4 chars, prefix matching)
     /// - Container names (with or without "/" prefix)
-    private func resolveContainerID(_ nameOrID: String) -> String? {
+    public func resolveContainerID(_ nameOrID: String) -> String? {
         // First try direct ID lookup (full 64-char ID)
         if containers[nameOrID] != nil {
             return nameOrID

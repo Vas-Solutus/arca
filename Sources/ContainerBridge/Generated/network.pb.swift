@@ -106,6 +106,9 @@ public struct Arca_Network_AttachContainerRequest: Sendable {
   /// Additional DNS aliases
   public var aliases: [String] = []
 
+  /// Vsock port for TAP packet relay (helper VM listens here)
+  public var vsockPort: UInt32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -522,7 +525,7 @@ extension Arca_Network_DeleteBridgeResponse: SwiftProtobuf.Message, SwiftProtobu
 
 extension Arca_Network_AttachContainerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AttachContainerRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{3}network_id\0\u{3}ip_address\0\u{3}mac_address\0\u{1}hostname\0\u{1}aliases\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{3}network_id\0\u{3}ip_address\0\u{3}mac_address\0\u{1}hostname\0\u{1}aliases\0\u{3}vsock_port\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -536,6 +539,7 @@ extension Arca_Network_AttachContainerRequest: SwiftProtobuf.Message, SwiftProto
       case 4: try { try decoder.decodeSingularStringField(value: &self.macAddress) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.hostname) }()
       case 6: try { try decoder.decodeRepeatedStringField(value: &self.aliases) }()
+      case 7: try { try decoder.decodeSingularUInt32Field(value: &self.vsockPort) }()
       default: break
       }
     }
@@ -560,6 +564,9 @@ extension Arca_Network_AttachContainerRequest: SwiftProtobuf.Message, SwiftProto
     if !self.aliases.isEmpty {
       try visitor.visitRepeatedStringField(value: self.aliases, fieldNumber: 6)
     }
+    if self.vsockPort != 0 {
+      try visitor.visitSingularUInt32Field(value: self.vsockPort, fieldNumber: 7)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -570,6 +577,7 @@ extension Arca_Network_AttachContainerRequest: SwiftProtobuf.Message, SwiftProto
     if lhs.macAddress != rhs.macAddress {return false}
     if lhs.hostname != rhs.hostname {return false}
     if lhs.aliases != rhs.aliases {return false}
+    if lhs.vsockPort != rhs.vsockPort {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

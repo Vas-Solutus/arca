@@ -12,6 +12,7 @@ public actor OVNClient {
     private var channel: GRPCChannel?
     private var eventLoopGroup: EventLoopGroup?
     private var client: Arca_Network_NetworkControlNIOClient?
+    private var vsockFileHandle: FileHandle?  // Keep FileHandle alive for the connection
 
     public enum OVNClientError: Error, CustomStringConvertible {
         case notConnected
@@ -50,6 +51,9 @@ public actor OVNClient {
             "fd": "\(fileHandle.fileDescriptor)"
         ])
 
+        // Store FileHandle to keep it alive for the lifetime of the connection
+        self.vsockFileHandle = fileHandle
+
         // Create gRPC channel from the connected socket FileHandle
         let channel = ClientConnection(
             configuration: .default(
@@ -74,9 +78,15 @@ public actor OVNClient {
         try await channel.close().get()
         try await eventLoopGroup?.shutdownGracefully()
 
+        // Close the vsock FileHandle
+        if let fileHandle = vsockFileHandle {
+            try? fileHandle.close()
+        }
+
         self.channel = nil
         self.eventLoopGroup = nil
         self.client = nil
+        self.vsockFileHandle = nil
 
         logger.info("Disconnected from helper VM")
     }
@@ -137,7 +147,8 @@ public actor OVNClient {
         ipAddress: String,
         macAddress: String,
         hostname: String,
-        aliases: [String] = []
+        aliases: [String] = [],
+        vsockPort: UInt32
     ) async throws -> String {
         guard let client = client else {
             throw OVNClientError.notConnected
@@ -147,7 +158,8 @@ public actor OVNClient {
             "containerID": "\(containerID)",
             "networkID": "\(networkID)",
             "ip": "\(ipAddress)",
-            "mac": "\(macAddress)"
+            "mac": "\(macAddress)",
+            "vsockPort": "\(vsockPort)"
         ])
 
         var request = Arca_Network_AttachContainerRequest()
@@ -157,6 +169,7 @@ public actor OVNClient {
         request.macAddress = macAddress
         request.hostname = hostname
         request.aliases = aliases
+        request.vsockPort = vsockPort
 
         let call = client.attachContainer(request)
         let response = try await call.response.get()

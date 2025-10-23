@@ -305,45 +305,59 @@ public actor NetworkManager {
         // Generate MAC address
         let mac = generateMACAddress()
 
-        // Attach container to OVS bridge in helper VM
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
-        }
-
-        let portName = try await ovnClient.attachContainer(
-            containerID: containerID,
-            networkID: resolvedNetworkID,
-            ipAddress: ip,
-            macAddress: mac,
-            hostname: containerName,
-            aliases: aliases
-        )
-
-        logger.debug("Container attached to OVS bridge", metadata: [
-            "port": "\(portName)",
-            "ip": "\(ip)",
-            "mac": "\(mac)"
-        ])
-
         // Determine device name (eth0, eth1, etc.)
         let deviceIndex = deviceCounter[containerID] ?? 0
         let device = "eth\(deviceIndex)"
         deviceCounter[containerID] = deviceIndex + 1
 
-        // Get container's LinuxContainer reference for vsock communication
-        guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
-            throw NetworkManagerError.containerNotFound(containerID)
-        }
+        // Allocate vsock port for TAP packet relay
+        let containerPort = try await networkBridge.allocateVsockPort()
 
-        // Attach container to network via NetworkBridge (creates TAP device and starts relay)
-        try await networkBridge.attachContainerToNetwork(
-            container: container,
-            containerID: containerID,
-            networkID: resolvedNetworkID,
-            ipAddress: ip,
-            gateway: metadata.gateway,
-            device: device
-        )
+        do {
+            // Attach container to OVS bridge in helper VM
+            guard let ovnClient = await helperVM.getOVNClient() else {
+                await networkBridge.releaseVsockPort(containerPort)
+                throw NetworkManagerError.helperVMNotReady
+            }
+
+            let portName = try await ovnClient.attachContainer(
+                containerID: containerID,
+                networkID: resolvedNetworkID,
+                ipAddress: ip,
+                macAddress: mac,
+                hostname: containerName,
+                aliases: aliases,
+                vsockPort: containerPort
+            )
+
+            logger.debug("Container attached to OVS bridge", metadata: [
+                "port": "\(portName)",
+                "ip": "\(ip)",
+                "mac": "\(mac)",
+                "vsockPort": "\(containerPort)"
+            ])
+
+            // Get container's LinuxContainer reference for vsock communication
+            guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
+                await networkBridge.releaseVsockPort(containerPort)
+                throw NetworkManagerError.containerNotFound(containerID)
+            }
+
+            // Attach container to network via NetworkBridge (creates TAP device and starts relay)
+            try await networkBridge.attachContainerToNetwork(
+                container: container,
+                containerID: containerID,
+                networkID: resolvedNetworkID,
+                ipAddress: ip,
+                gateway: metadata.gateway,
+                device: device,
+                containerPort: containerPort
+            )
+        } catch {
+            // Release port if anything fails
+            await networkBridge.releaseVsockPort(containerPort)
+            throw error
+        }
 
         logger.info("TAP device created and relay started", metadata: [
             "device": "\(device)",

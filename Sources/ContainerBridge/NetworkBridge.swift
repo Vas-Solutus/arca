@@ -5,6 +5,7 @@
 import Foundation
 import Logging
 import Containerization
+import ContainerizationOCI
 import ContainerizationOS
 import NIOCore
 import NIOPosix
@@ -61,48 +62,79 @@ public actor NetworkBridge {
 
     // MARK: - TAP Forwarder Management
 
-    /// Ensure arca-tap-forwarder is running in the container
-    /// Uses exec API to launch forwarder as a background daemon
-    /// This keeps it completely separate from the user's container process
+    /// Ensure arca-tap-forwarder is running in the VM's init namespace
+    /// This runs the forwarder in vminitd's namespace (not container's namespace)
+    /// so it has access to /sbin/arca-tap-forwarder from the vminit rootfs
     private func ensureTAPForwarderRunning(container: LinuxContainer, containerID: String) async throws {
         // Check if already running (by checking if we've tracked it)
-        // If it died, container.exec() will fail and we'll relaunch
         if runningForwarders[containerID] != nil {
             logger.debug("arca-tap-forwarder already launched", metadata: ["containerID": "\(containerID)"])
             return
         }
 
-        logger.info("Launching arca-tap-forwarder daemon", metadata: ["containerID": "\(containerID)"])
+        logger.info("Launching arca-tap-forwarder daemon in vminit namespace", metadata: ["containerID": "\(containerID)"])
 
-        // Create process configuration for arca-tap-forwarder
-        // This runs as a detached exec process (like docker exec -d)
-        var processConfig = LinuxContainer.Configuration.Process()
-        processConfig.arguments = ["/sbin/arca-tap-forwarder"]
-        processConfig.environmentVariables = []  // Use defaults from container
-        processConfig.workingDirectory = "/"
-        processConfig.terminal = false
-        // Don't set stdin/stdout/stderr for detached process
+        // Dial vminitd agent on port 1024
+        let fileHandle = try await container.dialVsock(port: 1024)
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let agent = Containerization.Vminitd(connection: fileHandle, group: group)
+
+        defer {
+            Task {
+                try? await agent.close()
+            }
+        }
+
+        // Create OCI process spec for arca-tap-forwarder
+        // This will run in vminit's namespace (containerID: nil)
+        var spec = ContainerizationOCI.Spec()
+        spec.process = ContainerizationOCI.Process(
+            args: ["/sbin/arca-tap-forwarder"],
+            cwd: "/",
+            env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+            user: ContainerizationOCI.User(),
+            rlimits: [],
+            terminal: false
+        )
 
         // Generate exec ID for the forwarder
         let execID = "arca-tap-forwarder-\(containerID)"
 
-        // Launch via exec API (runs in init system, not user container)
-        let process = try await container.exec(execID, configuration: processConfig)
-        try await process.start()
+        // Create process in vminit namespace (containerID: nil)
+        try await agent.createProcess(
+            id: execID,
+            containerID: nil,  // nil = runs in vminit namespace, not container namespace
+            stdinPort: nil,
+            stdoutPort: nil,
+            stderrPort: nil,
+            configuration: spec,
+            options: nil
+        )
 
-        // Track the running forwarder
-        runningForwarders[containerID] = process
+        // Start the process
+        let pid = try await agent.startProcess(id: execID, containerID: nil)
 
-        // Small delay to ensure forwarder is ready to accept connections
-        try await Task.sleep(for: .milliseconds(100))
-
-        logger.info("arca-tap-forwarder daemon started", metadata: [
+        logger.info("arca-tap-forwarder daemon started in vminit namespace", metadata: [
             "containerID": "\(containerID)",
-            "pid": "\(process.pid)"
+            "pid": "\(pid)"
         ])
+
+        // Note: We don't track the LinuxProcess here since we're not using container.exec()
+        // The process runs in vminit's namespace and will be cleaned up when the VM stops
     }
 
     // MARK: - Network Attachment
+
+    /// Allocate a vsock port for TAP packet relay
+    /// Returns the container-side port (helper VM uses port + 10000)
+    public func allocateVsockPort() async throws -> UInt32 {
+        return try await portAllocator.allocate()
+    }
+
+    /// Release a previously allocated vsock port
+    public func releaseVsockPort(_ port: UInt32) async {
+        await portAllocator.release(port)
+    }
 
     /// Attach a container to a network
     public func attachContainerToNetwork(
@@ -111,7 +143,8 @@ public actor NetworkBridge {
         networkID: String,
         ipAddress: String,
         gateway: String,
-        device: String
+        device: String,
+        containerPort: UInt32
     ) async throws {
         guard let helperVM = helperVM else {
             throw BridgeError.helperVMNotRunning
@@ -127,8 +160,7 @@ public actor NetworkBridge {
         // 1. Ensure arca-tap-forwarder is running in the container
         try await ensureTAPForwarderRunning(container: container, containerID: containerID)
 
-        // 2. Allocate vsock ports
-        let containerPort = try await portAllocator.allocate()
+        // 2. Use provided vsock port
         let helperPort = containerPort + 10000  // Helper uses +10000 offset
 
         logger.debug("Allocated ports", metadata: [
@@ -149,7 +181,6 @@ public actor NetworkBridge {
             )
 
             guard response.success else {
-                await portAllocator.release(containerPort)
                 throw BridgeError.attachmentFailed(response.error)
             }
 
@@ -192,10 +223,8 @@ public actor NetworkBridge {
             ])
 
         } catch let error as BridgeError {
-            await portAllocator.release(containerPort)
             throw error
         } catch {
-            await portAllocator.release(containerPort)
             throw BridgeError.attachmentFailed(error.localizedDescription)
         }
     }

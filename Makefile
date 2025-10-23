@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm kernel install-grpc-plugin test tap-forwarder vminit
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm kernel install-grpc-plugin test tap-forwarder vminit gen-grpc
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -105,6 +105,11 @@ vminit: tap-forwarder
 	@echo "Building custom vminit:latest with arca-tap-forwarder..."
 	@./scripts/build-vminit.sh
 
+# Generate gRPC code from proto files
+gen-grpc:
+	@echo "Generating gRPC code from proto files..."
+	@./scripts/generate-grpc.sh
+
 # Install protoc-gen-grpc-swift plugin (v1.27.0)
 install-grpc-plugin:
 	@echo "Installing protoc-gen-grpc-swift v1.27.0..."
@@ -158,6 +163,7 @@ help:
 	@echo "  make kernel       - Build Linux kernel with TUN support (10-15 min)"
 	@echo "  make tap-forwarder - Build arca-tap-forwarder for Linux (container networking)"
 	@echo "  make vminit       - Build custom vminit:latest with arca-tap-forwarder"
+	@echo "  make gen-grpc     - Generate gRPC code from proto files"
 	@echo "  make install-grpc-plugin - Install protoc-gen-grpc-swift v1.27.0"
 	@echo "  make verify-entitlements - Display entitlements of built binary"
 	@echo ""

@@ -93,6 +93,14 @@ fi
 echo "  ✓ Created: $OUTPUT_DIR/init.rootfs.tar.gz"
 echo
 
+# Install the init rootfs tarball to where Containerization framework expects it
+echo "→ Installing vminit:latest to Containerization framework..."
+CONTAINER_SUPPORT_DIR="$HOME/Library/Application Support/com.apple.containerization"
+mkdir -p "$CONTAINER_SUPPORT_DIR"
+cp "$OUTPUT_DIR/init.rootfs.tar.gz" "$CONTAINER_SUPPORT_DIR/vminit:latest"
+echo "  ✓ Installed to: $CONTAINER_SUPPORT_DIR/vminit:latest"
+echo
+
 # Verify the image was created
 echo "→ Verifying vminit:latest image..."
 if "$CCTL_PATH" image ls | grep -q "vminit.*latest"; then
@@ -109,8 +117,6 @@ echo "  - /sbin/vminitd (Apple's init system)"
 echo "  - /sbin/vmexec (Apple's exec helper)"
 echo "  - /sbin/arca-tap-forwarder (Arca's TAP networking forwarder)"
 echo
-echo "Location: ~/Library/Containers/com.apple.Containerization/Data/vminit:latest"
+echo "Installed to: $CONTAINER_SUPPORT_DIR/vminit:latest"
 echo
-echo "Next steps:"
-echo "  1. Modify vminit startup to launch arca-tap-forwarder when ARCA_NETWORK_PORT is set"
-echo "  2. Update ContainerManager to pass network environment variables"
+echo "The Containerization framework will use this image when containers are created."

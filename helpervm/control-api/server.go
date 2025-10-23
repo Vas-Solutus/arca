@@ -15,11 +15,12 @@ import (
 // NetworkServer implements the NetworkControl gRPC service
 type NetworkServer struct {
 	pb.UnimplementedNetworkControlServer
-	mu           sync.RWMutex
-	bridges      map[string]*BridgeMetadata
-	containerMap map[string]map[string]bool // networkID -> containerID -> exists
-	relayManager *TAPRelayManager
-	startTime    time.Time
+	mu            sync.RWMutex
+	bridges       map[string]*BridgeMetadata
+	containerMap  map[string]map[string]bool // networkID -> containerID -> exists
+	relayManager  *TAPRelayManager
+	containerPort map[string]uint32 // containerID -> helperPort (for TAP relay cleanup)
+	startTime     time.Time
 }
 
 // BridgeMetadata stores metadata about a network bridge
@@ -33,10 +34,11 @@ type BridgeMetadata struct {
 // NewNetworkServer creates a new NetworkServer
 func NewNetworkServer() *NetworkServer {
 	return &NetworkServer{
-		bridges:      make(map[string]*BridgeMetadata),
-		containerMap: make(map[string]map[string]bool),
-		relayManager: NewTAPRelayManager(),
-		startTime:    time.Now(),
+		bridges:       make(map[string]*BridgeMetadata),
+		containerMap:  make(map[string]map[string]bool),
+		relayManager:  NewTAPRelayManager(),
+		containerPort: make(map[string]uint32),
+		startTime:     time.Now(),
 	}
 }
 
@@ -167,41 +169,15 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	portName := fmt.Sprintf("vport-%s", req.ContainerId[:12])
 	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
 	// Use MD5 hash of network ID to ensure uniqueness
 	hash := md5.Sum([]byte(req.NetworkId))
 	bridgeName := fmt.Sprintf("br-%x", hash[:6])
 
-	// Create OVS port
-	if err := runCommand("ovs-vsctl", "add-port", bridgeName, portName); err != nil {
-		return &pb.AttachContainerResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to create OVS port: %v", err),
-		}, nil
-	}
-
-	// Create OVN logical switch port
-	if err := runCommand("ovn-nbctl", "lsp-add", req.NetworkId, req.ContainerId); err != nil {
-		// Cleanup: delete OVS port
-		_ = runCommand("ovs-vsctl", "del-port", bridgeName, portName)
-		return &pb.AttachContainerResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to create OVN logical switch port: %v", err),
-		}, nil
-	}
-
-	// Set addresses (MAC and IP)
-	addresses := fmt.Sprintf("%s %s", req.MacAddress, req.IpAddress)
-	if err := runCommand("ovn-nbctl", "lsp-set-addresses", req.ContainerId, addresses); err != nil {
-		// Cleanup
-		_ = runCommand("ovn-nbctl", "lsp-del", req.ContainerId)
-		_ = runCommand("ovs-vsctl", "del-port", bridgeName, portName)
-		return &pb.AttachContainerResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to set OVN port addresses: %v", err),
-		}, nil
-	}
+	// For TAP-over-vsock architecture, we don't create OVS/OVN ports here
+	// The TAP relay will create its own OVS internal port when it starts
+	// We just track the container attachment for now
+	portName := fmt.Sprintf("port-%s", req.ContainerId[:12])
 
 	// Configure DNS
 	if err := s.configureDNS(req.NetworkId, req.Hostname, req.IpAddress, req.Aliases); err != nil {
@@ -214,6 +190,20 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 		s.containerMap[req.NetworkId] = make(map[string]bool)
 	}
 	s.containerMap[req.NetworkId][req.ContainerId] = true
+
+	// Start TAP relay for packet forwarding (if vsock port provided)
+	if req.VsockPort > 0 {
+		// Helper VM listens on host_port + 10000
+		helperPort := req.VsockPort + 10000
+		if err := s.relayManager.StartRelay(helperPort, bridgeName, req.NetworkId, req.ContainerId, req.MacAddress); err != nil {
+			log.Printf("Warning: Failed to start TAP relay: %v", err)
+			// Don't fail the entire operation - networking may still work via other means
+		} else {
+			// Track the port for cleanup during detach
+			s.containerPort[req.ContainerId] = helperPort
+			log.Printf("Started TAP relay on helper VM port %d for container %s", helperPort, req.ContainerId)
+		}
+	}
 
 	log.Printf("Successfully attached container %s to network %s", req.ContainerId, req.NetworkId)
 
@@ -230,23 +220,14 @@ func (s *NetworkServer) DetachContainer(ctx context.Context, req *pb.DetachConta
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	portName := fmt.Sprintf("vport-%s", req.ContainerId[:12])
-	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
-	// Use MD5 hash of network ID to ensure uniqueness
-	hash := md5.Sum([]byte(req.NetworkId))
-	bridgeName := fmt.Sprintf("br-%x", hash[:6])
-
-	// Delete OVN logical switch port
-	if err := runCommand("ovn-nbctl", "lsp-del", req.ContainerId); err != nil {
-		log.Printf("Warning: Failed to delete OVN logical switch port: %v", err)
-	}
-
-	// Delete OVS port
-	if err := runCommand("ovs-vsctl", "del-port", bridgeName, portName); err != nil {
-		return &pb.DetachContainerResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to delete OVS port: %v", err),
-		}, nil
+	// Stop TAP relay if one was started for this container
+	if helperPort, exists := s.containerPort[req.ContainerId]; exists {
+		if err := s.relayManager.StopRelay(helperPort); err != nil {
+			log.Printf("Warning: Failed to stop TAP relay on port %d: %v", helperPort, err)
+		} else {
+			log.Printf("Stopped TAP relay on port %d for container %s", helperPort, req.ContainerId)
+		}
+		delete(s.containerPort, req.ContainerId)
 	}
 
 	// Remove DNS entries

@@ -720,12 +720,17 @@ public final class ArcaDaemon {
                 do {
                     let connectRequest = try request.jsonBody(NetworkConnectRequest.self)
 
-                    // Resolve container name from ID
-                    let containerName = await containerManager.getContainerName(dockerID: connectRequest.container) ?? connectRequest.container
+                    // Resolve container name/ID to full Docker ID
+                    guard let dockerID = await containerManager.resolveContainerID(connectRequest.container) else {
+                        return .standard(HTTPResponse.notFound("container", id: connectRequest.container))
+                    }
+
+                    // Get container name
+                    let containerName = await containerManager.getContainerName(dockerID: dockerID) ?? dockerID
 
                     let result = await networkHandlers.handleConnectNetwork(
                         networkID: id,
-                        containerID: connectRequest.container,
+                        containerID: dockerID,
                         containerName: containerName,
                         endpointConfig: connectRequest.endpointConfig
                     )
