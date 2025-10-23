@@ -72,10 +72,19 @@ echo
 echo "→ Creating vminit rootfs with arca-tap-forwarder..."
 cd "$OUTPUT_DIR"
 
+# Path to init script
+INIT_SCRIPT_PATH="$PROJECT_ROOT/arca-vminit/init-arca-networking.sh"
+
+if [ ! -f "$INIT_SCRIPT_PATH" ]; then
+    echo "ERROR: Init script not found at: $INIT_SCRIPT_PATH"
+    exit 1
+fi
+
 "$CCTL_PATH" rootfs create \
     --vminitd "$VMINITD_PATH" \
     --vmexec "$VMEXEC_PATH" \
     --add-file "$TAP_FORWARDER_PATH:/sbin/arca-tap-forwarder" \
+    --add-file "$INIT_SCRIPT_PATH:/etc/init.d/arca-networking" \
     --label org.opencontainers.image.source=https://github.com/your-org/arca \
     --label arca.networking.enabled=true \
     --image vminit:latest \
