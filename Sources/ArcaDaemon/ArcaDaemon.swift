@@ -277,13 +277,18 @@ public final class ArcaDaemon {
                 case .success:
                     return .standard(HTTPResponse.noContent())
                 case .failure(let error):
-                    let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
-                    return .standard(HTTPResponse.error(error.description, status: status))
+                    // Map ContainerError to appropriate HTTP status
+                    switch error {
+                    case .notFound:
+                        return .standard(HTTPResponse.notFound(error.description))
+                    default:
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
                 }
             } catch let error as ValidationError {
                 return .standard(error.toHTTPResponse())
             } catch {
-                return .standard(HTTPResponse.error("Invalid query parameters: \(error.localizedDescription)", status: .badRequest))
+                return .standard(HTTPResponse.badRequest("Invalid query parameters: \(error.localizedDescription)"))
             }
         }
 

@@ -176,6 +176,19 @@ public struct ContainerHandlers: Sendable {
             ])
 
             return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to stop container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            default:
+                return .failure(ContainerError.stopFailed(error.description))
+            }
         } catch {
             logger.error("Failed to stop container", metadata: [
                 "id": "\(id)",

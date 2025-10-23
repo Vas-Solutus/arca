@@ -72,11 +72,18 @@ verify-entitlements: $(BUILD_DIR)/$(BINARY)
 	@echo "Verifying entitlements for $(BUILD_DIR)/$(BINARY)..."
 	@codesign -d --entitlements - $(BUILD_DIR)/$(BINARY)
 
-# Run the daemon in foreground mode
+# Run the daemon in foreground mode (debug build)
 run: codesign
-	@echo "Starting Arca daemon..."
+	@echo "Starting Arca daemon (debug)..."
 	@rm -f /tmp/arca.sock
 	@$(BUILD_DIR)/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
+
+# Run the daemon in foreground mode (release build)
+run-release:
+	@$(MAKE) CONFIGURATION=release codesign
+	@echo "Starting Arca daemon (release)..."
+	@rm -f /tmp/arca.sock
+	@.build/release/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
 
 # Build helper VM image
 helpervm:
@@ -131,7 +138,8 @@ help:
 	@echo "  make              - Build and codesign debug binary (incremental)"
 	@echo "  make debug        - Build and codesign debug binary"
 	@echo "  make release      - Build and codesign release binary"
-	@echo "  make run          - Build, sign, and run daemon at /tmp/arca.sock"
+	@echo "  make run          - Build, sign, and run daemon (debug) at /tmp/arca.sock"
+	@echo "  make run-release  - Build, sign, and run daemon (release) at /tmp/arca.sock"
 	@echo "  make test         - Run all tests (helper VM tests start Arca daemon)"
 	@echo "  make clean        - Remove all build artifacts"
 	@echo "  make install      - Install release binary to /usr/local/bin"

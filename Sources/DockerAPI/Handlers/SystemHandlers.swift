@@ -7,7 +7,8 @@ public struct SystemHandlers {
     /// Handle GET /_ping
     /// Returns: "OK" with 200 status
     public static func handlePing() -> PingResponse {
-        return PingResponse(apiVersion: "1.51", osType: "darwin")
+        // Containers run Linux, not darwin (even though Arca runs on macOS)
+        return PingResponse(apiVersion: "1.51", osType: "linux")
     }
 
     /// Handle GET /version
@@ -19,7 +20,7 @@ public struct SystemHandlers {
             minAPIVersion: "1.24",
             gitCommit: "unknown",
             goVersion: "go1.22.10",
-            os: "darwin",
+            os: "linux",  // Containers run Linux, not darwin
             arch: ProcessInfo.processInfo.machineArchitecture,
             kernelVersion: ProcessInfo.processInfo.kernelVersion,
             experimental: false,

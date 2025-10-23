@@ -23,6 +23,14 @@ final class NIOHTTPStreamWriter: HTTPStreamWriter, @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             context.eventLoop.execute {
+                // Check if channel is still active before writing
+                guard self.context.channel.isActive else {
+                    self.logger.warning("Attempted to write to inactive channel, aborting stream")
+                    self.finished = true
+                    continuation.resume(throwing: StreamError.channelInactive)
+                    return
+                }
+
                 var buffer = self.context.channel.allocator.buffer(capacity: data.count)
                 buffer.writeBytes(data)
                 let part = HTTPServerResponsePart.body(.byteBuffer(buffer))
@@ -38,6 +46,13 @@ final class NIOHTTPStreamWriter: HTTPStreamWriter, @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             context.eventLoop.execute {
+                // Check if channel is still active before finishing
+                guard self.context.channel.isActive else {
+                    self.logger.warning("Attempted to finish stream on inactive channel")
+                    continuation.resume(throwing: StreamError.channelInactive)
+                    return
+                }
+
                 // Send the end part to complete the HTTP response
                 let endPart = HTTPServerResponsePart.end(nil)
                 self.context.writeAndFlush(NIOAny(endPart), promise: nil)
@@ -48,6 +63,7 @@ final class NIOHTTPStreamWriter: HTTPStreamWriter, @unchecked Sendable {
 
     enum StreamError: Error {
         case alreadyFinished
+        case channelInactive
     }
 }
 
@@ -65,10 +81,16 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
     private var requestURI: String?
     private var requestHeaders: HTTPHeaders?
     private var bodyBuffer: ByteBuffer?
+    private var channelActive: Bool = true
 
     init(router: Router, logger: Logger) {
         self.router = router
         self.logger = logger
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        channelActive = false
+        context.fireChannelInactive()
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -122,16 +144,27 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
 
         // Route the request asynchronously
         let eventLoop = context.eventLoop
-        // Suppress non-Sendable warning: NIO's ChannelHandler model ensures thread-safety
-        // through event loop isolation - each handler instance is only accessed from its
-        // associated event loop
-        let capturedContext = context
+
+        // Capture context with nonisolated(unsafe) to suppress Sendable warnings.
+        // This is safe because:
+        // 1. NIO guarantees handlers are only accessed from their event loop
+        // 2. We only use capturedContext inside eventLoop.execute callbacks
+        // 3. Those callbacks are guaranteed to run on the same event loop
+        nonisolated(unsafe) let capturedContext = context
+
+        // Queue the Task creation on the event loop to ensure proper ordering
+        // This is the key pattern for bridging NIO event loop with Swift Concurrency
         eventLoop.execute {
-            Task { [capturedContext] in
+            Task {
                 let responseType = await self.router.route(request: request)
 
                 // Send response on the event loop
                 eventLoop.execute {
+                    // Check if channel is still active before trying to send response
+                    guard self.channelActive else {
+                        self.logger.debug("Skipping response send - channel inactive")
+                        return
+                    }
                     self.sendResponseType(context: capturedContext, responseType: responseType)
                     self.reset()
                 }
@@ -196,13 +229,23 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
             context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         }
 
-        // Send end
-        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
-
-        logger.debug("Response sent", metadata: [
-            "status": "\(response.status.code)",
-            "body_size": "\(response.body?.count ?? 0)"
-        ])
+        // Send end with a promise to track completion
+        let endPromise = context.eventLoop.makePromise(of: Void.self)
+        endPromise.futureResult.whenComplete { result in
+            switch result {
+            case .success:
+                self.logger.debug("Response sent", metadata: [
+                    "status": "\(response.status.code)",
+                    "body_size": "\(response.body?.count ?? 0)"
+                ])
+            case .failure(let error):
+                self.logger.warning("Failed to send response", metadata: [
+                    "status": "\(response.status.code)",
+                    "error": "\(error)"
+                ])
+            }
+        }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: endPromise)
     }
 
     private func sendErrorResponse(context: ChannelHandlerContext, status: HTTPResponseStatus, message: String) {
