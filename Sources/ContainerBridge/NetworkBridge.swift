@@ -258,9 +258,9 @@ public actor NetworkBridge {
 
             // Run bidirectional relay
             await withTaskGroup(of: Void.self) { group in
-                // Container -> Helper
+                // Container -> Helper (Socket -> FileHandle)
                 group.addTask {
-                    await self.relayForward(
+                    await self.relaySocketToFileHandle(
                         from: containerConnection,
                         to: helperConnection,
                         direction: "container->helper",
@@ -268,9 +268,9 @@ public actor NetworkBridge {
                     )
                 }
 
-                // Helper -> Container
+                // Helper -> Container (FileHandle -> Socket)
                 group.addTask {
-                    await self.relayBackward(
+                    await self.relayFileHandleToSocket(
                         from: helperConnection,
                         to: containerConnection,
                         direction: "helper->container",
@@ -295,7 +295,7 @@ public actor NetworkBridge {
         let type = VsockType(port: port, cid: VsockType.anyCID)
         let listener = try Socket(type: type)
 
-        try listener.bind()
+        // listen() internally calls bind() and listen()
         try listener.listen()
 
         logger.debug("Created vsock listener", metadata: ["port": "\(port)"])
@@ -327,22 +327,23 @@ public actor NetworkBridge {
         direction: String,
         logger: Logger
     ) async {
-        var buffer = [UInt8](repeating: 0, count: 65536)
+        var buffer = Data(count: 65536)
         var totalBytes: UInt64 = 0
 
         while !Task.isCancelled {
             do {
-                let bytesRead = try source.read(maxBytes: buffer.count)
+                let bytesRead = try source.read(buffer: &buffer)
 
-                guard !bytesRead.isEmpty else {
+                guard bytesRead > 0 else {
                     logger.info("Connection closed", metadata: ["direction": "\(direction)"])
                     break
                 }
 
-                // Write to destination
-                try dest.write(bytesRead)
+                // Write to destination (only the bytes actually read)
+                let dataToWrite = buffer.prefix(bytesRead)
+                _ = try dest.write(data: dataToWrite)
 
-                totalBytes += UInt64(bytesRead.count)
+                totalBytes += UInt64(bytesRead)
 
                 if totalBytes % 1_000_000 == 0 {
                     logger.trace("Relayed data", metadata: [
@@ -375,6 +376,98 @@ public actor NetworkBridge {
     ) async {
         // Same implementation as relayForward
         await relayForward(from: source, to: dest, direction: direction, logger: logger)
+    }
+
+    /// Relay data from Socket to FileHandle
+    private func relaySocketToFileHandle(
+        from source: Socket,
+        to dest: FileHandle,
+        direction: String,
+        logger: Logger
+    ) async {
+        var buffer = Data(count: 65536)
+        var totalBytes: UInt64 = 0
+
+        while !Task.isCancelled {
+            do {
+                let bytesRead = try source.read(buffer: &buffer)
+
+                guard bytesRead > 0 else {
+                    logger.info("Connection closed", metadata: ["direction": "\(direction)"])
+                    break
+                }
+
+                // Write to destination (only the bytes actually read)
+                let dataToWrite = buffer.prefix(bytesRead)
+                try dest.write(contentsOf: dataToWrite)
+
+                totalBytes += UInt64(bytesRead)
+
+                if totalBytes % 1_000_000 == 0 {
+                    logger.trace("Relayed data", metadata: [
+                        "direction": "\(direction)",
+                        "bytes": "\(totalBytes)"
+                    ])
+                }
+            } catch {
+                logger.error("Relay error", metadata: [
+                    "direction": "\(direction)",
+                    "error": "\(error)"
+                ])
+                break
+            }
+        }
+
+        logger.debug("Relay stopped", metadata: [
+            "direction": "\(direction)",
+            "totalBytes": "\(totalBytes)"
+        ])
+    }
+
+    /// Relay data from FileHandle to Socket
+    private func relayFileHandleToSocket(
+        from source: FileHandle,
+        to dest: Socket,
+        direction: String,
+        logger: Logger
+    ) async {
+        var totalBytes: UInt64 = 0
+
+        while !Task.isCancelled {
+            do {
+                // FileHandle.read doesn't have a non-deprecated async read
+                // Use availableData which reads available bytes
+                let data = source.availableData
+
+                guard !data.isEmpty else {
+                    logger.info("Connection closed", metadata: ["direction": "\(direction)"])
+                    break
+                }
+
+                // Write to destination socket
+                _ = try dest.write(data: data)
+
+                totalBytes += UInt64(data.count)
+
+                if totalBytes % 1_000_000 == 0 {
+                    logger.trace("Relayed data", metadata: [
+                        "direction": "\(direction)",
+                        "bytes": "\(totalBytes)"
+                    ])
+                }
+            } catch {
+                logger.error("Relay error", metadata: [
+                    "direction": "\(direction)",
+                    "error": "\(error)"
+                ])
+                break
+            }
+        }
+
+        logger.debug("Relay stopped", metadata: [
+            "direction": "\(direction)",
+            "totalBytes": "\(totalBytes)"
+        ])
     }
 
     // MARK: - Statistics

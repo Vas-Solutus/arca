@@ -120,10 +120,8 @@ public final class ArcaDaemon {
             logger.info("Initializing network manager...")
 
             // Create NetworkBridge for TAP device management and packet relay
-            let networkBridge = NetworkBridge(
-                helperVM: helperVM,
-                logger: logger
-            )
+            let networkBridge = NetworkBridge(logger: logger)
+            await networkBridge.setHelperVM(helperVM)
 
             let nm = NetworkManager(
                 helperVM: helperVM,
