@@ -18,6 +18,9 @@ public actor NetworkBridge {
     // Track network attachments: containerID -> networkID -> attachment
     private var attachments: [String: [String: NetworkAttachment]] = [:]
 
+    // Track running TAP forwarders: containerID -> exec process
+    private var runningForwarders: [String: Containerization.LinuxProcess] = [:]
+
     struct NetworkAttachment {
         let networkID: String
         let device: String          // eth0, eth1, etc.
@@ -56,6 +59,49 @@ public actor NetworkBridge {
         self.helperVM = helperVM
     }
 
+    // MARK: - TAP Forwarder Management
+
+    /// Ensure arca-tap-forwarder is running in the container
+    /// Uses exec API to launch forwarder as a background daemon
+    /// This keeps it completely separate from the user's container process
+    private func ensureTAPForwarderRunning(container: LinuxContainer, containerID: String) async throws {
+        // Check if already running (by checking if we've tracked it)
+        // If it died, container.exec() will fail and we'll relaunch
+        if runningForwarders[containerID] != nil {
+            logger.debug("arca-tap-forwarder already launched", metadata: ["containerID": "\(containerID)"])
+            return
+        }
+
+        logger.info("Launching arca-tap-forwarder daemon", metadata: ["containerID": "\(containerID)"])
+
+        // Create process configuration for arca-tap-forwarder
+        // This runs as a detached exec process (like docker exec -d)
+        var processConfig = LinuxContainer.Configuration.Process()
+        processConfig.arguments = ["/sbin/arca-tap-forwarder"]
+        processConfig.environmentVariables = []  // Use defaults from container
+        processConfig.workingDirectory = "/"
+        processConfig.terminal = false
+        // Don't set stdin/stdout/stderr for detached process
+
+        // Generate exec ID for the forwarder
+        let execID = "arca-tap-forwarder-\(containerID)"
+
+        // Launch via exec API (runs in init system, not user container)
+        let process = try await container.exec(execID, configuration: processConfig)
+        try await process.start()
+
+        // Track the running forwarder
+        runningForwarders[containerID] = process
+
+        // Small delay to ensure forwarder is ready to accept connections
+        try await Task.sleep(for: .milliseconds(100))
+
+        logger.info("arca-tap-forwarder daemon started", metadata: [
+            "containerID": "\(containerID)",
+            "pid": "\(process.pid)"
+        ])
+    }
+
     // MARK: - Network Attachment
 
     /// Attach a container to a network
@@ -78,7 +124,10 @@ public actor NetworkBridge {
             "ip": "\(ipAddress)"
         ])
 
-        // 1. Allocate vsock ports
+        // 1. Ensure arca-tap-forwarder is running in the container
+        try await ensureTAPForwarderRunning(container: container, containerID: containerID)
+
+        // 2. Allocate vsock ports
         let containerPort = try await portAllocator.allocate()
         let helperPort = containerPort + 10000  // Helper uses +10000 offset
 
@@ -87,7 +136,7 @@ public actor NetworkBridge {
             "helperPort": "\(helperPort)"
         ])
 
-        // 2. Send AttachNetwork RPC to arca-tap-forwarder
+        // 3. Send AttachNetwork RPC to arca-tap-forwarder
         do {
             let client = try await TAPForwarderClient(container: container, logger: logger)
 

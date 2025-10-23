@@ -1,0 +1,238 @@
+================================================================================
+VMINITD ARCHITECTURE EXPLORATION - EXECUTIVE SUMMARY
+================================================================================
+
+QUESTION 1: How does vminitd start processes on boot?
+==========================================
+
+vminitd is NOT a traditional init system (like systemd). It's a gRPC server.
+
+Startup Flow:
+  1. vminitd starts as PID 1 in the Linux VM
+  2. Mounts /proc, /run, /sys filesystems
+  3. Initializes a gRPC server on vsock port 1024
+  4. WAITS for gRPC requests from the host (Arca daemon)
+  5. No automatic process startup - everything is request-driven
+
+Process Execution:
+  Host (Arca) → gRPC Request to vminitd
+             ↓
+  vminitd creates OCI bundle from spec
+             ↓
+  vminitd spawns vmexec process
+             ↓
+  vmexec forks and execs the container's main process
+             ↓
+  ProcessSupervisor watches for SIGCHLD signals
+             ↓
+  Automatic zombie reaping and exit notifications
+
+KEY FILES:
+  - Application.swift (lines 69-122): Entry point, gRPC server init
+  - Server.swift (lines 89-119): gRPC server setup
+  - ProcessSupervisor.swift (lines 21-113): Signal handling, zombie reaping
+  - ManagedProcess.swift (lines 154-250): vmexec execution, IO setup
+
+================================================================================
+
+QUESTION 2: Does it have auto-start mechanisms?
+================================================
+
+NO - Absolutely not.
+
+vminitd has NO built-in service auto-start capabilities:
+  ✗ No /etc/init.d support
+  ✗ No systemd/OpenRC support
+  ✗ No boot scripts (/etc/rc*.d)
+  ✗ No configuration files it reads
+  ✗ No daemon respawn on crash
+  ✗ Request-based only
+
+This is by design - Arca (the host daemon) controls all container lifecycle.
+
+================================================================================
+
+QUESTION 3: Configuration files or environment variables?
+===========================================================
+
+vminitd reads NO configuration files.
+
+The ONLY way to configure anything is via the OCI Runtime Spec:
+  
+  {
+    "process": {
+      "args": ["/bin/sh"],           // Command to execute
+      "env": ["VAR=value"],          // Environment variables
+      "cwd": "/",                    // Working directory
+      "user": { "uid": 0, "gid": 0 }, // User/group
+      "terminal": false              // PTY allocation
+    }
+  }
+
+The OCI spec is passed as a protobuf request from Arca to vminitd's
+createProcess() gRPC method.
+
+Post-Processing (ociAlterations in Server+GRPC.swift:1100-1155):
+  - Resolves usernames to UIDs via /etc/passwd
+  - Sets HOME if not present
+  - Sets TERM=xterm if terminal requested
+  - Sets default cgroup path
+  - Sets default working directory to /
+
+KEY FILES:
+  - Server+GRPC.swift (lines 1100-1155): ociAlterations() function
+  - Spec.swift (lines 21-123): OCI Runtime Spec structure
+
+================================================================================
+
+QUESTION 4: Main process vs background services?
+=================================================
+
+vminitd handles this via the gRPC API:
+
+Main Process (Init):
+  createProcess(containerID=X, id=X) → container main process
+  startProcess(containerID=X, id=X)  → starts init
+
+Background Processes (Exec):
+  createProcess(containerID=X, id=Y) → exec process (owningPid=X)
+  startProcess(containerID=X, id=Y)  → starts exec
+
+The init process runs as PID 1 in the container.
+Exec processes are children of PID 1, managed by ProcessSupervisor.
+
+When container stops, init is killed → all children are automatically killed
+by the kernel (PID 1 death causes container VM shutdown).
+
+KEY FILES:
+  - Server+GRPC.swift (lines 421-513): createProcess()
+  - Server+GRPC.swift (lines 571-608): startProcess()
+  - ManagedContainer.swift: Container state tracking
+
+================================================================================
+
+QUESTION 5: Hooks or extension points for arca-tap-forwarder?
+==============================================================
+
+vminitd provides NO direct hook mechanisms, but here are workarounds:
+
+OPTION 1: Custom Init Wrapper (RECOMMENDED)
+  - Create /usr/local/bin/init-wrapper in container image
+  - Script starts arca-tap-forwarder in background
+  - Then execs to real process
+  
+  Example:
+    #!/bin/sh
+    /usr/local/bin/arca-tap-forwarder &
+    exec "$@"
+  
+  Set as entrypoint, pass real command as args.
+
+OPTION 2: Exec API After Container Starts
+  - Host starts container normally
+  - Host calls gRPC createProcess() again with arca-tap-forwarder spec
+  - Runs forwarder as background process
+  - Original process continues normally
+
+OPTION 3: Vsock Proxy Setup
+  vminitd has a proxyVsock() method (Server+GRPC.swift:155-193)
+  - Proxy vsock port ↔ Unix domain socket
+  - Could run forwarder listening on socket
+  
+  Less useful for startup, more useful for ongoing network services.
+
+OPTION 4: Modify Container Spec at Creation
+  - When Arca creates container, prepend forwarder to process.args
+  - Forwarder starts first, then execs to real process
+  - Requires Arca changes, not vminitd changes
+
+KEY FILES:
+  - Server+GRPC.swift (lines 155-193): proxyVsock() method
+  - ManagedContainer.swift: Container creation, init process setup
+  - ManagedProcess.swift (lines 154-250): Process execution
+
+================================================================================
+
+ARCHITECTURE SUMMARY
+====================
+
+vminitd is a MINIMAL process manager, not a traditional init system:
+
+    Host Arca Daemon (macOS)
+            ↓
+        gRPC over vsock
+            ↓
+    vminitd (PID 1 in Linux VM)
+            ├─ Process Supervisor (watches SIGCHLD)
+            ├─ Container State (tracks running containers/execs)
+            └─ gRPC Handlers
+                ├ createProcess() - Create container or exec
+                ├ startProcess()  - Start process via vmexec
+                ├ killProcess()   - Send signal to process
+                ├ deleteProcess() - Cleanup container/exec
+                ├ proxyVsock()    - Setup network proxies
+                └ (others: mount, sysctl, file ops, networking)
+
+Key Design Decisions:
+  • Request-based: No background initialization
+  • Minimal: Only responds to host requests
+  • Async: Swift 6.2 concurrency throughout
+  • Signal-based: SIGCHLD for zombie reaping
+  • gRPC: Protocol buffer API with vsock transport
+
+For Auto-Start Services:
+  The container must be configured at creation time (OCI spec)
+  or services must be launched via Exec API after container starts.
+
+================================================================================
+
+RECOMMENDATIONS FOR ARCA-TAP-FORWARDER
+======================================
+
+Best Approach: Custom Init Wrapper
+
+  1. Create init script in container image at /usr/local/bin/init-wrapper
+  
+     #!/bin/sh
+     # Start TAP forwarder in background
+     exec /usr/local/bin/arca-tap-forwarder &
+     
+     # Exec to real process
+     exec "$@"
+  
+  2. When building container image, set:
+     ENTRYPOINT=["/usr/local/bin/init-wrapper"]
+  
+  3. Pass actual command as CMD or args in Docker run/create
+  
+  Benefits:
+    ✓ Works with any container
+    ✓ Forwarder runs in same namespace as container
+    ✓ Forwarder automatically cleaned up when container stops
+    ✓ No vminitd changes needed
+    ✓ No Arca changes needed
+    ✓ Compatible with existing OCI spec flow
+
+Alternative: Arca Daemon Wrapper
+
+  If building Arca support for TAP networking:
+  
+  1. After container creation, Arca calls createProcess() with:
+     - Forwarder process spec
+     - owningPid = container's init PID
+  
+  2. Arca calls startProcess() to launch forwarder
+  
+  3. Container's main process starts normally
+  
+  4. Both run in parallel, forwarder exits with container
+  
+  Benefits:
+    ✓ Clear separation of concerns
+    ✓ Forwarder can be started/stopped independently
+    ✗ Requires Arca code changes
+    ✗ More complex orchestration
+
+Choose Custom Init Wrapper for simplicity.
+
+================================================================================
