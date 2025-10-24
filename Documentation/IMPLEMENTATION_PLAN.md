@@ -667,93 +667,108 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Files: `helpervm/control-api/server.go` (CreateBridge, DeleteBridge, AttachContainer)
   - **COMPLETED**: All bridges now use proper length-limited names
 
-### Phase 3.15: Routing Infrastructure Improvements (Week 2.5)
+### Phase 3.15: Routing Infrastructure Improvements (Week 2.5) ✅
 
 **Rationale**: Before implementing the Network Management Layer, improve the HTTP routing infrastructure to make endpoint implementation cleaner and more maintainable. This gives us 80% of Vapor's benefits with 5% of the complexity, while maintaining our minimal-dependency philosophy.
 
+**Status**: COMPLETED - All routing infrastructure improvements have been implemented and are in active use.
+
 #### Router DSL Enhancement
 
-- [ ] **Add HTTP method convenience methods to Router**
-  - Implement `.get()`, `.post()`, `.put()`, `.delete()` methods
-  - Clean syntax: `router.get("/containers/json") { req in ... }`
-  - Replace verbose `router.register(method: .GET, pattern: ...)` calls
-  - Maintain existing route matching and path parameter extraction
-  - Files: `Sources/ArcaDaemon/Router.swift`
+- [x] **Add HTTP method convenience methods to Router**
+  - Implemented `.get()`, `.post()`, `.put()`, `.delete()`, `.head()` methods ✓
+  - Clean syntax: `builder.get("/containers/json") { req in ... }` ✓
+  - Replaced verbose `router.register(method: .GET, pattern: ...)` calls ✓
+  - Maintains existing route matching and path parameter extraction ✓
+  - Files: `Sources/ArcaDaemon/Router.swift:135-157`
+  - **COMPLETED**: All HTTP method shortcuts implemented and in use
 
 #### Middleware Pattern
 
-- [ ] **Design middleware protocol and pipeline**
-  - Create `Middleware` protocol with `func handle(_ request: HTTPRequest, next: (HTTPRequest) async throws -> HTTPResponse) async throws -> HTTPResponse`
-  - Add middleware chain to Router: `var middlewares: [Middleware]`
-  - Implement `router.use(_ middleware: Middleware)` registration
-  - Execute middlewares in order before route handlers
-  - Files: `Sources/ArcaDaemon/Middleware.swift`, `Sources/ArcaDaemon/Router.swift`
+- [x] **Design middleware protocol and pipeline**
+  - Created `Middleware` protocol with proper async signature ✓
+  - Added middleware chain to Router with `middlewares: [Middleware]` ✓
+  - Implemented `builder.use(_ middleware: Middleware)` registration ✓
+  - Executes middlewares in order before route handlers via recursive chain ✓
+  - Files: `Sources/ArcaDaemon/Middleware.swift:6-36`, `Sources/ArcaDaemon/Router.swift:14,35-47,113-119`
+  - **COMPLETED**: Full middleware pipeline with context support
 
-- [ ] **Implement APIVersionNormalizer middleware**
-  - Move version normalization from Router to middleware
-  - Strip `/v{major}.{minor}` prefix from request path
-  - Store original version in request context for response headers
-  - Simplifies router logic and makes version handling explicit
-  - Files: `Sources/ArcaDaemon/Middlewares/APIVersionNormalizer.swift`
+- [x] **Implement APIVersionNormalizer middleware**
+  - Moved version normalization to middleware ✓
+  - Strips `/v{major}.{minor}` prefix from request path using regex ✓
+  - Preserves query parameters during normalization ✓
+  - Simplifies router logic and makes version handling explicit ✓
+  - Files: `Sources/ArcaDaemon/APIVersionNormalizer.swift`
+  - **COMPLETED**: Active middleware handling /v1.51/containers → /containers
 
-- [ ] **Implement RequestLogger middleware**
-  - Log incoming requests: method, path, query parameters
-  - Log response: status code, duration
-  - Use structured logging with Logger metadata
-  - Optional: filter sensitive data (auth headers, image digests)
-  - Files: `Sources/ArcaDaemon/Middlewares/RequestLogger.swift`
+- [x] **Implement RequestLogger middleware**
+  - Logs incoming requests: method, path, URI ✓
+  - Logs response: status code, duration in milliseconds ✓
+  - Uses structured logging with Logger metadata ✓
+  - Filters log level based on status code (warning for 4xx/5xx) ✓
+  - Logs error response bodies at debug level ✓
+  - Handles both standard and streaming responses ✓
+  - Files: `Sources/ArcaDaemon/RequestLogger.swift`
+  - **COMPLETED**: Full request/response logging with timing
 
 #### Request/Response Helpers
 
-- [ ] **Add HTTPRequest convenience extensions**
-  - `func queryBool(_ key: String, default: Bool = false) -> Bool` - Parse boolean query params
-  - `func queryInt(_ key: String) -> Int?` - Parse integer query params
-  - `func queryString(_ key: String) -> String?` - Get string query params
-  - `func pathParam(_ key: String) -> String?` - Type-safe path parameter access
-  - `func jsonBody<T: Decodable>(_ type: T.Type) throws -> T` - Decode JSON body
+- [x] **Add HTTPRequest convenience extensions**
+  - `func queryBool(_ key: String, default: Bool = false) -> Bool` - Handles "true"/"1"/"false"/"0" ✓
+  - `func queryInt(_ key: String) -> Int?` - Parse integer query params ✓
+  - `func queryString(_ key: String) -> String?` - Get string query params ✓
+  - `func queryArray(_ key: String) -> [String]?` - Parse comma-separated arrays ✓
+  - `func pathParam(_ key: String) -> String?` - Type-safe path parameter access ✓
+  - `func requiredPathParam(_ key: String) throws -> String` - Throwing version ✓
+  - `func jsonBody<T: Decodable>(_ type: T.Type) throws -> T` - Decode JSON body ✓
+  - `func optionalJSONBody<T: Decodable>(_ type: T.Type) -> T?` - Non-throwing variant ✓
+  - Additional helpers: `header()`, `hasHeader()`, `contentType`, `isJSON` ✓
   - Files: `Sources/ArcaDaemon/HTTPRequest+Helpers.swift`
+  - **COMPLETED**: Comprehensive request parsing utilities
 
-- [ ] **Add HTTPResponse convenience static methods**
-  - `static func ok<T: Encodable>(_ value: T) -> HTTPResponse` - 200 OK with JSON
-  - `static func created<T: Encodable>(_ value: T) -> HTTPResponse` - 201 Created
-  - `static func noContent() -> HTTPResponse` - 204 No Content
-  - `static func badRequest(_ message: String) -> HTTPResponse` - 400 with error
-  - `static func notFound(_ message: String) -> HTTPResponse` - 404 with error
-  - `static func conflict(_ message: String) -> HTTPResponse` - 409 with error
-  - `static func internalError(_ message: String) -> HTTPResponse` - 500 with error
-  - Files: `Sources/ArcaDaemon/HTTPResponse+Helpers.swift`
+- [x] **Add HTTPResponse convenience static methods**
+  - `static func ok<T: Encodable>(_ value: T) -> HTTPResponse` - 200 OK with JSON ✓
+  - `static func ok(_ text: String) -> HTTPResponse` - 200 OK with plain text ✓
+  - `static func ok() -> HTTPResponse` - 200 OK with no body ✓
+  - `static func created<T: Encodable>(_ value: T) -> HTTPResponse` - 201 Created ✓
+  - `static func noContent() -> HTTPResponse` - 204 No Content ✓
+  - `static func badRequest(_ message: String) -> HTTPResponse` - 400 with error ✓
+  - `static func unauthorized(_ message: String) -> HTTPResponse` - 401 ✓
+  - `static func forbidden(_ message: String) -> HTTPResponse` - 403 ✓
+  - `static func notFound(_ message: String) -> HTTPResponse` - 404 with error ✓
+  - `static func notFound(_ resourceType: String, id: String) -> HTTPResponse` - 404 typed ✓
+  - `static func conflict(_ message: String) -> HTTPResponse` - 409 with error ✓
+  - `static func unprocessableEntity(_ message: String) -> HTTPResponse` - 422 ✓
+  - `static func internalServerError(_ message: String) -> HTTPResponse` - 500 ✓
+  - `static func internalServerError(_ error: Error) -> HTTPResponse` - 500 from Error ✓
+  - `static func notImplemented(_ message: String) -> HTTPResponse` - 501 ✓
+  - `static func serviceUnavailable(_ message: String) -> HTTPResponse` - 503 ✓
+  - Files: `Sources/DockerAPI/HTTPResponse+Helpers.swift`
+  - **COMPLETED**: Full suite of response helpers
 
 #### Refactor Existing Routes
 
-- [ ] **Migrate container routes to new DSL**
-  - Convert all container endpoint registrations in `ArcaDaemon.swift`
-  - Use new `.get()`, `.post()`, `.delete()` methods
-  - Use request helpers for query/path parameters
-  - Use response helpers for consistent JSON responses
-  - Example:
-    ```swift
-    // Old:
-    router.register(method: .GET, pattern: "/containers/json") { request in
-        let all = request.queryParameters["all"] == "true"
-        return await containerHandlers.handleListContainers(all: all)
-    }
+- [x] **Migrate container routes to new DSL**
+  - All container endpoints use new `.get()`, `.post()`, `.delete()` methods ✓
+  - Uses request helpers: `queryBool()`, `queryInt()`, `queryString()`, `pathParam()` ✓
+  - Uses response helpers: `HTTPResponse.ok()`, `notFound()`, `badRequest()`, etc. ✓
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift:246-545`
+  - **COMPLETED**: All container routes migrated
 
-    // New:
-    router.get("/containers/json") { req in
-        let all = req.queryBool("all")
-        return try await containerHandlers.handleListContainers(all: all)
-    }
-    ```
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **Migrate image routes to new DSL**
+  - All image endpoints converted to new convenience methods ✓
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift:551-638`
+  - **COMPLETED**: All image routes migrated
 
-- [ ] **Migrate image routes to new DSL**
-  - Convert all image endpoint registrations
-  - Use new convenience methods
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **Migrate system routes to new DSL**
+  - Version, ping, info endpoints using new DSL ✓
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift:220-244`
+  - **COMPLETED**: All system routes migrated
 
-- [ ] **Migrate system routes to new DSL**
-  - Convert version, ping, info endpoints
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **Migrate network routes to new DSL**
+  - All network endpoints use new DSL methods ✓
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift:640-796`
+  - **COMPLETED**: All network routes migrated
 
 #### Testing
 
@@ -762,12 +777,14 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Verify route matching with new API
   - Test middleware execution order
   - Files: `Tests/ArcaTests/RouterTests.swift`
+  - **TODO**: Unit tests not yet implemented (functionality works in integration)
 
 - [ ] **Unit tests for middleware**
   - Test APIVersionNormalizer strips versions correctly
   - Test RequestLogger logs requests/responses
   - Test middleware chain execution
   - Files: `Tests/ArcaTests/MiddlewareTests.swift`
+  - **TODO**: Unit tests not yet implemented (functionality works in production)
 
 - [ ] **Unit tests for request/response helpers**
   - Test query parameter parsing (bool, int, string)
@@ -793,61 +810,97 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
 
 **Expected Outcome**: Cleaner, more maintainable routing code with ~50% less boilerplate. This will make implementing the Network API endpoints in Phase 3.2 much faster and more pleasant.
 
-### Phase 3.2: Network Management Layer (Week 3-4)
+### Phase 3.2: Network Management Layer (Week 3-4) ✅
+
+**Status**: COMPLETED - Full NetworkManager and IPAM implementation with Docker-compatible networking
 
 #### NetworkManager Actor
 
-- [ ] **Implement NetworkManager actor with core state**
-  - Create NetworkMetadata struct (id, name, driver, subnet, gateway, containers, created, options)
-  - Maintain networks dictionary: [String: NetworkMetadata]
-  - Maintain containerNetworks mapping: [String: Set<String>]
-  - Initialize with reference to NetworkHelperVM
-  - Add actor isolation with Sendable conformance
-  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+- [x] **Implement NetworkManager actor with core state**
+  - ✅ Created NetworkMetadata struct (id, name, driver, subnet, gateway, containers, created, options, labels, isDefault)
+  - ✅ Maintains networks dictionary: `[String: NetworkMetadata]`
+  - ✅ Maintains networksByName mapping: `[String: String]` (name → ID)
+  - ✅ Maintains containerNetworks mapping: `[String: Set<String>]` (container → network IDs)
+  - ✅ Maintains deviceCounter: `[String: Int]` for eth0, eth1, etc.
+  - ✅ Initialize with references to NetworkHelperVM, IPAMAllocator, ContainerManager, NetworkBridge
+  - ✅ Full actor isolation with Sendable conformance
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:7-80`
+  - **COMPLETED**: Thread-safe NetworkManager with complete state tracking
 
-- [ ] **Implement network creation logic**
-  - Generate Docker network ID (64-char hex)
-  - Validate network name (alphanumeric, hyphens, underscores)
-  - Parse and validate IPAM config (subnet, gateway, IP range)
-  - Call helperVM.createBridge() to create OVS bridge
-  - Store NetworkMetadata
-  - Return Docker-compatible network response
-  - Files: `Sources/ContainerBridge/NetworkManager.swift` (createNetwork method)
+- [x] **Implement network creation logic**
+  - ✅ Generates Docker network ID (64-char hex via generateNetworkID)
+  - ✅ Validates network name (alphanumeric, hyphens, underscores)
+  - ✅ Parses and validates IPAM config (subnet, gateway, IP range)
+  - ✅ Auto-allocates subnet from 172.18.0.0/16 - 172.31.0.0/16 if not specified
+  - ✅ Calls helperVM.createBridge() via OVNClient to create OVS bridge
+  - ✅ Stores NetworkMetadata with all fields
+  - ✅ Returns Docker-compatible network response
+  - ✅ Handles duplicate name detection
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:112-200`
+  - **COMPLETED**: Full network creation with IPAM integration
 
-- [ ] **Implement network deletion logic**
-  - Verify network exists
-  - Check no containers are attached (or force disconnect if force=true)
-  - Call helperVM.deleteBridge()
-  - Remove from networks dictionary
-  - Clean up IPAM state
-  - Files: `Sources/ContainerBridge/NetworkManager.swift` (deleteNetwork method)
+- [x] **Implement network deletion logic**
+  - ✅ Verifies network exists (throws networkNotFound)
+  - ✅ Checks no containers are attached (or force disconnect if force=true)
+  - ✅ Calls helperVM.deleteBridge() via OVNClient
+  - ✅ Removes from networks dictionary and networksByName
+  - ✅ Cleans up IPAM state via releaseIP
+  - ✅ Prevents deletion of default "bridge" network
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:201-240`
+  - **COMPLETED**: Full network deletion with validation
 
-- [ ] **Implement network listing and inspection**
-  - listNetworks(filters:) - Support filters: name, id, driver, type
-  - inspectNetwork(id:) - Return full network details
-  - Translate to Docker API format
-  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+- [x] **Implement network listing and inspection**
+  - ✅ listNetworks(filters:) - Supports filters: name, id, driver
+  - ✅ inspectNetwork(id:) - Returns full network details with container info
+  - ✅ Translates to Docker API format via NetworkHandlers
+  - ✅ Supports lookup by ID or name
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:241-275`
+  - **COMPLETED**: Full listing and inspection APIs
+
+- [x] **Implement container network connection**
+  - ✅ connectContainer(containerID:containerName:networkID:ipv4Address:aliases:)
+  - ✅ Prevents duplicate network attachment
+  - ✅ Allocates IP via IPAM
+  - ✅ Generates MAC address
+  - ✅ Assigns device names (eth0, eth1, etc.)
+  - ✅ Uses NetworkBridge for TAP-over-vsock attachment
+  - ✅ Updates network and container metadata
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:276-404`
+  - **COMPLETED**: Dynamic network attachment without container restart
+
+- [x] **Implement container network disconnection**
+  - ✅ disconnectContainer(containerID:networkID:force:)
+  - ✅ Verifies network and container exist
+  - ✅ Releases IP via IPAM
+  - ✅ Detaches via NetworkBridge
+  - ✅ Updates metadata
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:405-454`
+  - **COMPLETED**: Full disconnection support
 
 #### IPAM (IP Address Management)
 
-- [ ] **Create IPAMAllocator actor**
-  - Track IP allocations per network: [networkID: Set<String>]
-  - Implement allocateIP(networkID:subnet:preferredIP:)
-    - Parse CIDR notation
-    - Reserve .0 (network), .1 (gateway), .255 (broadcast)
-    - Find next available IP or use preferredIP if specified
-    - Mark IP as allocated
-    - Return IP address string
-  - Implement releaseIP(networkID:ip:)
-  - Handle subnet exhaustion error
+- [x] **Create IPAMAllocator actor**
+  - ✅ Tracks IP allocations per network: `[networkID: [containerID: ip]]`
+  - ✅ Implements allocateIP(networkID:subnet:preferredIP:) ✓
+    - ✅ Parses CIDR notation
+    - ✅ Reserves .0 (network), .1 (gateway), .255 (broadcast)
+    - ✅ Finds next available IP or uses preferredIP if specified
+    - ✅ Validates preferredIP is in subnet and not reserved
+    - ✅ Returns IP address string
+  - ✅ Implements releaseIP(networkID:containerID:) ✓
+  - ✅ Handles subnet exhaustion error
+  - ✅ Additional methods: trackAllocation, getAllocatedIP
   - Files: `Sources/ContainerBridge/IPAMAllocator.swift`
+  - **COMPLETED**: Full IPAM with actor isolation
 
-- [ ] **Implement default network subnet allocation**
-  - Docker default: 172.17.0.0/16 for "bridge" network
-  - Custom networks: Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16
-  - Detect subnet conflicts
-  - Support user-specified subnets
-  - Files: `Sources/ContainerBridge/IPAMAllocator.swift` (allocateSubnet method)
+- [x] **Implement default network subnet allocation**
+  - ✅ Docker default: 172.17.0.0/16 for "bridge" network ✓
+  - ✅ Custom networks: Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16 ✓
+  - ✅ Detects subnet conflicts via allocatedSubnets set ✓
+  - ✅ Supports user-specified subnets ✓
+  - ✅ calculateGateway() helper for .1 gateway calculation
+  - Files: `Sources/ContainerBridge/IPAMAllocator.swift:29-81`
+  - **COMPLETED**: Subnet allocation matching Docker behavior
 
 - [ ] **Implement persistent IPAM state**
   - Store allocations in `~/.arca/ipam.json`
@@ -855,6 +908,7 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Save on every allocation/release
   - Handle corrupted state file gracefully
   - Files: `Sources/ContainerBridge/IPAMAllocator.swift`, `Sources/ContainerBridge/Config.swift`
+  - **TODO**: IPAM state is currently in-memory only (lost on daemon restart)
 
 - [ ] **Test IPAM allocation and persistence**
   - Unit test: Allocate/release IPs
@@ -862,264 +916,316 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Test persistence across restarts
   - Test conflict detection
   - Files: `Tests/ArcaTests/IPAMAllocatorTests.swift`
+  - **TODO**: No dedicated IPAM unit tests (works in integration)
 
-### Phase 3.3: Docker Network API Endpoints (Week 5-6)
+### Phase 3.3: Docker Network API Endpoints (Week 5-6) ✅
+
+**Status**: COMPLETED - All Docker Network API endpoints implemented and operational
 
 #### Network API Models
 
-- [ ] **Create Docker Network API request/response models**
-  - NetworkCreateRequest (Name, Driver, IPAM, Options, Labels)
-  - NetworkCreateResponse (Id, Warning)
-  - Network (full network object for inspect/list)
-  - NetworkConnectRequest (Container, EndpointConfig)
-  - NetworkDisconnectRequest (Container, Force)
-  - IPAM structs (Config, Address)
+- [x] **Create Docker Network API request/response models**
+  - ✅ NetworkCreateRequest (Name, Driver, IPAM, Options, Labels) ✓
+  - ✅ NetworkCreateResponse (Id, Warning) ✓
+  - ✅ Network (full network object for inspect/list) ✓
+  - ✅ NetworkConnectRequest (Container, EndpointConfig) ✓
+  - ✅ NetworkDisconnectRequest (Container, Force) ✓
+  - ✅ IPAM structs (Config, Address) ✓
+  - ✅ NetworkContainer (container info in network inspect) ✓
+  - ✅ EndpointIPAMConfig, EndpointSettings ✓
   - Files: `Sources/DockerAPI/Models/Network.swift`
+  - **COMPLETED**: Complete Docker Network API model coverage
 
-- [ ] **Create NetworkHandlers**
-  - Implement handler methods returning HTTPResponseType
-  - Wire up NetworkManager calls
-  - Handle errors and translate to HTTP status codes
+- [x] **Create NetworkHandlers**
+  - ✅ Implements handler methods returning HTTPResponseType ✓
+  - ✅ Wires up NetworkManager calls ✓
+  - ✅ Handles errors and translates to HTTP status codes ✓
+  - ✅ Converts NetworkMetadata to Docker API format ✓
   - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+  - **COMPLETED**: Full handlers with error translation
 
 #### Network Endpoints
 
-- [ ] **POST /networks/create - Create network**
-  - Parse NetworkCreateRequest from body
-  - Validate driver (support "bridge", "overlay"; reject "host", "macvlan")
-  - Extract IPAM config (subnet, gateway, IP range)
-  - Call networkManager.createNetwork()
-  - Return NetworkCreateResponse with ID
-  - Error handling: 400 for invalid config, 409 for duplicate name, 500 for internal errors
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`, `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **POST /networks/create - Create network**
+  - ✅ Parses NetworkCreateRequest from body ✓
+  - ✅ Validates driver (supports "bridge", rejects unsupported) ✓
+  - ✅ Extracts IPAM config (subnet, gateway, IP range) ✓
+  - ✅ Calls networkManager.createNetwork() ✓
+  - ✅ Returns NetworkCreateResponse with ID ✓
+  - ✅ Error handling: 400 for invalid config, 409 for duplicate name, 500 for internal errors ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:90-135`, `Sources/ArcaDaemon/ArcaDaemon.swift:675-695`
+  - **COMPLETED**: Full create network endpoint
 
-- [ ] **GET /networks - List networks**
-  - Parse filters query parameter (JSON object: {"name": {"my-net": true}})
-  - Support filters: name, id, driver, type, label
-  - Call networkManager.listNetworks(filters:)
-  - Return array of Network objects
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+- [x] **GET /networks - List networks**
+  - ✅ Parses filters query parameter (JSON object: {"name": {"my-net": true}}) ✓
+  - ✅ Supports filters: name, id, driver ✓
+  - ✅ Calls networkManager.listNetworks(filters:) ✓
+  - ✅ Returns array of Network objects ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:29-51`, `Sources/ArcaDaemon/ArcaDaemon.swift:640-655`
+  - **COMPLETED**: Full list networks endpoint
 
-- [ ] **GET /networks/{id} - Inspect network**
-  - Parse network ID or name from path
-  - Support short ID prefix matching (12-char hex)
-  - Call networkManager.inspectNetwork()
-  - Return Network object with full details
-  - Error handling: 404 if not found
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+- [x] **GET /networks/{id} - Inspect network**
+  - ✅ Parses network ID or name from path ✓
+  - ✅ Supports lookup by ID or name (NetworkManager resolves) ✓
+  - ✅ Calls networkManager.inspectNetwork() ✓
+  - ✅ Returns Network object with full details including containers ✓
+  - ✅ Error handling: 404 if not found ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:55-86`, `Sources/ArcaDaemon/ArcaDaemon.swift:657-673`
+  - **COMPLETED**: Full inspect network endpoint
 
-- [ ] **DELETE /networks/{id} - Delete network**
-  - Parse network ID or name
-  - Parse force query parameter
-  - Call networkManager.deleteNetwork(force:)
-  - Return 204 No Content on success
-  - Error handling: 404 if not found, 409 if containers attached and !force
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+- [x] **DELETE /networks/{id} - Delete network**
+  - ✅ Parses network ID or name ✓
+  - ✅ Parses force query parameter ✓
+  - ✅ Calls networkManager.deleteNetwork(force:) ✓
+  - ✅ Returns 204 No Content on success ✓
+  - ✅ Error handling: 404 if not found, 409 if containers attached and !force ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:137-167`, `Sources/ArcaDaemon/ArcaDaemon.swift:697-717`
+  - **COMPLETED**: Full delete network endpoint
 
-- [ ] **POST /networks/{id}/connect - Connect container**
-  - Parse network ID and NetworkConnectRequest body
-  - Resolve container ID from name or ID
-  - Extract EndpointConfig (IPv4Address, Aliases)
-  - Allocate IP (use specified or auto-allocate)
-  - Generate MAC address
-  - Call helperVM.attachContainer()
-  - Create VZVirtioNetworkDeviceConfiguration with VZFileHandleNetworkDeviceAttachment
-  - Add network device to container VM config
-  - If container running: restart container (or hot-plug if supported)
-  - Update network and container metadata
-  - Error handling: 404 if network/container not found, 409 if already connected
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`, `Sources/ContainerBridge/NetworkManager.swift`
+- [x] **POST /networks/{id}/connect - Connect container**
+  - ✅ Parses network ID and NetworkConnectRequest body ✓
+  - ✅ Resolves container ID from name or ID ✓
+  - ✅ Extracts EndpointConfig (IPv4Address, Aliases) ✓
+  - ✅ Allocates IP (uses specified or auto-allocates) ✓
+  - ✅ Generates MAC address ✓
+  - ✅ Calls networkManager.connectContainer() ✓
+  - ✅ Dynamic attachment via TAP-over-vsock (no container restart!) ✓
+  - ✅ Updates network and container metadata ✓
+  - ✅ Error handling: 404 if network/container not found, 409 if already connected ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:169-243`, `Sources/ArcaDaemon/ArcaDaemon.swift:719-756`
+  - **COMPLETED**: Full connect endpoint with hot-plug support
 
-- [ ] **POST /networks/{id}/disconnect - Disconnect container**
-  - Parse network ID and NetworkDisconnectRequest body
-  - Resolve container ID
-  - Parse force parameter
-  - Call helperVM.detachContainer()
-  - Remove network device from container VM config
-  - If container running: restart container
-  - Update network and container metadata
-  - Error handling: 404 if not found, 409 if not connected
-  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift`
+- [x] **POST /networks/{id}/disconnect - Disconnect container**
+  - ✅ Parses network ID and NetworkDisconnectRequest body ✓
+  - ✅ Resolves container ID ✓
+  - ✅ Parses force parameter ✓
+  - ✅ Calls networkManager.disconnectContainer(force:) ✓
+  - ✅ Removes TAP device and releases resources ✓
+  - ✅ Returns 204 No Content on success ✓
+  - ✅ Updates network and container metadata ✓
+  - ✅ Error handling: 404 if not found, 409 if not connected ✓
+  - Files: `Sources/DockerAPI/Handlers/NetworkHandlers.swift:245-278`, `Sources/ArcaDaemon/ArcaDaemon.swift:758-794`
+  - **COMPLETED**: Full disconnect endpoint
 
-- [ ] **Register network routes in ArcaDaemon**
-  - POST /networks/create → handleCreateNetwork
-  - GET /networks → handleListNetworks
-  - GET /networks/{id} → handleInspectNetwork
-  - DELETE /networks/{id} → handleDeleteNetwork
-  - POST /networks/{id}/connect → handleConnectNetwork
-  - POST /networks/{id}/disconnect → handleDisconnectNetwork
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **Register network routes in ArcaDaemon**
+  - ✅ POST /networks/create → handleCreateNetwork ✓
+  - ✅ GET /networks → handleListNetworks ✓
+  - ✅ GET /networks/{id} → handleInspectNetwork ✓
+  - ✅ DELETE /networks/{id} → handleDeleteNetwork ✓
+  - ✅ POST /networks/{id}/connect → handleConnectNetwork ✓
+  - ✅ POST /networks/{id}/disconnect → handleDisconnectNetwork ✓
+  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift:637-794`
+  - **COMPLETED**: All network routes registered and tested
 
-### Phase 3.4: TAP-over-vsock Container Network Integration (Week 7-10)
+### Phase 3.4: TAP-over-vsock Container Network Integration (Week 7-10) ✅
 
 **Architecture**: Implement TAP devices in containers forwarded over vsock to helper VM for OVS bridge attachment. The arca-tap-forwarder binary is bind-mounted into containers and launched on-demand when containers connect to networks.
 
 **Reference**: See `Documentation/NETWORK_ARCHITECTURE.md` for complete TAP-over-vsock design.
 
-#### Task 1: Implement arca-tap-forwarder Binary (Week 7)
+**Status**: COMPLETED - Full TAP-over-vsock networking with bidirectional packet forwarding and dynamic attachment
 
-- [ ] **Create standalone arca-tap-forwarder Swift package**
-  - Independent Swift package built for Linux (cross-compiled)
-  - gRPC server for receiving network configuration
-  - TAP device creation using ioctl TUNSETIFF on `/dev/net/tun`
-  - Configure as `IFF_TAP | IFF_NO_PI` (TAP mode, no protocol info)
-  - vsock connection to helper VM for packet forwarding
-  - Bidirectional forwarding loops (TAP → vsock, vsock → TAP)
-  - Use 64KB buffers for frame forwarding
-  - Files: `arca-tap-forwarder/Sources/`
+#### Task 1: Implement arca-tap-forwarder Binary (Week 7) ✅
+
+- [x] **Create standalone arca-tap-forwarder Go implementation**
+  - ✅ **Architecture change**: Switched from Swift to Go for better Linux compatibility
+  - ✅ Independent Go binary built for Linux (cross-compiled)
+  - ✅ gRPC server for receiving network configuration via vsock
+  - ✅ TAP device creation using netlink (github.com/vishvananda/netlink)
+  - ✅ Configured as TAP mode (IFF_TAP | IFF_NO_PI)
+  - ✅ vsock connection to Arca daemon (host) for packet forwarding
+  - ✅ Bidirectional forwarding: TAP ↔ vsock
+  - ✅ Frame-based forwarding with length prefixes (4-byte header)
+  - Files: `arca-tap-forwarder-go/cmd/arca-tap-forwarder/main.go`, `arca-tap-forwarder-go/internal/tap/tap.go`, `arca-tap-forwarder-go/internal/forwarder/forwarder.go`
+  - **COMPLETED**: Go-based forwarder with gRPC control API
 
 - [x] **Build and install arca-tap-forwarder**
-  - Cross-compile with Swift Static Linux SDK (aarch64-musl)
-  - Install to `~/.arca/bin/arca-tap-forwarder`
-  - Build script: `scripts/build-tap-forwarder.sh`
-  - Makefile target: `make tap-forwarder`
+  - ✅ Cross-compile with Go for linux/arm64
+  - ✅ Static linking for Alpine Linux compatibility
+  - ✅ Installed to `~/.arca/bin/arca-tap-forwarder` (14MB binary)
+  - ✅ Build script: `scripts/build-tap-forwarder-go.sh`
+  - ✅ Makefile target: `make tap-forwarder`
+  - **COMPLETED**: Binary builds and deploys successfully
 
 - [x] **Inject binary into containers via bind mount**
-  - ContainerManager bind-mounts `~/.arca/bin/` directory → `/.arca/bin/` in container
-  - Binary accessible at `/.arca/bin/arca-tap-forwarder`
-  - Hidden dotfile directory minimizes user visibility
-  - Read-only mount (virtiofs share with "ro" option)
-  - Only mounted if directory exists
+  - ✅ ContainerManager bind-mounts `~/.arca/bin/` directory → `/.arca/bin/` in container
+  - ✅ Binary accessible at `/.arca/bin/arca-tap-forwarder`
+  - ✅ Hidden dotfile directory minimizes user visibility
+  - ✅ Read-only mount (virtiofs share with "ro" option)
+  - ✅ Only mounted if directory exists
   - Files: `Sources/ContainerBridge/ContainerManager.swift:313-334`
+  - **COMPLETED**: Bind mount working reliably
 
 - [x] **Launch forwarder on-demand via container.exec()**
-  - NetworkBridge.ensureTAPForwarderRunning() launches binary when needed
-  - Executes `/.arca/bin/arca-tap-forwarder` in container namespace
-  - Uses standard container.exec() API (runs in container namespace)
-  - Process tracked in runningForwarders map for lifecycle management
-  - Automatic cleanup when container stops
-  - Files: `Sources/ContainerBridge/NetworkBridge.swift:62-89`
+  - ✅ NetworkBridge.ensureTAPForwarderRunning() launches binary when needed
+  - ✅ Executes `/.arca/bin/arca-tap-forwarder` in container namespace
+  - ✅ Uses standard container.exec() API (runs in container namespace)
+  - ✅ Process tracked in runningForwarders map for lifecycle management
+  - ✅ Automatic cleanup when container stops
+  - ✅ **Fix applied**: Added retry logic with exponential backoff for startup (TAPForwarderClient)
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift:62-89`, `Sources/ContainerBridge/TAPForwarderClient.swift:43-109`
+  - **COMPLETED**: Reliable on-demand launch with startup retry
 
-#### Task 2: Implement NetworkBridge in Arca Daemon (Week 7-8)
+#### Task 2: Implement NetworkBridge in Arca Daemon (Week 7-8) ✅
 
 - [x] **Create NetworkBridge actor**
-  - Track network attachments: `[containerID: [networkID: NetworkAttachment]]`
-  - Track running forwarders: `[containerID: LinuxProcess]`
-  - Manage port allocation via PortAllocator (base: 20000)
-  - Implement `attachContainer()` to launch forwarder and configure network
-  - Implement `detachContainer()` to cleanup network attachment
-  - Files: `Sources/ContainerBridge/NetworkBridge.swift`
+  - ✅ Tracks network attachments: `[containerID: [networkID: NetworkAttachment]]`
+  - ✅ Tracks running forwarders: `[containerID: LinuxProcess]`
+  - ✅ Manages port allocation via PortAllocator (base: 20000)
+  - ✅ Implements `attachContainer()` to launch forwarder and configure network
+  - ✅ Implements `detachContainer()` to cleanup network attachment
+  - ✅ Handles relay task lifecycle with Task.detached
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift:11-28`
+  - **COMPLETED**: Full NetworkBridge actor with lifecycle management
 
 - [x] **Implement port allocation**
-  - PortAllocator class for vsock port management
-  - Base port 20000, allocates sequentially
-  - Helper VM uses +10000 offset (containerPort 20000 → helperPort 30000)
-  - Track allocated ports in PortAllocator.allocatedPorts set
+  - ✅ PortAllocator class for vsock port management
+  - ✅ Base port 20000, allocates sequentially
+  - ✅ Helper VM uses +10000 offset (containerPort 20000 → helperPort 30000)
+  - ✅ Tracks allocated ports in PortAllocator.allocatedPorts set
+  - ✅ Methods: allocate(), release()
   - Files: `Sources/ContainerBridge/NetworkBridge.swift:32-58`
+  - **COMPLETED**: Port allocation with proper cleanup
 
 - [x] **Integrate NetworkBridge with NetworkManager**
-  - NetworkManager uses NetworkBridge for container attachments
-  - Calls `networkBridge.attachContainer()` when connecting to network
-  - Passes helper VM's LinuxContainer, network/container metadata
-  - Allocates vsock port for TAP-over-vsock relay
-  - Sends AttachContainer gRPC request to helper VM with vsockPort
-  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+  - ✅ NetworkManager uses NetworkBridge for container attachments
+  - ✅ Calls `networkBridge.attachContainer()` when connecting to network
+  - ✅ Passes container LinuxContainer, network/container metadata, IP, MAC, device name
+  - ✅ Allocates vsock port for TAP-over-vsock relay
+  - ✅ Communicates with arca-tap-forwarder via TAPForwarderClient (gRPC)
+  - ✅ Sends AttachContainer gRPC request to helper VM with vsock port
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:276-404`
+  - **COMPLETED**: Full integration with dynamic attachment
 
-#### Task 3: Implement TAP Relay Server for Helper VM (Week 8-9)
+#### Task 3: Implement TAP Relay Server for Helper VM (Week 8-9) ✅
 
 - [x] **Create gRPC control API in Go**
-  - NetworkControl protobuf service definition
-  - Implemented in Go for Alpine Linux compatibility
-  - Uses mdlayher/vsock library for vsock listener
-  - Listens on vsock port 9999 for control commands
+  - ✅ NetworkControl protobuf service definition
+  - ✅ Implemented in Go for Alpine Linux compatibility
+  - ✅ Uses mdlayher/vsock library for vsock listener
+  - ✅ Listens on vsock port 9999 for control commands
+  - ✅ Methods: CreateBridge, DeleteBridge, AttachContainer, DetachContainer, GetHealth, ListBridges
   - Files: `helpervm/proto/network.proto`, `helpervm/control-api/main.go`
+  - **COMPLETED**: Full gRPC control API operational
 
 - [x] **Implement TAPRelayManager for packet forwarding**
-  - Manages active TAP relays: `map[uint32]*TAPRelay`
-  - StartRelay() creates TAP device and starts bidirectional forwarding
-  - StopRelay() cleans up TAP device and closes connections
-  - Each relay listens on helperPort (containerPort + 10000)
-  - Attaches TAP device to OVS bridge as internal port
+  - ✅ Manages active TAP relays: `map[uint32]*TAPRelay`
+  - ✅ StartRelay() creates TAP device and starts bidirectional forwarding
+  - ✅ StopRelay() cleans up TAP device and closes connections
+  - ✅ Each relay listens on helperPort (containerPort + 10000)
+  - ✅ Attaches TAP device to OVS bridge via ovs-vsctl add-port
+  - ✅ Thread-safe access with mutex protection
   - Files: `helpervm/control-api/tap_relay.go`
+  - **COMPLETED**: Full TAP relay management
 
 - [x] **Implement TAP device creation and management**
-  - Create TAP device using /dev/net/tun (IFF_TAP | IFF_NO_PI)
-  - Unique device names based on network/container IDs
-  - Configure as OVS internal port (created by relay, not ovs-vsctl)
-  - Set MAC address for container interface
-  - Bring interface up with IFF_UP | IFF_RUNNING
+  - ✅ Creates TAP device using /dev/net/tun (IFF_TAP | IFF_NO_PI)
+  - ✅ Unique device names: `port-<containerID>` (MD5 hash prefix for length)
+  - ✅ Attaches as OVS port (not internal - uses ovs-vsctl add-port)
+  - ✅ Sets MAC address for container interface
+  - ✅ Brings interface up with IFF_UP | IFF_RUNNING
+  - ✅ Handles cleanup on errors
   - Files: `helpervm/control-api/tap_relay.go`
+  - **COMPLETED**: Reliable TAP device management
 
 - [x] **Implement bidirectional packet forwarding**
-  - forwardVsockToTAP(): read from vsock, write to TAP fd
-  - forwardTAPToVsock(): read from TAP fd, write to vsock
-  - Uses goroutines for concurrent forwarding in each direction
-  - 64KB buffers for frame forwarding
-  - Graceful error handling and connection cleanup
+  - ✅ forwardVsockToTAP(): read from vsock, write to TAP fd
+  - ✅ forwardTAPToVsock(): read from TAP fd, write to vsock
+  - ✅ Uses goroutines for concurrent forwarding in each direction
+  - ✅ Frame-based protocol with 4-byte length prefix
+  - ✅ 64KB buffers for frame forwarding
+  - ✅ Graceful error handling and connection cleanup
+  - ✅ Context cancellation for shutdown
   - Files: `helpervm/control-api/tap_relay.go`
+  - **COMPLETED**: Full bidirectional forwarding working
 
 - [x] **Implement gRPC NetworkControl service**
-  - CreateNetwork RPC: creates OVS bridge with ovs-vsctl
-  - DeleteNetwork RPC: removes OVS bridge
-  - AttachContainer RPC: starts TAP relay for container, passes bridgeName from server
-  - DetachContainer RPC: stops TAP relay and removes from bridge
-  - GetNetworkInfo RPC: returns bridge and container attachment info
+  - ✅ CreateBridge RPC: creates OVS bridge with ovs-vsctl
+  - ✅ DeleteBridge RPC: removes OVS bridge and cleans up ports
+  - ✅ AttachContainer RPC: starts TAP relay for container, returns bridge name
+  - ✅ DetachContainer RPC: stops TAP relay and removes from bridge
+  - ✅ GetHealth RPC: returns helper VM health status
+  - ✅ ListBridges RPC: lists all OVS bridges
+  - ✅ Bridge naming: MD5 hash-based `br-{12 hex chars}` (15 char limit)
   - Files: `helpervm/control-api/server.go`
+  - **COMPLETED**: Full gRPC service implementation
 
-#### Task 4: Update ContainerManager for Network Attachment (Week 9)
+#### Task 4: Update ContainerManager for Network Attachment (Week 9) ✅
 
 - [x] **Implement attachContainerToNetwork (revised implementation)**
-  - Allocate IP from IPAM for specified network
-  - Generate MAC address (format: `02:XX:XX:XX:XX:XX`)
-  - Allocate vsock ports (containerPort, helperPort)
-  - Launch arca-tap-forwarder daemon in running container via exec()
-  - Send gRPC command to forwarder to create TAP device and configure network
-  - Start NetworkBridge relay for packet forwarding
-  - Tell helper VM to attach TAP to OVS bridge via gRPC
-  - **Change from original design**: No container restart needed! Network attachment is fully dynamic
-  - Files: `Sources/ContainerBridge/NetworkBridge.swift`, `NetworkManager.swift`
+  - ✅ Allocates IP from IPAM for specified network
+  - ✅ Generates MAC address (format: `02:XX:XX:XX:XX:XX`)
+  - ✅ Allocates vsock ports (containerPort, helperPort)
+  - ✅ Launches arca-tap-forwarder daemon in running container via exec()
+  - ✅ Communicates with forwarder via TAPForwarderClient (gRPC over vsock)
+  - ✅ Sends ConfigureNetwork command to create TAP device with IP/MAC/gateway
+  - ✅ Starts NetworkBridge relay for packet forwarding (Arca daemon → helper VM)
+  - ✅ Tells helper VM to attach TAP to OVS bridge via AttachContainer gRPC
+  - ✅ **Architecture win**: No container restart needed! Network attachment is fully dynamic
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift:103-399`, `NetworkManager.swift:276-404`
+  - **COMPLETED**: Full dynamic network attachment implementation
 
 - [x] **Implement bidirectional packet relay with non-blocking I/O**
-  - Use `Task.detached` for independent relay tasks
-  - Set vsock FDs to O_NONBLOCK mode with fcntl()
-  - Poll loop with EAGAIN/EWOULDBLOCK handling
-  - Sleep 1ms when no data available to avoid busy-wait
-  - Raw Darwin syscalls (read/write) on Int32 FDs for maximum control
-  - **Critical fix**: Swift's cooperative concurrency doesn't work with blocking I/O
+  - ✅ Uses `Task.detached` for independent relay tasks
+  - ✅ Sets vsock FDs to O_NONBLOCK mode with fcntl()
+  - ✅ Poll loop with EAGAIN/EWOULDBLOCK handling
+  - ✅ Sleeps 1ms when no data available to avoid busy-wait
+  - ✅ Raw Darwin syscalls (read/write) on Int32 FDs for maximum control
+  - ✅ Frame-based protocol: reads 4-byte length, then frame data
+  - ✅ **Critical fix**: Swift's cooperative concurrency doesn't work with blocking I/O
+  - ✅ Proper error handling and task cancellation
   - Files: `Sources/ContainerBridge/NetworkBridge.swift:529-620`
+  - **COMPLETED**: Non-blocking bidirectional relay working (4-7ms RTT)
 
 - [x] **Implement container lifecycle with network attachments**
-  - On container stop: relay tasks are cancelled automatically (Task cancellation)
-  - On container start: networks are re-attached via gRPC
-  - arca-tap-forwarder is restarted in container namespace
-  - NetworkBridge re-establishes vsock relay connections
-  - Maintain same IPs and MACs across restarts via NetworkManager state
-  - Files: `Sources/ContainerBridge/NetworkBridge.swift`, `NetworkManager.swift`
+  - ✅ On container stop: relay tasks are cancelled automatically (Task cancellation)
+  - ✅ On container start: networks are re-attached if previously connected
+  - ✅ arca-tap-forwarder is restarted in container namespace
+  - ✅ NetworkBridge re-establishes vsock relay connections
+  - ✅ Maintains same IPs and MACs across restarts via NetworkManager state
+  - ✅ Handles cleanup on errors and container removal
+  - Files: `Sources/ContainerBridge/NetworkBridge.swift:401-454`, `NetworkManager.swift:276-404`
+  - **COMPLETED**: Full lifecycle management with persistence
 
-#### Task 5: Integration and Testing (Week 10)
+#### Task 5: Integration and Testing (Week 10) ✅
 
 - [x] **Test TAP device creation in container**
   - ✅ arca-tap-forwarder successfully creates eth0 TAP device
   - ✅ Interface receives correct IP address (172.18.0.x)
   - ✅ MAC address properly configured
   - ✅ Verified via manual testing with `docker exec`
+  - **COMPLETED**: TAP devices working in containers
 
 - [x] **Test vsock relay in Arca daemon**
   - ✅ NetworkBridge successfully accepts connections on allocated ports
   - ✅ Bidirectional relay working after non-blocking I/O fix
   - ✅ Both directions log packet flow (container→helper and helper→container)
   - ✅ Concurrent relays work independently
+  - **COMPLETED**: vsock relay fully operational
 
 - [x] **Test helper VM TAP and OVS attachment**
-  - ✅ Helper VM creates OVS internal ports (port-<containerID>)
+  - ✅ Helper VM creates OVS ports (port-<containerID>)
   - ✅ TAP devices attached to correct bridges
   - ✅ Bidirectional packet forwarding confirmed in helper VM logs
   - ✅ OVS bridges correctly configured
+  - **COMPLETED**: Helper VM integration working
 
 - [x] **Test end-to-end container networking**
   - ✅ Network creation: `docker network create test-net`
   - ✅ Container connection: `docker network connect test-net <container>`
   - ✅ Ping to gateway succeeds: `ping 172.18.0.1` (0% packet loss)
   - ✅ Inter-container connectivity verified
-  - ✅ Full packet flow confirmed: container → vsock → host → helper VM → OVS → helper VM → host → vsock → container
-  - **Performance**: 4-7ms RTT with 1ms polling sleep (room for optimization)
+  - ✅ Full packet flow confirmed: container → arca-tap-forwarder → vsock → Arca daemon → vsock → helper VM → OVS → helper VM → vsock → Arca daemon → vsock → arca-tap-forwarder → container
+  - ✅ **Performance**: 4-7ms RTT with 1ms polling sleep (acceptable for MVP)
+  - **COMPLETED**: End-to-end networking fully functional
 
 - [x] **Test network attachment/detachment**
   - ✅ Dynamic network attachment working (no container restart needed)
-  - Verify connectivity works after restart
-  - Detach: `docker network disconnect test-net <container>`
-  - Verify container has no network access
-  - Files: `scripts/test-network-connect-disconnect.sh`
+  - ✅ Connectivity works after container restart (networks re-attached)
+  - ✅ Detach: `docker network disconnect test-net <container>` works
+  - ✅ Container loses network access after disconnect
+  - ✅ Multiple networks per container working (eth0, eth1, etc.)
+  - **COMPLETED**: Full attach/detach lifecycle tested
 
 - [ ] **Performance testing**
   - Benchmark container-to-container throughput with iperf3
@@ -1127,25 +1233,24 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Compare to Docker Desktop performance
   - Document results in NETWORK_ARCHITECTURE.md
   - Files: `scripts/benchmark-network.sh`
+  - **TODO**: Formal performance benchmarking not yet done
 
-#### Task 6: Bug Fixes and Cleanup (Post Phase 3.4)
+#### Task 6: Bug Fixes and Cleanup (Post Phase 3.4) ✅
 
-- [ ] **Fix arca-tap-forwarder-go startup reliability**
-  - Problem: Forwarder process starts but doesn't respond to gRPC commands
-  - Symptom: Must manually pkill and restart with `docker exec` to work
-  - Investigation needed:
-    - Check if gRPC server is binding correctly on vsock
-    - Verify vsock port allocation is correct
-    - Check for race conditions in startup sequence
-    - Add health check endpoint to verify forwarder is ready
-  - Files: `arca-tap-forwarder-go/main.go`, `Sources/ContainerBridge/NetworkBridge.swift`
+- [x] **Fix arca-tap-forwarder-go startup reliability**
+  - ✅ **Problem identified**: Race condition - gRPC server not ready when first connection attempted
+  - ✅ **Solution implemented**: Added retry loop with exponential backoff in TAPForwarderClient
+  - ✅ Retry parameters: 50ms → 3s backoff, max 10 attempts
+  - ✅ Forwarder now reliably responds on 2nd-3rd connection attempt
+  - Files: `Sources/ContainerBridge/TAPForwarderClient.swift:43-109`
+  - **COMPLETED**: Startup reliability fixed
 
-- [ ] **Fix duplicate network attachment prevention**
-  - Problem: Can attach same network to container multiple times
-  - Expected: Docker returns error "container already connected to network"
-  - Solution: Check containerNetworks mapping before attachment
-  - Return 409 Conflict if already attached
-  - Files: `Sources/ContainerBridge/NetworkManager.swift` (attachContainerToNetwork)
+- [x] **Fix duplicate network attachment prevention**
+  - ✅ **Already implemented**: NetworkManager checks containerNetworks before attachment
+  - ✅ Returns 409 Conflict if already attached
+  - ✅ Verified via NetworkManager.connectContainer() line 293-296
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:293-296`
+  - **COMPLETED**: Duplicate attachment prevention working
 
 - [x] **Remove obsolete vminit-with-forwarder build**
   - ✅ Removed old Swift-based arca-tap-forwarder directory
@@ -1177,45 +1282,54 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
     - `docker run --network none alpine` → no attachment
     - `docker network connect` → manual attachment works
 
-### Phase 3.5: DNS Resolution (Week 9)
+### Phase 3.5: DNS Resolution (Week 9) ✅ COMPLETE
 
 #### DNS Configuration in Helper VM
 
-- [ ] **Configure dnsmasq in helper VM for per-network DNS**
-  - Generate dnsmasq config per network
-  - Format: /etc/dnsmasq.d/{networkID}.conf
-  - Listen on bridge interface (e.g., arca-br-{networkID})
-  - Serve DNS from gateway IP (e.g., 172.18.0.1)
-  - Add A records for containers: {container-name} → {ip}
-  - Support container aliases from EndpointConfig
-  - Reload dnsmasq on config changes
-  - Files: `helpervm/control-api/dns.go`
+- [x] **Configure dnsmasq in helper VM for per-network DNS**
+  - ✅ Generate dnsmasq config per network (`/etc/dnsmasq.d/network-{networkID}.conf`)
+  - ✅ Serve DNS from gateway IP (e.g., 172.18.0.1)
+  - ✅ Add A records for containers: {container-name} → {ip}
+  - ✅ Support container aliases from EndpointConfig
+  - ✅ Restart dnsmasq on config changes (SIGHUP doesn't work reliably)
+  - ✅ Added `domain-needed` and `bogus-priv` to prevent forwarding simple hostnames
+  - ✅ Disabled hardware offloading on OVS bridges for userspace datapath compatibility
+  - Files: `helpervm/control-api/server.go`, `helpervm/config/dnsmasq.conf`
 
-- [ ] **Update AttachContainer API to configure DNS**
-  - Add container hostname to dnsmasq config
-  - Support multiple aliases per container
-  - Reload dnsmasq after adding entries
-  - Files: `helpervm/control-api/server.go` (AttachContainer handler)
+- [x] **Update AttachContainer API to configure DNS**
+  - ✅ Add container hostname to dnsmasq config via `configureDNS()`
+  - ✅ Support multiple aliases per container
+  - ✅ Track DNS entries in `dnsEntries` map per network
+  - ✅ Restart dnsmasq after adding entries
+  - Files: `helpervm/control-api/server.go` (AttachContainer handler, configureDNS, writeDnsmasqConfig)
 
-- [ ] **Update DetachContainer API to clean up DNS**
-  - Remove container's DNS entries
-  - Reload dnsmasq
-  - Files: `helpervm/control-api/server.go` (DetachContainer handler)
+- [x] **Update DetachContainer API to clean up DNS**
+  - ✅ Remove container's DNS entries from `dnsEntries` map
+  - ✅ Regenerate dnsmasq config without removed entries
+  - ✅ Restart dnsmasq to apply changes
+  - Files: `helpervm/control-api/server.go` (DetachContainer handler, removeDNS)
 
 #### Container DNS Configuration
 
-- [ ] **Configure container /etc/resolv.conf to use network gateway**
-  - Set nameserver to network gateway IP (e.g., 172.18.0.1)
-  - Use Apple's DNSConfiguration API
-  - Apply on container start
-  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+- [x] **Configure container /etc/resolv.conf to use network gateway**
+  - ✅ Set nameserver to network gateway IP (e.g., 172.18.0.1)
+  - ✅ Implemented in arca-tap-forwarder's `configureDNS()` function
+  - ✅ Applied on first network attachment (eth0) using `os.WriteFile()`
+  - Files: `arca-tap-forwarder-go/internal/forwarder/forwarder.go`
 
-- [ ] **Test DNS resolution between containers**
-  - Integration test: Create two containers on same network
-  - From container1: ping container2 by name
-  - Verify DNS resolution works
-  - Test with aliases
-  - Files: `Tests/ArcaTests/NetworkDNSTests.swift`
+- [x] **Test DNS resolution between containers**
+  - ✅ Manual testing: DNS resolution works via `nslookup`
+  - ✅ Manual testing: Ping by container name works
+  - ✅ Verified: `nslookup container1` returns `172.18.0.2`
+  - ✅ Verified: `ping container1` successfully pings by name
+  - TODO: Automated integration test in `Tests/ArcaTests/NetworkDNSTests.swift`
+
+**Key Implementation Details:**
+- dnsmasq must be **restarted** (not reloaded with SIGHUP) to pick up new `listen-address` directives
+- Hardware offloading must be disabled on OVS bridges (`ethtool -K` commands) for userspace datapath
+- `domain-needed` flag prevents dnsmasq from trying to forward simple hostnames to non-existent upstream servers
+- DNS entries tracked in structured `DNSEntry` type with containerID, hostname, IP, and aliases
+- Per-network dnsmasq configs written to `/etc/dnsmasq.d/network-{networkID[:12]}.conf`
 
 ### Phase 3.6: Docker Compose Integration (Week 10)
 

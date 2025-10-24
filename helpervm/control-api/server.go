@@ -18,6 +18,7 @@ type NetworkServer struct {
 	mu            sync.RWMutex
 	bridges       map[string]*BridgeMetadata
 	containerMap  map[string]map[string]bool // networkID -> containerID -> exists
+	dnsEntries    map[string]map[string]*DNSEntry // networkID -> containerID -> DNS entry
 	relayManager  *TAPRelayManager
 	containerPort map[string]uint32 // containerID -> helperPort (for TAP relay cleanup)
 	startTime     time.Time
@@ -31,11 +32,20 @@ type BridgeMetadata struct {
 	Gateway    string
 }
 
+// DNSEntry stores DNS information for a container
+type DNSEntry struct {
+	ContainerID string
+	Hostname    string
+	IPAddress   string
+	Aliases     []string
+}
+
 // NewNetworkServer creates a new NetworkServer
 func NewNetworkServer() *NetworkServer {
 	return &NetworkServer{
 		bridges:       make(map[string]*BridgeMetadata),
 		containerMap:  make(map[string]map[string]bool),
+		dnsEntries:    make(map[string]map[string]*DNSEntry),
 		relayManager:  NewTAPRelayManager(),
 		containerPort: make(map[string]uint32),
 		startTime:     time.Now(),
@@ -73,6 +83,15 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 			Success: false,
 			Error:   fmt.Sprintf("Failed to bring bridge up: %v", err),
 		}, nil
+	}
+
+	// Disable TX checksum offloading on bridge for OVS userspace datapath
+	// This is critical for proper DNS/UDP packet handling in userspace datapath
+	// See: https://docs.openvswitch.org/en/latest/topics/userspace-checksum-offloading/
+	log.Printf("Disabling TX offloading on bridge %s for OVS userspace datapath", bridgeName)
+	if err := runCommand("ethtool", "-K", bridgeName, "tx", "off"); err != nil {
+		log.Printf("Warning: Failed to disable TX offloading: %v", err)
+		// Don't fail - continue anyway
 	}
 
 	// Assign gateway IP to bridge
@@ -116,6 +135,12 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		Gateway:    req.Gateway,
 	}
 	s.containerMap[req.NetworkId] = make(map[string]bool)
+	s.dnsEntries[req.NetworkId] = make(map[string]*DNSEntry)
+
+	// Create initial dnsmasq configuration for this network
+	if err := s.writeDnsmasqConfig(req.NetworkId); err != nil {
+		log.Printf("Warning: Failed to create dnsmasq config: %v", err)
+	}
 
 	log.Printf("Successfully created bridge %s for network %s", bridgeName, req.NetworkId)
 
@@ -153,6 +178,12 @@ func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRe
 	// Remove metadata
 	delete(s.bridges, req.NetworkId)
 	delete(s.containerMap, req.NetworkId)
+	delete(s.dnsEntries, req.NetworkId)
+
+	// Remove dnsmasq config file for this network
+	configFile := fmt.Sprintf("/etc/dnsmasq.d/network-%s.conf", req.NetworkId[:12])
+	_ = runCommand("rm", "-f", configFile)
+	_ = runCommand("killall", "-HUP", "dnsmasq")
 
 	log.Printf("Successfully deleted bridge %s", bridgeName)
 
@@ -180,7 +211,7 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	portName := fmt.Sprintf("port-%s", req.ContainerId[:12])
 
 	// Configure DNS
-	if err := s.configureDNS(req.NetworkId, req.Hostname, req.IpAddress, req.Aliases); err != nil {
+	if err := s.configureDNS(req.NetworkId, req.ContainerId, req.Hostname, req.IpAddress, req.Aliases); err != nil {
 		log.Printf("Warning: Failed to configure DNS: %v", err)
 		// Don't fail the entire operation for DNS issues
 	}
@@ -308,31 +339,111 @@ func (s *NetworkServer) GetHealth(ctx context.Context, req *pb.GetHealthRequest)
 }
 
 // configureDNS adds DNS entries for a container
-func (s *NetworkServer) configureDNS(networkID, hostname, ipAddress string, aliases []string) error {
-	configFile := fmt.Sprintf("/etc/dnsmasq.d/network-%s.conf", networkID[:12])
-
-	// Add A record for hostname
-	entry := fmt.Sprintf("host-record=%s,%s\n", hostname, ipAddress)
-
-	// Add aliases
-	for _, alias := range aliases {
-		entry += fmt.Sprintf("host-record=%s,%s\n", alias, ipAddress)
+func (s *NetworkServer) configureDNS(networkID, containerID, hostname, ipAddress string, aliases []string) error {
+	// Initialize DNS entries map for this network if needed
+	if s.dnsEntries[networkID] == nil {
+		s.dnsEntries[networkID] = make(map[string]*DNSEntry)
 	}
 
-	// Append to dnsmasq config
-	if err := appendToFile(configFile, entry); err != nil {
-		return err
+	// Store DNS entry
+	s.dnsEntries[networkID][containerID] = &DNSEntry{
+		ContainerID: containerID,
+		Hostname:    hostname,
+		IPAddress:   ipAddress,
+		Aliases:     aliases,
 	}
 
-	// Reload dnsmasq
-	return runCommand("killall", "-HUP", "dnsmasq")
+	// Regenerate dnsmasq config for this network
+	return s.writeDnsmasqConfig(networkID)
 }
 
 // removeDNS removes DNS entries for a container
 func (s *NetworkServer) removeDNS(networkID, containerID string) error {
-	// For simplicity, we'll regenerate the entire dnsmasq config for this network
-	// In production, we'd track DNS entries more carefully
-	return runCommand("killall", "-HUP", "dnsmasq")
+	// Remove DNS entry
+	if s.dnsEntries[networkID] != nil {
+		delete(s.dnsEntries[networkID], containerID)
+	}
+
+	// Regenerate dnsmasq config for this network
+	return s.writeDnsmasqConfig(networkID)
+}
+
+// writeDnsmasqConfig generates the complete dnsmasq config file for a network
+func (s *NetworkServer) writeDnsmasqConfig(networkID string) error {
+	bridge := s.bridges[networkID]
+	if bridge == nil {
+		return fmt.Errorf("network %s not found", networkID)
+	}
+
+	configFile := fmt.Sprintf("/etc/dnsmasq.d/network-%s.conf", networkID[:12])
+
+	// Build dnsmasq configuration
+	var config string
+
+	// Listen only on the bridge interface's gateway IP
+	// This makes dnsmasq bind specifically to this network's DNS service
+	config += fmt.Sprintf("listen-address=%s\n", bridge.Gateway)
+
+	// Add host records for all containers on this network
+	if entries := s.dnsEntries[networkID]; entries != nil {
+		for _, entry := range entries {
+			// Add A record for hostname
+			if entry.Hostname != "" {
+				config += fmt.Sprintf("host-record=%s,%s\n", entry.Hostname, entry.IPAddress)
+			}
+
+			// Add A records for aliases
+			for _, alias := range entry.Aliases {
+				if alias != "" {
+					config += fmt.Sprintf("host-record=%s,%s\n", alias, entry.IPAddress)
+				}
+			}
+		}
+	}
+
+	// Write config file
+	if err := writeFile(configFile, config); err != nil {
+		return fmt.Errorf("failed to write dnsmasq config: %v", err)
+	}
+
+	log.Printf("Wrote dnsmasq config for network %s with %d entries", networkID[:12], len(s.dnsEntries[networkID]))
+
+	// Debug: Print the config file content
+	configContent, _ := readFile(configFile)
+	log.Printf("Config file %s contents:\n%s", configFile, configContent)
+
+	// Test config before applying
+	if err := runCommand("dnsmasq", "--conf-file=/etc/dnsmasq.conf", "--test"); err != nil {
+		log.Printf("ERROR: dnsmasq config test failed: %v", err)
+		return fmt.Errorf("dnsmasq config test failed: %v", err)
+	}
+	log.Printf("dnsmasq config test passed")
+
+	// Always restart dnsmasq instead of reload (SIGHUP doesn't properly pick up new listen-address directives)
+	log.Printf("Restarting dnsmasq to apply new configuration...")
+
+	// Kill existing dnsmasq processes
+	_ = runCommand("killall", "-9", "dnsmasq")
+	sleep(1)
+
+	// Start dnsmasq with explicit logging
+	if err := runCommand("dnsmasq", "--conf-file=/etc/dnsmasq.conf", "--log-queries", "--log-dhcp"); err != nil {
+		return fmt.Errorf("failed to start dnsmasq: %v", err)
+	}
+	log.Printf("dnsmasq restarted successfully")
+
+	// Verify dnsmasq is running
+	sleep(2)
+	if err := runCommand("pgrep", "dnsmasq"); err != nil {
+		return fmt.Errorf("dnsmasq is not running after restart")
+	}
+	log.Printf("Verified dnsmasq is running")
+
+	// Debug: Check what ports/addresses dnsmasq is listening on
+	output, _ := runCommandWithOutput("netstat", "-ln")
+	log.Printf("Network listeners:\n%s", output)
+
+	return nil
 }
 
 // Helper functions
@@ -346,6 +457,12 @@ func runCommand(name string, args ...string) error {
 	return nil
 }
 
+func runCommandWithOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
 func checkServiceStatus(serviceName string) string {
 	cmd := exec.Command("pgrep", serviceName)
 	if err := cmd.Run(); err != nil {
@@ -357,6 +474,24 @@ func checkServiceStatus(serviceName string) string {
 func appendToFile(filename, content string) error {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("echo '%s' >> %s", content, filename))
 	return cmd.Run()
+}
+
+func writeFile(filename, content string) error {
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("cat > %s <<'EOF'\n%s\nEOF", filename, content))
+	return cmd.Run()
+}
+
+func readFile(filename string) (string, error) {
+	cmd := exec.Command("cat", filename)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
+
+func sleep(seconds int) {
+	time.Sleep(time.Duration(seconds) * time.Second)
 }
 
 func getOVSLogs() string {
