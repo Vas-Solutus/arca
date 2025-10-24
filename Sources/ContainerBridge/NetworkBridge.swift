@@ -5,10 +5,7 @@
 import Foundation
 import Logging
 import Containerization
-import ContainerizationOCI
 import ContainerizationOS
-import NIOCore
-import NIOPosix
 
 /// Network bridge that manages container network attachments
 public actor NetworkBridge {
@@ -62,65 +59,33 @@ public actor NetworkBridge {
 
     // MARK: - TAP Forwarder Management
 
-    /// Ensure arca-tap-forwarder is running in the VM's init namespace
-    /// This runs the forwarder in vminitd's namespace (not container's namespace)
-    /// so it has access to /sbin/arca-tap-forwarder from the vminit rootfs
+    /// Ensure arca-tap-forwarder is running in the container
+    /// The binary is made available via bind mount at /.arca/bin/arca-tap-forwarder
     private func ensureTAPForwarderRunning(container: LinuxContainer, containerID: String) async throws {
-        // Check if already running (by checking if we've tracked it)
+        // Check if already running
         if runningForwarders[containerID] != nil {
             logger.debug("arca-tap-forwarder already launched", metadata: ["containerID": "\(containerID)"])
             return
         }
 
-        logger.info("Launching arca-tap-forwarder daemon in vminit namespace", metadata: ["containerID": "\(containerID)"])
+        logger.info("Launching arca-tap-forwarder daemon", metadata: ["containerID": "\(containerID)"])
 
-        // Dial vminitd agent on port 1024
-        let fileHandle = try await container.dialVsock(port: 1024)
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        let agent = Containerization.Vminitd(connection: fileHandle, group: group)
+        // Create process configuration for arca-tap-forwarder
+        // The binary is bind-mounted at /.arca/bin/arca-tap-forwarder by ContainerManager
+        var processConfig = LinuxContainer.Configuration.Process()
+        processConfig.arguments = ["/.arca/bin/arca-tap-forwarder"]
+        processConfig.terminal = false
 
-        defer {
-            Task {
-                try? await agent.close()
-            }
-        }
-
-        // Create OCI process spec for arca-tap-forwarder
-        // This will run in vminit's namespace (containerID: nil)
-        var spec = ContainerizationOCI.Spec()
-        spec.process = ContainerizationOCI.Process(
-            args: ["/sbin/arca-tap-forwarder"],
-            cwd: "/",
-            env: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
-            user: ContainerizationOCI.User(),
-            rlimits: [],
-            terminal: false
-        )
-
-        // Generate exec ID for the forwarder
         let execID = "arca-tap-forwarder-\(containerID)"
+        let process = try await container.exec(execID, configuration: processConfig)
+        try await process.start()
 
-        // Create process in vminit namespace (containerID: nil)
-        try await agent.createProcess(
-            id: execID,
-            containerID: nil,  // nil = runs in vminit namespace, not container namespace
-            stdinPort: nil,
-            stdoutPort: nil,
-            stderrPort: nil,
-            configuration: spec,
-            options: nil
-        )
+        runningForwarders[containerID] = process
 
-        // Start the process
-        let pid = try await agent.startProcess(id: execID, containerID: nil)
-
-        logger.info("arca-tap-forwarder daemon started in vminit namespace", metadata: [
+        logger.info("arca-tap-forwarder daemon started", metadata: [
             "containerID": "\(containerID)",
-            "pid": "\(pid)"
+            "pid": "\(process.pid)"
         ])
-
-        // Note: We don't track the LinuxProcess here since we're not using container.exec()
-        // The process runs in vminit's namespace and will be cleaned up when the VM stops
     }
 
     // MARK: - Network Attachment
@@ -197,6 +162,7 @@ public actor NetworkBridge {
             // 4. Start data plane relay task
             let relayTask = Task {
                 await self.runRelay(
+                    container: container,
                     containerID: containerID,
                     containerPort: containerPort,
                     helperVMContainer: helperVMContainer,
@@ -309,6 +275,7 @@ public actor NetworkBridge {
     /// Run packet relay between container and helper VM
     /// This is the data plane that forwards Ethernet frames
     private func runRelay(
+        container: LinuxContainer,
         containerID: String,
         containerPort: UInt32,
         helperVMContainer: LinuxContainer,
@@ -322,43 +289,54 @@ public actor NetworkBridge {
         ])
 
         do {
-            // Wait for container to connect (container initiates connection to host)
-            let containerListener = try createVsockListener(port: containerPort, logger: relayLogger)
-            relayLogger.debug("Listening for container connection")
-
-            let containerConnection = try await acceptVsockConnection(listener: containerListener, logger: relayLogger)
+            // Dial container (arca-tap-forwarder is listening on containerPort)
+            relayLogger.debug("Dialing container vsock port", metadata: ["port": "\(containerPort)"])
+            let containerConnection = try await container.dialVsock(port: containerPort)
             relayLogger.info("Container connected")
 
             // Dial helper VM
-            relayLogger.debug("Dialing helper VM")
+            relayLogger.debug("Dialing helper VM", metadata: ["port": "\(helperPort)"])
             let helperConnection = try await helperVMContainer.dialVsock(port: helperPort)
             relayLogger.info("Helper VM connected")
 
-            // Run bidirectional relay
-            await withTaskGroup(of: Void.self) { group in
-                // Container -> Helper (Socket -> FileHandle)
-                group.addTask {
-                    await self.relaySocketToFileHandle(
-                        from: containerConnection,
-                        to: helperConnection,
-                        direction: "container->helper",
-                        logger: relayLogger
-                    )
-                }
+            // Run bidirectional relay using detached tasks for true independence
+            relayLogger.info("Starting bidirectional relay with detached tasks")
 
-                // Helper -> Container (FileHandle -> Socket)
-                group.addTask {
-                    await self.relayFileHandleToSocket(
-                        from: helperConnection,
-                        to: containerConnection,
-                        direction: "helper->container",
-                        logger: relayLogger
-                    )
-                }
+            // Extract FDs BEFORE creating tasks
+            let containerFD = containerConnection.fileDescriptor
+            let helperFD = helperConnection.fileDescriptor
 
-                // Wait for either direction to complete or cancel
-                await group.waitForAll()
+            relayLogger.info("File descriptors extracted", metadata: [
+                "containerFD": "\(containerFD)",
+                "helperFD": "\(helperFD)"
+            ])
+
+            // Create both relay tasks as truly independent detached tasks
+            let task1 = Task.detached {
+                await self.relayFD(
+                    sourceFD: containerFD,
+                    destFD: helperFD,
+                    direction: "container->helper",
+                    logger: relayLogger
+                )
             }
+
+            let task2 = Task.detached {
+                await self.relayFD(
+                    sourceFD: helperFD,
+                    destFD: containerFD,
+                    direction: "helper->container",
+                    logger: relayLogger
+                )
+            }
+
+            relayLogger.info("Both relay tasks launched, waiting for completion")
+
+            // Wait for either task to complete (relay runs until connection closes)
+            _ = await task1.value
+            _ = await task2.value
+
+            relayLogger.info("Bidirectional relay completed")
 
         } catch {
             relayLogger.error("Relay failed", metadata: ["error": "\(error)"])
@@ -545,6 +523,106 @@ public actor NetworkBridge {
         logger.debug("Relay stopped", metadata: [
             "direction": "\(direction)",
             "totalBytes": "\(totalBytes)"
+        ])
+    }
+
+    /// Relay data between two file descriptors
+    private func relayFD(
+        sourceFD: Int32,
+        destFD: Int32,
+        direction: String,
+        logger: Logger
+    ) async {
+        logger.info("Relay function entered", metadata: [
+            "direction": "\(direction)",
+            "source_fd": "\(sourceFD)",
+            "dest_fd": "\(destFD)"
+        ])
+
+        // Set source FD to non-blocking mode
+        let flags = fcntl(sourceFD, F_GETFL, 0)
+        _ = fcntl(sourceFD, F_SETFL, flags | O_NONBLOCK)
+
+        var totalBytes: UInt64 = 0
+        var packetCount: UInt64 = 0
+        let bufferSize = 65536
+        var buffer = Data(count: bufferSize)
+
+        logger.info("Starting relay loop (non-blocking)", metadata: [
+            "direction": "\(direction)",
+            "source_fd": "\(sourceFD)",
+            "dest_fd": "\(destFD)"
+        ])
+
+        while !Task.isCancelled {
+            // Read into buffer using low-level read() in non-blocking mode
+            let bytesRead = buffer.withUnsafeMutableBytes { bufferPtr in
+                Darwin.read(sourceFD, bufferPtr.baseAddress!, bufferSize)
+            }
+
+            // Handle EAGAIN/EWOULDBLOCK in non-blocking mode
+            if bytesRead < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    // No data available, yield and try again
+                    try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+                    continue
+                }
+                // Real error
+                logger.error("Read error", metadata: [
+                    "direction": "\(direction)",
+                    "errno": "\(errno)",
+                    "strerror": "\(String(cString: strerror(errno)))"
+                ])
+                break
+            }
+
+            guard bytesRead > 0 else {
+                if bytesRead == 0 {
+                    logger.info("Connection closed", metadata: ["direction": "\(direction)"])
+                } else {
+                    logger.error("Read error", metadata: [
+                        "direction": "\(direction)",
+                        "errno": "\(errno)",
+                        "strerror": "\(String(cString: strerror(errno)))"
+                    ])
+                }
+                break
+            }
+
+            packetCount += 1
+            totalBytes += UInt64(bytesRead)
+
+            // Log first 10 packets for debugging
+            if packetCount <= 10 {
+                logger.info("Relay packet", metadata: [
+                    "direction": "\(direction)",
+                    "packet": "\(packetCount)",
+                    "bytes": "\(bytesRead)"
+                ])
+            }
+
+            // Write to destination using low-level write()
+            let data = buffer.prefix(bytesRead)
+            let bytesWritten = data.withUnsafeBytes { dataPtr in
+                Darwin.write(destFD, dataPtr.baseAddress!, bytesRead)
+            }
+
+            guard bytesWritten == bytesRead else {
+                logger.error("Write error", metadata: [
+                    "direction": "\(direction)",
+                    "expected": "\(bytesRead)",
+                    "written": "\(bytesWritten)",
+                    "errno": "\(errno)",
+                    "strerror": "\(String(cString: strerror(errno)))"
+                ])
+                break
+            }
+        }
+
+        logger.info("Relay stopped", metadata: [
+            "direction": "\(direction)",
+            "totalBytes": "\(totalBytes)",
+            "packetCount": "\(packetCount)"
         ])
     }
 
