@@ -1157,18 +1157,26 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
 
 #### Default "bridge" Network
 
-- [ ] **Create default bridge network on daemon startup**
-  - Check if "bridge" network exists
-  - If not: create with subnet 172.17.0.0/16, gateway 172.17.0.1
-  - Mark as default network
-  - Auto-attach containers without explicit --network
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift` (initialization)
+- [x] **Create default bridge network on daemon startup**
+  - ✅ Check if "bridge" network exists
+  - ✅ If not: create with subnet 172.17.0.0/16, gateway 172.17.0.1
+  - ✅ Mark as default network
+  - ✅ Already implemented in NetworkManager.initialize()
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:90-103`
+  - **COMPLETED**: Default bridge network created on daemon startup
 
-- [ ] **Implement network auto-attachment for legacy containers**
-  - Containers without NetworkingConfig get attached to default bridge
-  - Allocate IP automatically
-  - Add to bridge network on start
-  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+- [x] **Implement network auto-attachment for containers**
+  - ✅ Store networkMode from HostConfig during container creation
+  - ✅ Auto-attach to specified network on container start
+  - ✅ Handle "none", "default", "bridge", and custom networks
+  - ✅ Skip auto-attach if networks already attached
+  - Files: `Sources/ContainerBridge/ContainerManager.swift:628-677`
+  - **COMPLETED**: Containers auto-attach based on networkMode
+  - Behavior:
+    - `docker run alpine` → auto-attaches to "bridge"
+    - `docker run --network my-net alpine` → auto-attaches to "my-net"
+    - `docker run --network none alpine` → no attachment
+    - `docker network connect` → manual attachment works
 
 ### Phase 3.5: DNS Resolution (Week 9)
 
