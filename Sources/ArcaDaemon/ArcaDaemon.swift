@@ -136,6 +136,10 @@ public final class ArcaDaemon {
             do {
                 try await nm.initialize()
                 logger.info("Network manager initialized successfully")
+
+                // Wire up NetworkManager reference in ContainerManager for auto-attachment
+                await containerManager.setNetworkManager(nm)
+                logger.debug("ContainerManager configured with NetworkManager")
             } catch {
                 logger.error("Failed to initialize network manager", metadata: [
                     "error": "\(error)"

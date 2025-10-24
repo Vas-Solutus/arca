@@ -35,6 +35,9 @@ public actor ContainerManager {
 
     private var nativeManager: Containerization.ContainerManager?
 
+    // Optional NetworkManager reference for auto-attachment to networks
+    private var networkManager: NetworkManager?
+
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
         let image: Containerization.Image
@@ -69,6 +72,11 @@ public actor ContainerManager {
         self.kernelPath = kernelPath
         self.logger = logger
         self.logManager = ContainerLogManager(logger: logger)
+    }
+
+    /// Set the NetworkManager (called after NetworkManager is initialized)
+    public func setNetworkManager(_ manager: NetworkManager) {
+        self.networkManager = manager
     }
 
     /// Initialize the Containerization manager
@@ -216,7 +224,8 @@ public actor ContainerManager {
         attachStdout: Bool = false,
         attachStderr: Bool = false,
         tty: Bool = false,
-        openStdin: Bool = false
+        openStdin: Bool = false,
+        networkMode: String? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -289,7 +298,7 @@ public actor ContainerManager {
                 dockerID,
                 image: containerImage,
                 rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-            ) { config in
+            ) { @Sendable config in
                 // Configure the container process (OCI-compliant)
                 // Note: config.process is already initialized from image config via init(from:)
 
@@ -309,6 +318,29 @@ public actor ContainerManager {
 
                 // Set hostname (OCI spec field)
                 config.hostname = containerName
+
+                // Inject arca-tap-forwarder binary via bind mount for networking
+                // Mount the entire ~/.arca/bin directory to /.arca/bin in the container
+                // This makes the binary available at /.arca/bin/arca-tap-forwarder
+                let arcaBinPath = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".arca/bin")
+                    .path
+
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: arcaBinPath, isDirectory: &isDirectory),
+                   isDirectory.boolValue {
+                    config.mounts.append(
+                        .share(
+                            source: arcaBinPath,
+                            destination: "/.arca/bin",
+                            options: ["ro"]
+                        )
+                    )
+                    logger.debug("Bind mounted arca bin directory", metadata: [
+                        "source": "\(arcaBinPath)",
+                        "destination": "/.arca/bin"
+                    ])
+                }
 
                 // Configure TTY mode
                 config.process.terminal = tty
@@ -358,7 +390,7 @@ public actor ContainerManager {
             workingDir: workingDir ?? "/",
             labels: labels ?? [:],
             ports: [],
-            hostConfig: HostConfig(),
+            hostConfig: HostConfig(networkMode: networkMode ?? "default"),
             config: ContainerConfiguration(
                 hostname: containerName,
                 env: env ?? [],
@@ -592,6 +624,57 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "state": "running"
         ])
+
+        // Auto-attach to network based on networkMode if no networks are attached
+        // Docker CLI sets networkMode in HostConfig and expects the daemon to handle attachment
+        if let networkManager = networkManager,
+           info.networkAttachments.isEmpty {
+            let networkMode = info.hostConfig.networkMode
+
+            // Only auto-attach if networkMode is not "none"
+            if networkMode != "none" {
+                // Normalize networkMode: empty, "default", or "bridge" all mean the default bridge network
+                let targetNetwork: String
+                if networkMode.isEmpty || networkMode == "default" {
+                    targetNetwork = "bridge"
+                } else {
+                    targetNetwork = networkMode
+                }
+
+                logger.info("Auto-attaching container to network", metadata: [
+                    "container": "\(dockerID)",
+                    "network": "\(targetNetwork)",
+                    "networkMode": "\(networkMode)"
+                ])
+
+                do {
+                    let containerName = info.name ?? String(dockerID.prefix(12))
+                    _ = try await networkManager.connectContainer(
+                        containerID: dockerID,
+                        containerName: containerName,
+                        networkID: targetNetwork,
+                        ipv4Address: nil,
+                        aliases: []
+                    )
+                    logger.info("Container auto-attached to network successfully", metadata: [
+                        "container": "\(dockerID)",
+                        "network": "\(targetNetwork)"
+                    ])
+                } catch {
+                    // Log the error but don't fail the container start
+                    // Networking is optional - container can run without it
+                    logger.warning("Failed to auto-attach container to network", metadata: [
+                        "container": "\(dockerID)",
+                        "network": "\(targetNetwork)",
+                        "error": "\(error)"
+                    ])
+                }
+            } else {
+                logger.debug("Container networkMode is 'none', skipping auto-attachment", metadata: [
+                    "container": "\(dockerID)"
+                ])
+            }
+        }
 
         // Spawn background monitoring task to detect when container exits
         // The task waits for the container to exit, then calls back into the actor to update state

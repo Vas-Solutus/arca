@@ -118,7 +118,8 @@ public struct ContainerHandlers: Sendable {
                 attachStdout: request.attachStdout ?? false,
                 attachStderr: request.attachStderr ?? false,
                 tty: request.tty ?? false,
-                openStdin: request.openStdin ?? false
+                openStdin: request.openStdin ?? false,
+                networkMode: request.hostConfig?.networkMode
             )
 
             logger.info("Container created", metadata: [
