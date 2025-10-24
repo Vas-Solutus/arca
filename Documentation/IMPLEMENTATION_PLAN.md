@@ -1147,13 +1147,12 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Return 409 Conflict if already attached
   - Files: `Sources/ContainerBridge/NetworkManager.swift` (attachContainerToNetwork)
 
-- [ ] **Remove obsolete vminit-with-forwarder build**
-  - Problem: We no longer need arca-tap-forwarder built into vminit filesystem
-  - Cleanup:
-    - Remove forwarder from vminit build scripts
-    - Rebuild clean vminit image without forwarder
-    - Update documentation to reflect new architecture
-  - Files: `.build/checkouts/containerization/Makefile`, Documentation
+- [x] **Remove obsolete vminit-with-forwarder build**
+  - ✅ Removed old Swift-based arca-tap-forwarder directory
+  - ✅ Removed obsolete build scripts (build-vminit.sh, generate-tap-forwarder-grpc.sh)
+  - ✅ Removed .arca-build directory with old binary
+  - **COMPLETED**: Cleaned up obsolete Swift forwarder artifacts
+  - New architecture: Go-based arca-tap-forwarder-go injected via bind mount
 
 #### Default "bridge" Network
 
