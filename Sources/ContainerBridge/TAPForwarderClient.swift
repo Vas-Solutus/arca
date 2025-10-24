@@ -12,8 +12,10 @@ import Containerization
 public actor TAPForwarderClient {
     private let container: LinuxContainer
     private let logger: Logger
-    private var client: Arca_Tapforwarder_V1_TAPForwarderAsyncClient?
+    private var client: Arca_Tapforwarder_V1_TAPForwarderNIOClient?
     private var channel: GRPCChannel?
+    private var eventLoopGroup: EventLoopGroup?
+    private var vsockFileHandle: FileHandle?  // Keep FileHandle alive for the connection
 
     private static let CONTROL_PORT: UInt32 = 5555
 
@@ -39,35 +41,71 @@ public actor TAPForwarderClient {
     }
 
     private func connect() async throws {
-        logger.debug("Connecting to arca-tap-forwarder", metadata: [
+        logger.debug("Connecting to arca-tap-forwarder via vsock", metadata: [
             "containerID": "\(container.id)",
             "port": "\(Self.CONTROL_PORT)"
         ])
 
-        // Dial the container's arca-tap-forwarder via vsock
-        // The forwarder listens on localhost:5555, and we connect via vsock forwarding
-        do {
-            let stream = try await container.dialVsock(port: Self.CONTROL_PORT)
+        // Retry connection with exponential backoff
+        // The forwarder needs time to start up and bind to vsock port
+        let maxAttempts = 10
+        var attempt = 0
+        var lastError: Error?
 
-            // Create NIO channel from the stream
-            let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        while attempt < maxAttempts {
+            attempt += 1
 
-            // For now, use a simple TCP connection approach
-            // TODO: Integrate with vsock stream properly
-            let channel = try GRPCChannelPool.with(
-                target: .host("127.0.0.1", port: Int(Self.CONTROL_PORT)),
-                transportSecurity: .plaintext,
-                eventLoopGroup: group
-            )
+            do {
+                let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+                self.eventLoopGroup = group
 
-            self.channel = channel
-            self.client = Arca_Tapforwarder_V1_TAPForwarderAsyncClient(channel: channel)
+                let fileHandle = try await container.dialVsock(port: Self.CONTROL_PORT)
+                logger.debug("dialVsock successful", metadata: [
+                    "fd": "\(fileHandle.fileDescriptor)",
+                    "attempt": "\(attempt)"
+                ])
 
-            logger.info("Connected to arca-tap-forwarder")
-        } catch {
-            logger.error("Failed to connect to arca-tap-forwarder", metadata: ["error": "\(error)"])
-            throw ClientError.dialFailed(error.localizedDescription)
+                // Store FileHandle to keep it alive for the lifetime of the connection
+                self.vsockFileHandle = fileHandle
+
+                // Create gRPC channel from the connected socket FileHandle
+                let channel = ClientConnection(
+                    configuration: .default(
+                        target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
+                        eventLoopGroup: group
+                    ))
+
+                self.channel = channel
+                self.client = Arca_Tapforwarder_V1_TAPForwarderNIOClient(channel: channel)
+
+                logger.info("Connected to arca-tap-forwarder via vsock", metadata: [
+                    "attempt": "\(attempt)"
+                ])
+                return
+            } catch {
+                lastError = error
+                logger.debug("Connection attempt \(attempt) failed", metadata: [
+                    "error": "\(error)"
+                ])
+
+                // Clean up event loop group if it was created
+                try? await eventLoopGroup?.shutdownGracefully()
+                eventLoopGroup = nil
+
+                if attempt < maxAttempts {
+                    // Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms...
+                    let delayMs = min(50 * (1 << (attempt - 1)), 3000)
+                    logger.debug("Retrying in \(delayMs)ms...")
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                }
+            }
         }
+
+        // All attempts failed
+        logger.error("Failed to connect to arca-tap-forwarder after \(maxAttempts) attempts", metadata: [
+            "error": "\(lastError?.localizedDescription ?? "unknown")"
+        ])
+        throw ClientError.dialFailed(lastError?.localizedDescription ?? "Connection failed after \(maxAttempts) attempts")
     }
 
     public func attachNetwork(
@@ -95,7 +133,7 @@ public actor TAPForwarderClient {
         ])
 
         do {
-            let response = try await client.attachNetwork(request)
+            let response = try await client.attachNetwork(request).response.get()
 
             if response.success {
                 logger.info("Network attached successfully", metadata: [
@@ -124,7 +162,7 @@ public actor TAPForwarderClient {
         logger.info("Sending DetachNetwork RPC", metadata: ["device": "\(device)"])
 
         do {
-            let response = try await client.detachNetwork(request)
+            let response = try await client.detachNetwork(request).response.get()
 
             if response.success {
                 logger.info("Network detached successfully", metadata: ["device": "\(device)"])
@@ -147,7 +185,7 @@ public actor TAPForwarderClient {
         let request = Arca_Tapforwarder_V1_ListNetworksRequest()
 
         do {
-            let response = try await client.listNetworks(request)
+            let response = try await client.listNetworks(request).response.get()
             logger.debug("ListNetworks returned \(response.networks.count) networks")
             return response
         } catch {
@@ -164,7 +202,7 @@ public actor TAPForwarderClient {
         let request = Arca_Tapforwarder_V1_GetStatusRequest()
 
         do {
-            let response = try await client.getStatus(request)
+            let response = try await client.getStatus(request).response.get()
             logger.debug("GetStatus: \(response.activeNetworks) active networks")
             return response
         } catch {
@@ -177,7 +215,15 @@ public actor TAPForwarderClient {
         if let channel = channel {
             try? await channel.close().get()
         }
+        try? await eventLoopGroup?.shutdownGracefully()
+
+        if let fileHandle = vsockFileHandle {
+            try? fileHandle.close()
+        }
+
         client = nil
         channel = nil
+        eventLoopGroup = nil
+        vsockFileHandle = nil
     }
 }

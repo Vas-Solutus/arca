@@ -1128,6 +1128,33 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Document results in NETWORK_ARCHITECTURE.md
   - Files: `scripts/benchmark-network.sh`
 
+#### Task 6: Bug Fixes and Cleanup (Post Phase 3.4)
+
+- [ ] **Fix arca-tap-forwarder-go startup reliability**
+  - Problem: Forwarder process starts but doesn't respond to gRPC commands
+  - Symptom: Must manually pkill and restart with `docker exec` to work
+  - Investigation needed:
+    - Check if gRPC server is binding correctly on vsock
+    - Verify vsock port allocation is correct
+    - Check for race conditions in startup sequence
+    - Add health check endpoint to verify forwarder is ready
+  - Files: `arca-tap-forwarder-go/main.go`, `Sources/ContainerBridge/NetworkBridge.swift`
+
+- [ ] **Fix duplicate network attachment prevention**
+  - Problem: Can attach same network to container multiple times
+  - Expected: Docker returns error "container already connected to network"
+  - Solution: Check containerNetworks mapping before attachment
+  - Return 409 Conflict if already attached
+  - Files: `Sources/ContainerBridge/NetworkManager.swift` (attachContainerToNetwork)
+
+- [ ] **Remove obsolete vminit-with-forwarder build**
+  - Problem: We no longer need arca-tap-forwarder built into vminit filesystem
+  - Cleanup:
+    - Remove forwarder from vminit build scripts
+    - Rebuild clean vminit image without forwarder
+    - Update documentation to reflect new architecture
+  - Files: `.build/checkouts/containerization/Makefile`, Documentation
+
 #### Default "bridge" Network
 
 - [ ] **Create default bridge network on daemon startup**
