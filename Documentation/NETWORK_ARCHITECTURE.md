@@ -85,12 +85,12 @@ This design **fully leverages the Containerization framework** and Swift for bot
 
 #### 1. Container VM (arca-tap-forwarder - Swift gRPC Daemon)
 
-**Location**: Bind-mounted from host at `/.arca/bin/arca-tap-forwarder` (hidden dotfile directory)
+**Location**: Embedded in vminit OCI image at `/usr/local/bin/arca-tap-forwarder`
 
-**Build**: Cross-compiled Linux binary built with Swift Static Linux SDK (aarch64-musl)
-- Source: `arca-tap-forwarder/` Swift package
-- Build script: `scripts/build-tap-forwarder.sh`
-- Install location: `~/.arca/bin/arca-tap-forwarder`
+**Build**: Cross-compiled Go binary for Linux ARM64
+- Source: `vminitd/vminitd/extensions/tap-forwarder/`
+- Built automatically by `make vminit` (via `scripts/build-vminit.sh`)
+- Part of custom vminit:latest image
 
 **Purpose**: On-demand TAP device management and packet forwarding
 

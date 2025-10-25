@@ -95,14 +95,10 @@ kernel:
 	@echo "Building Linux kernel with TUN support..."
 	@./scripts/build-kernel.sh
 
-# Build TAP forwarder for Linux
-tap-forwarder:
-	@echo "Building arca-tap-forwarder for Linux..."
-	@./scripts/build-tap-forwarder.sh
-
-# Build custom vminit with arca-tap-forwarder
-vminit: tap-forwarder
-	@echo "Building custom vminit:latest with arca-tap-forwarder..."
+# Build custom vminit with VLAN and TAP forwarder extensions
+# The build script now builds both extensions from the vminitd submodule
+vminit:
+	@echo "Building custom vminit:latest with networking extensions..."
 	@./scripts/build-vminit.sh
 
 # Generate gRPC code from proto files

@@ -1042,18 +1042,17 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
 - [x] **Build and install arca-tap-forwarder**
   - ✅ Cross-compile with Go for linux/arm64
   - ✅ Static linking for Alpine Linux compatibility
-  - ✅ Installed to `~/.arca/bin/arca-tap-forwarder` (14MB binary)
-  - ✅ Build script: `scripts/build-tap-forwarder-go.sh`
-  - ✅ Makefile target: `make tap-forwarder`
-  - **COMPLETED**: Binary builds and deploys successfully
+  - ✅ Embedded in vminit OCI image at `/usr/local/bin/arca-tap-forwarder`
+  - ✅ Build script: `vminitd/vminitd/extensions/tap-forwarder/build.sh`
+  - ✅ Built automatically by `make vminit`
+  - **COMPLETED**: Binary embedded in vminit and available in all containers
 
-- [x] **Inject binary into containers via bind mount**
-  - ✅ ContainerManager bind-mounts `~/.arca/bin/` directory → `/.arca/bin/` in container
-  - ✅ Binary accessible at `/.arca/bin/arca-tap-forwarder`
-  - ✅ Hidden dotfile directory minimizes user visibility
-  - ✅ Read-only mount (virtiofs share with "ro" option)
-  - ✅ Only mounted if directory exists
-  - Files: `Sources/ContainerBridge/ContainerManager.swift:313-334`
+- [x] **TAP forwarder deployment via vminit**
+  - ✅ TAP forwarder built into custom vminit:latest OCI image
+  - ✅ Available at `/usr/local/bin/arca-tap-forwarder` in all container VMs
+  - ✅ No bind-mounting needed - part of init system
+  - ✅ Automatically available when using custom vminit
+  - Files: `scripts/build-vminit.sh`, `Documentation/VMINIT_BUILD.md`
   - **COMPLETED**: Bind mount working reliably
 
 - [x] **Launch forwarder on-demand via container.exec()**
