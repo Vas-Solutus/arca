@@ -3,6 +3,14 @@ import Logging
 import ContainerBridge
 import NIOHTTP1
 
+// Helper extension for converting arrays to tuples
+extension Array where Element == String {
+    func tuple() -> (String, String)? {
+        guard count >= 2 else { return nil }
+        return (self[0], self[1])
+    }
+}
+
 /// Handlers for Docker Engine API network endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct NetworkHandlers: Sendable {
@@ -32,10 +40,13 @@ public struct NetworkHandlers: Sendable {
         ])
 
         do {
-            let networkMetadataList = try await networkManager.listNetworks(filters: filters)
+            let allNetworks = await networkManager.listNetworks()
+
+            // Apply filters
+            let filteredMetadata = applyFilters(allNetworks, filters: filters)
 
             // Convert to Docker API format
-            let networks = networkMetadataList.map { metadata in
+            let networks = filteredMetadata.map { metadata in
                 convertToDockerNetwork(metadata)
             }
 
@@ -56,7 +67,12 @@ public struct NetworkHandlers: Sendable {
         logger.debug("Handling inspect network request", metadata: ["id": "\(id)"])
 
         do {
-            let metadata = try await networkManager.inspectNetwork(id: id)
+            // Try resolving as name or ID
+            let resolvedID = await networkManager.resolveNetworkID(id) ?? id
+
+            guard let metadata = await networkManager.getNetwork(id: resolvedID) else {
+                return .failure(NetworkError.notFound(id))
+            }
             let network = convertToDockerNetwork(metadata)
 
             logger.info("Inspected network", metadata: [
@@ -153,7 +169,7 @@ public struct NetworkHandlers: Sendable {
         ])
 
         do {
-            try await networkManager.deleteNetwork(id: id, force: force)
+            try await networkManager.deleteNetwork(id: id)
 
             logger.info("Network deleted successfully", metadata: ["id": "\(id)"])
             return .success(())
@@ -198,11 +214,19 @@ public struct NetworkHandlers: Sendable {
         let aliases = endpointConfig?.aliases ?? []
 
         do {
-            _ = try await networkManager.connectContainer(
+            // Get the container object
+            guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
+                return .failure(NetworkError.notFound("Container \(containerID) not found"))
+            }
+
+            // Get container name for DNS
+            let containerName = await containerManager.getContainerName(dockerID: containerID) ?? String(containerID.prefix(12))
+
+            _ = try await networkManager.attachContainerToNetwork(
                 containerID: containerID,
-                containerName: containerName,
+                container: container,
                 networkID: networkID,
-                ipv4Address: ipv4Address,
+                containerName: containerName,
                 aliases: aliases
             )
 
@@ -257,10 +281,15 @@ public struct NetworkHandlers: Sendable {
         ])
 
         do {
-            try await networkManager.disconnectContainer(
+            // Get the container object
+            guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
+                return .failure(NetworkError.notFound("Container \(containerID) not found"))
+            }
+
+            try await networkManager.detachContainerFromNetwork(
                 containerID: containerID,
-                networkID: networkID,
-                force: force
+                container: container,
+                networkID: networkID
             )
 
             logger.info("Container disconnected from network successfully", metadata: [
@@ -295,8 +324,49 @@ public struct NetworkHandlers: Sendable {
 
     // MARK: - Helper Methods
 
+    /// Apply filters to network list
+    private func applyFilters(_ networks: [NetworkMetadata], filters: [String: [String]]) -> [NetworkMetadata] {
+        var filtered = networks
+
+        // Filter by name
+        if let names = filters["name"], !names.isEmpty {
+            filtered = filtered.filter { network in
+                names.contains(network.name)
+            }
+        }
+
+        // Filter by ID
+        if let ids = filters["id"], !ids.isEmpty {
+            filtered = filtered.filter { network in
+                ids.contains(where: { network.id.hasPrefix($0) })
+            }
+        }
+
+        // Filter by driver
+        if let drivers = filters["driver"], !drivers.isEmpty {
+            filtered = filtered.filter { network in
+                drivers.contains(network.driver)
+            }
+        }
+
+        // Filter by label
+        if let labels = filters["label"], !labels.isEmpty {
+            filtered = filtered.filter { network in
+                labels.allSatisfy { labelFilter in
+                    if let (key, value) = labelFilter.split(separator: "=", maxSplits: 1).map({ String($0) }).tuple() {
+                        return network.labels[key] == value
+                    } else {
+                        return network.labels[labelFilter] != nil
+                    }
+                }
+            }
+        }
+
+        return filtered
+    }
+
     /// Convert NetworkMetadata to Docker API Network format
-    private func convertToDockerNetwork(_ metadata: NetworkManager.NetworkMetadata) -> Network {
+    private func convertToDockerNetwork(_ metadata: NetworkMetadata) -> Network {
         // Format created timestamp as ISO8601
         let iso8601Formatter = ISO8601DateFormatter()
         let createdString = iso8601Formatter.string(from: metadata.created)

@@ -9,12 +9,13 @@ public final class ArcaDaemon {
     private let socketPath: String
     private let logger: Logger
     private var server: ArcaServer?
-    private var containerManager: ContainerManager?
+    private var containerManager: ContainerBridge.ContainerManager?
     private var imageManager: ImageManager?
     private var execManager: ExecManager?
     private var networkHelperVM: NetworkHelperVM?
     private var networkManager: NetworkManager?
     private var ipamAllocator: IPAMAllocator?
+    private var sharedNetwork: SharedVmnetNetwork?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -67,33 +68,108 @@ public final class ArcaDaemon {
             // Continue anyway - we can still serve API requests
         }
 
-        // Initialize and start Network Helper VM for OVN/OVS networking
-        logger.info("Initializing network helper VM...")
-        let networkHelperVM = NetworkHelperVM(
-            imageManager: imageManager,
-            kernelPath: config.kernelPath,
-            logger: logger
-        )
-        self.networkHelperVM = networkHelperVM
+        // Load custom vminit image BEFORE creating any ContainerManagers
+        // This ensures both helper VM and main ContainerManager use the same vminit
+        let vminitPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".arca")
+            .appendingPathComponent("vminit")
 
-        do {
-            try await networkHelperVM.initialize()
-            try await networkHelperVM.start()
-            logger.info("Network helper VM started successfully")
-        } catch {
-            logger.error("Failed to start network helper VM", metadata: [
-                "error": "\(error)"
+        var initfsReference = "vminit:latest"  // Default reference
+
+        if FileManager.default.fileExists(atPath: vminitPath.path) {
+            logger.info("Loading custom vminit image from OCI layout", metadata: [
+                "path": "\(vminitPath.path)"
             ])
-            // Continue without helper VM - networking features won't be available
-            // but basic container operations can still work
-            logger.warning("Daemon will continue without network helper VM - networking features disabled")
+
+            // Delete the existing initfs.ext4 file to force regeneration from our custom vminit
+            // Without this, the old initfs.ext4 (which may be from a different vminit) gets reused
+            let initfsPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/com.apple.containerization/initfs.ext4")
+            if FileManager.default.fileExists(atPath: initfsPath.path) {
+                logger.debug("Deleting existing initfs.ext4 to force regeneration")
+                do {
+                    try FileManager.default.removeItem(at: initfsPath)
+                    logger.debug("Deleted old initfs.ext4 successfully")
+                } catch {
+                    logger.warning("Failed to delete old initfs.ext4", metadata: [
+                        "error": "\(error)"
+                    ])
+                }
+            }
+
+            // Delete existing arca-vminit image to force reload
+            if await imageManager.imageExists(nameOrId: "arca-vminit:latest") {
+                logger.debug("Deleting existing arca-vminit:latest to reload fresh version")
+                _ = try? await imageManager.deleteImage(nameOrId: "arca-vminit:latest", force: true)
+            }
+
+            // Load the OCI layout into ImageStore
+            // The OCI layout already has the image tagged as "arca-vminit:latest" via the index annotation
+            do {
+                let loadedImages = try await imageManager.loadFromOCILayout(directory: vminitPath)
+                logger.info("Custom vminit image loaded successfully", metadata: [
+                    "count": "\(loadedImages.count)",
+                    "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
+                ])
+
+                // Verify the image was loaded with the correct reference
+                if let firstImage = loadedImages.first {
+                    if firstImage.reference == "arca-vminit:latest" {
+                        initfsReference = "arca-vminit:latest"
+                        logger.info("Custom vminit ready to use: \(initfsReference)")
+                    } else {
+                        logger.warning("Loaded vminit has unexpected reference: \(firstImage.reference)")
+                    }
+                }
+            } catch {
+                logger.warning("Failed to load custom vminit, will use default", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+        } else {
+            logger.warning("Custom vminit not found at \(vminitPath.path), will use default vminit")
+        }
+
+        // Initialize networking components based on configured backend
+        var networkHelperVM: NetworkHelperVM? = nil
+
+        switch config.networkBackend {
+        case .ovs:
+            // OVS backend requires helper VM
+            logger.info("Initializing OVS backend with network helper VM...")
+            let helperVM = NetworkHelperVM(
+                imageManager: imageManager,
+                kernelPath: config.kernelPath,
+                logger: logger,
+                sharedNetwork: nil  // OVS doesn't use shared vmnet
+            )
+            self.networkHelperVM = helperVM
+            networkHelperVM = helperVM
+
+            do {
+                try await helperVM.initialize()
+                try await helperVM.start()
+                logger.info("Network helper VM started successfully")
+            } catch {
+                logger.error("Failed to start network helper VM", metadata: [
+                    "error": "\(error)"
+                ])
+                logger.warning("Daemon will continue without network helper VM - OVS networking disabled")
+                networkHelperVM = nil
+            }
+
+        case .vmnet:
+            // vmnet backend doesn't need helper VM
+            logger.info("Using vmnet backend - no helper VM required")
+            self.networkHelperVM = nil
         }
 
         // Initialize ContainerManager with kernel path from config
         let containerManager = ContainerManager(
             imageManager: imageManager,
             kernelPath: config.kernelPath,
-            logger: logger
+            logger: logger,
+            sharedNetwork: nil  // No longer using shared vmnet for networking
         )
         self.containerManager = containerManager
 
@@ -114,45 +190,43 @@ public final class ArcaDaemon {
         let ipamAllocator = IPAMAllocator(logger: logger)
         self.ipamAllocator = ipamAllocator
 
-        // Initialize NetworkManager if helper VM is available
-        var networkManager: NetworkManager? = nil
-        if let helperVM = self.networkHelperVM {
-            logger.info("Initializing network manager...")
+        // Initialize NetworkBridge for TAP device management and packet relay
+        let networkBridge: NetworkBridge?
+        if config.networkBackend == .ovs, let helperVM = networkHelperVM {
+            let bridge = NetworkBridge(logger: logger)
+            await bridge.setHelperVM(helperVM)
+            networkBridge = bridge
+        } else {
+            networkBridge = nil
+        }
 
-            // Create NetworkBridge for TAP device management and packet relay (overlay networks)
-            let networkBridge = NetworkBridge(logger: logger)
-            await networkBridge.setHelperVM(helperVM)
+        // Initialize NetworkManager with selected backend
+        logger.info("Initializing network manager with \(config.networkBackend.rawValue) backend...")
+        let nm = NetworkManager(
+            config: config,
+            helperVM: networkHelperVM,
+            ipamAllocator: ipamAllocator,
+            networkBridge: networkBridge,
+            logger: logger
+        )
+        self.networkManager = nm
+        var networkManager: NetworkManager? = nm
 
-            // Create VLANNetworkProvider for VLAN-based networking (bridge networks)
-            let vlanProvider = VLANNetworkProvider(logger: logger)
+        do {
+            try await nm.initialize()
+            logger.info("Network manager initialized successfully")
 
-            let nm = NetworkManager(
-                helperVM: helperVM,
-                ipamAllocator: ipamAllocator,
-                containerManager: containerManager,
-                networkBridge: networkBridge,
-                vlanProvider: vlanProvider,
-                logger: logger
-            )
-            self.networkManager = nm
-            networkManager = nm
-
-            do {
-                try await nm.initialize()
-                logger.info("Network manager initialized successfully")
-
-                // Wire up NetworkManager reference in ContainerManager for auto-attachment
-                await containerManager.setNetworkManager(nm)
-                logger.debug("ContainerManager configured with NetworkManager")
-            } catch {
-                logger.error("Failed to initialize network manager", metadata: [
-                    "error": "\(error)"
-                ])
-                // Continue without network manager - networking features won't be available
-                logger.warning("Daemon will continue without network manager - networking features disabled")
-                self.networkManager = nil
-                networkManager = nil
-            }
+            // Wire up NetworkManager reference in ContainerManager for auto-attachment
+            await containerManager.setNetworkManager(nm)
+            logger.debug("ContainerManager configured with NetworkManager")
+        } catch {
+            logger.error("Failed to initialize network manager", metadata: [
+                "error": "\(error)"
+            ])
+            // Continue without network manager - networking features won't be available
+            logger.warning("Daemon will continue without network manager - networking features disabled")
+            self.networkManager = nil
+            networkManager = nil
         }
 
         // Create router builder, register middlewares and routes
@@ -207,7 +281,7 @@ public final class ArcaDaemon {
     /// Register all API routes
     private func registerRoutes(
         builder: RouterBuilder,
-        containerManager: ContainerManager,
+        containerManager: ContainerBridge.ContainerManager,
         imageManager: ImageManager,
         execManager: ExecManager,
         networkManager: NetworkManager?
@@ -439,10 +513,10 @@ public final class ArcaDaemon {
                 stdout: stdout,
                 stderr: stderr,
                 follow: stream,
-                since: nil,
-                until: nil,
+                since: nil as Int?,
+                until: nil as Int?,
                 timestamps: false,
-                tail: nil
+                tail: nil as String?
             )
         }
 

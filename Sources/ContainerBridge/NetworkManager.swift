@@ -1,116 +1,73 @@
 import Foundation
 import Logging
+import Containerization
 
-/// Manages Docker networks with driver-based routing:
-/// - bridge driver: VLAN-based networking via VLANNetworkProvider (native vmnet performance)
-/// - overlay driver: OVS/OVN networking via NetworkBridge (TAP-over-vsock)
-/// Thread-safe via Swift actor isolation
+/// Manages Docker networks with configurable backend:
+/// - OVS backend (default): Full Docker compatibility with OVS/OVN helper VM
+/// - vmnet backend: High performance native vmnet (limited features)
+///
+/// NetworkManager acts as a facade that delegates to the appropriate backend
+/// based on user configuration and network driver type.
 public actor NetworkManager {
-    private let helperVM: NetworkHelperVM
-    private let ipamAllocator: IPAMAllocator
-    private let containerManager: ContainerManager
-    private let networkBridge: NetworkBridge      // For overlay networks (TAP-based)
-    private let vlanProvider: VLANNetworkProvider // For bridge networks (VLAN-based)
+    private let config: ArcaConfig
     private let logger: Logger
 
-    // Network state tracking
-    // Actor isolation ensures thread-safe access to all mutable state
-    private var networks: [String: NetworkMetadata] = [:]  // Network ID -> Metadata
-    private var networksByName: [String: String] = [:]  // Name -> Network ID
-    private var containerNetworks: [String: Set<String>] = [:]  // Container ID -> Set of Network IDs
-    private var deviceCounter: [String: Int] = [:]  // Container ID -> next device index (eth0, eth1, etc.)
+    // Backends (initialized based on config)
+    private var ovsBackend: OVSNetworkBackend?
+    private var vmnetBackend: VmnetNetworkBackend?
 
-    /// Metadata for a Docker network
-    public struct NetworkMetadata: Sendable {
-        public let id: String
-        public let name: String
-        public let driver: String
-        public let subnet: String
-        public let gateway: String
-        public var containers: Set<String>  // Container IDs
-        public let created: Date
-        public let options: [String: String]
-        public let labels: [String: String]
-        public let isDefault: Bool  // true for "bridge" default network
+    // Dependencies for OVS backend
+    private let helperVM: NetworkHelperVM?
+    private let ipamAllocator: IPAMAllocator?
+    private let networkBridge: NetworkBridge?
 
-        public init(
-            id: String,
-            name: String,
-            driver: String,
-            subnet: String,
-            gateway: String,
-            containers: Set<String> = [],
-            created: Date = Date(),
-            options: [String: String] = [:],
-            labels: [String: String] = [:],
-            isDefault: Bool = false
-        ) {
-            self.id = id
-            self.name = name
-            self.driver = driver
-            self.subnet = subnet
-            self.gateway = gateway
-            self.containers = containers
-            self.created = created
-            self.options = options
-            self.labels = labels
-            self.isDefault = isDefault
-        }
-    }
-
-    /// Metadata for a container's network attachment
-    public struct NetworkAttachment: Sendable {
-        public let networkID: String
-        public let ip: String
-        public let mac: String
-        public let aliases: [String]
-
-        public init(networkID: String, ip: String, mac: String, aliases: [String] = []) {
-            self.networkID = networkID
-            self.ip = ip
-            self.mac = mac
-            self.aliases = aliases
-        }
-    }
-
-    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, networkBridge: NetworkBridge, vlanProvider: VLANNetworkProvider, logger: Logger) {
+    /// Initialize NetworkManager with configuration
+    public init(
+        config: ArcaConfig,
+        helperVM: NetworkHelperVM?,
+        ipamAllocator: IPAMAllocator?,
+        networkBridge: NetworkBridge?,
+        logger: Logger
+    ) {
+        self.config = config
         self.helperVM = helperVM
         self.ipamAllocator = ipamAllocator
-        self.containerManager = containerManager
         self.networkBridge = networkBridge
-        self.vlanProvider = vlanProvider
         self.logger = logger
     }
 
-    /// Initialize the network manager and create default "bridge" network
-    /// NOTE: Assumes helper VM is already initialized and started by ArcaDaemon
+    /// Initialize the network manager and backends
     public func initialize() async throws {
-        logger.info("Initializing NetworkManager")
+        logger.info("Initializing NetworkManager", metadata: [
+            "backend": "\(config.networkBackend.rawValue)"
+        ])
 
-        // Helper VM should already be initialized and started by ArcaDaemon
-        // Verify it's ready to accept gRPC calls
-        guard await helperVM.getOVNClient() != nil else {
-            throw NetworkManagerError.helperVMNotReady
-        }
+        switch config.networkBackend {
+        case .ovs:
+            // Initialize OVS backend (requires helper VM)
+            guard let helperVM = helperVM,
+                  let ipamAllocator = ipamAllocator,
+                  let networkBridge = networkBridge else {
+                throw NetworkManagerError.helperVMNotReady
+            }
 
-        // Initialize VLAN provider with helper VM
-        try await vlanProvider.setHelperVM(helperVM)
-        logger.info("VLAN network provider initialized")
-
-        // Create default "bridge" network if it doesn't exist
-        if networksByName["bridge"] == nil {
-            logger.info("Creating default 'bridge' network")
-            let bridgeID = try await createNetwork(
-                name: "bridge",
-                driver: "bridge",
-                subnet: "172.17.0.0/16",
-                gateway: "172.17.0.1",
-                ipRange: nil,
-                options: [:],
-                labels: [:],
-                isDefault: true
+            let backend = OVSNetworkBackend(
+                helperVM: helperVM,
+                ipamAllocator: ipamAllocator,
+                networkBridge: networkBridge,
+                logger: logger
             )
-            logger.info("Created default bridge network", metadata: ["id": "\(bridgeID)"])
+            try await backend.initialize()
+            self.ovsBackend = backend
+
+            logger.info("OVS backend initialized")
+
+        case .vmnet:
+            // Initialize vmnet backend (no dependencies)
+            let backend = VmnetNetworkBackend(logger: logger)
+            self.vmnetBackend = backend
+
+            logger.info("vmnet backend initialized")
         }
 
         logger.info("NetworkManager initialized successfully")
@@ -121,7 +78,7 @@ public actor NetworkManager {
     /// Create a new network
     public func createNetwork(
         name: String,
-        driver: String,
+        driver: String?,
         subnet: String?,
         gateway: String?,
         ipRange: String?,
@@ -129,10 +86,16 @@ public actor NetworkManager {
         labels: [String: String],
         isDefault: Bool = false
     ) async throws -> String {
+        // Determine effective driver (explicit driver or default backend)
+        let effectiveDriver = driver ?? config.networkBackend.rawValue
+
+        // Generate network ID
+        let networkID = generateNetworkID()
+
         logger.info("Creating network", metadata: [
             "name": "\(name)",
-            "driver": "\(driver)",
-            "subnet": "\(subnet ?? "auto")"
+            "driver": "\(effectiveDriver)",
+            "network_id": "\(networkID)"
         ])
 
         // Validate network name
@@ -140,460 +103,294 @@ public actor NetworkManager {
             throw NetworkManagerError.invalidName("Network name cannot be empty")
         }
 
-        // Check for duplicate name
-        if networksByName[name] != nil {
-            throw NetworkManagerError.nameExists(name)
-        }
-
-        // Validate driver (support "bridge" and "overlay")
-        guard driver == "bridge" || driver == "overlay" else {
-            throw NetworkManagerError.unsupportedDriver(driver)
-        }
-
-        // Allocate subnet if not provided
-        let (finalSubnet, finalGateway): (String, String)
-        if let subnet = subnet {
-            // Use provided subnet/gateway
-            finalSubnet = subnet
-            if let gw = gateway {
-                finalGateway = gw
-            } else {
-                finalGateway = await ipamAllocator.calculateGateway(subnet: subnet)
-            }
-        } else {
-            // Auto-allocate subnet for custom networks
-            (finalSubnet, finalGateway) = try await ipamAllocator.allocateSubnet()
-        }
-
-        // Generate Docker network ID (64-char hex)
-        let networkID = generateNetworkID()
-
-        // Route to appropriate provider based on driver
-        if driver == "bridge" {
-            // Create VLAN network via VLANNetworkProvider
-            try await vlanProvider.createNetwork(
-                networkID: networkID,
-                networkName: name,
-                subnet: finalSubnet,
-                gateway: finalGateway
+        // Route to appropriate backend
+        switch effectiveDriver {
+        case "bridge":
+            // Use configured default backend for bridge networks
+            return try await createBridgeNetwork(
+                id: networkID,
+                name: name,
+                subnet: subnet,
+                gateway: gateway,
+                ipRange: ipRange,
+                options: options,
+                labels: labels,
+                isDefault: isDefault
             )
-            logger.debug("VLAN network created in helper VM", metadata: ["network": "\(name)"])
-        } else if driver == "overlay" {
-            // Create OVS bridge via OVN client
-            guard let ovnClient = await helperVM.getOVNClient() else {
+
+        case "vmnet":
+            // Explicitly requested vmnet driver
+            if vmnetBackend == nil {
+                // If vmnet backend not initialized, create it on-demand
+                let backend = VmnetNetworkBackend(logger: logger)
+                self.vmnetBackend = backend
+            }
+
+            let metadata = try await vmnetBackend!.createBridgeNetwork(
+                id: networkID,
+                name: name,
+                subnet: subnet,
+                gateway: gateway,
+                ipRange: ipRange,
+                options: options,
+                labels: labels
+            )
+            return metadata.id
+
+        case "overlay":
+            // Overlay networks always use OVS/OVN
+            guard let backend = ovsBackend else {
+                throw NetworkManagerError.unsupportedDriver("overlay (requires OVS backend)")
+            }
+
+            let metadata = try await backend.createOverlayNetwork(
+                id: networkID,
+                name: name,
+                subnet: subnet,
+                gateway: gateway,
+                ipRange: ipRange,
+                options: options,
+                labels: labels
+            )
+            return metadata.id
+
+        default:
+            throw NetworkManagerError.unsupportedDriver(effectiveDriver)
+        }
+    }
+
+    /// Create a bridge network using the configured default backend
+    private func createBridgeNetwork(
+        id: String,
+        name: String,
+        subnet: String?,
+        gateway: String?,
+        ipRange: String?,
+        options: [String: String],
+        labels: [String: String],
+        isDefault: Bool
+    ) async throws -> String {
+        switch config.networkBackend {
+        case .ovs:
+            guard let backend = ovsBackend else {
                 throw NetworkManagerError.helperVMNotReady
             }
 
-            let bridgeName = try await ovnClient.createBridge(
-                networkID: networkID,
-                subnet: finalSubnet,
-                gateway: finalGateway
+            let metadata = try await backend.createBridgeNetwork(
+                id: id,
+                name: name,
+                subnet: subnet,
+                gateway: gateway,
+                ipRange: ipRange,
+                options: options,
+                labels: labels,
+                isDefault: isDefault
             )
+            return metadata.id
 
-            logger.debug("OVS bridge created in helper VM", metadata: ["bridge": "\(bridgeName)"])
+        case .vmnet:
+            guard let backend = vmnetBackend else {
+                throw NetworkManagerError.helperVMNotReady
+            }
+
+            let metadata = try await backend.createBridgeNetwork(
+                id: id,
+                name: name,
+                subnet: subnet,
+                gateway: gateway,
+                ipRange: ipRange,
+                options: options,
+                labels: labels
+            )
+            return metadata.id
         }
-
-        // Store network metadata
-        let metadata = NetworkMetadata(
-            id: networkID,
-            name: name,
-            driver: driver,
-            subnet: finalSubnet,
-            gateway: finalGateway,
-            containers: [],
-            created: Date(),
-            options: options,
-            labels: labels,
-            isDefault: isDefault
-        )
-        networks[networkID] = metadata
-        networksByName[name] = networkID
-
-        logger.info("Network created successfully", metadata: [
-            "id": "\(networkID)",
-            "name": "\(name)",
-            "subnet": "\(finalSubnet)",
-            "gateway": "\(finalGateway)"
-        ])
-
-        return networkID
     }
 
     /// Delete a network
-    public func deleteNetwork(id: String, force: Bool = false) async throws {
-        logger.info("Deleting network", metadata: ["id": "\(id)", "force": "\(force)"])
-
-        // Resolve network ID (support short IDs and names)
-        let networkID = try resolveNetworkID(id)
-
-        guard let metadata = networks[networkID] else {
-            throw NetworkManagerError.networkNotFound(id)
+    public func deleteNetwork(id: String) async throws {
+        // Try both backends (network could be in either)
+        if let backend = ovsBackend, await backend.getNetwork(id: id) != nil {
+            try await backend.deleteNetwork(id: id)
+            return
         }
 
-        // Prevent deletion of default bridge network
-        if metadata.isDefault {
-            throw NetworkManagerError.cannotDeleteDefault
+        if let backend = vmnetBackend, await backend.getNetwork(id: id) != nil {
+            try await backend.deleteBridgeNetwork(id: id)
+            return
         }
 
-        // Check if containers are attached
-        if !metadata.containers.isEmpty && !force {
-            throw NetworkManagerError.hasActiveEndpoints(metadata.name, metadata.containers.count)
-        }
-
-        // Route to appropriate provider based on driver
-        if metadata.driver == "bridge" {
-            // Delete VLAN network via VLANNetworkProvider
-            try await vlanProvider.deleteNetwork(networkID: networkID)
-        } else if metadata.driver == "overlay" {
-            // Delete OVS bridge via OVN client
-            guard let ovnClient = await helperVM.getOVNClient() else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-            try await ovnClient.deleteBridge(networkID: networkID)
-        }
-
-        // Clean up metadata
-        networks.removeValue(forKey: networkID)
-        networksByName.removeValue(forKey: metadata.name)
-
-        // Clean up container mappings
-        for containerID in metadata.containers {
-            containerNetworks[containerID]?.remove(networkID)
-        }
-
-        logger.info("Network deleted successfully", metadata: ["id": "\(networkID)"])
+        throw NetworkManagerError.networkNotFound(id)
     }
 
-    /// List networks with optional filters
-    public func listNetworks(filters: [String: [String]] = [:]) async throws -> [NetworkMetadata] {
-        var result = Array(networks.values)
+    // MARK: - Container Attachment
 
-        // Apply filters
-        if let names = filters["name"], !names.isEmpty {
-            result = result.filter { names.contains($0.name) }
-        }
-        if let ids = filters["id"], !ids.isEmpty {
-            result = result.filter { id in ids.contains(where: { id.id.hasPrefix($0) }) }
-        }
-        if let drivers = filters["driver"], !drivers.isEmpty {
-            result = result.filter { drivers.contains($0.driver) }
-        }
-        if let types = filters["type"], !types.isEmpty {
-            // Support "builtin" (default networks) and "custom"
-            result = result.filter { network in
-                types.contains(network.isDefault ? "builtin" : "custom")
-            }
-        }
-
-        return result.sorted { $0.created < $1.created }
-    }
-
-    /// Inspect a specific network
-    public func inspectNetwork(id: String) async throws -> NetworkMetadata {
-        let networkID = try resolveNetworkID(id)
-        guard let metadata = networks[networkID] else {
-            throw NetworkManagerError.networkNotFound(id)
-        }
-        return metadata
-    }
-
-    // MARK: - Container Network Operations
-
-    /// Connect a container to a network
-    public func connectContainer(
+    /// Attach container to network
+    public func attachContainerToNetwork(
         containerID: String,
-        containerName: String,
+        container: Containerization.LinuxContainer,
         networkID: String,
-        ipv4Address: String?,
-        aliases: [String]
+        containerName: String,
+        aliases: [String] = []
     ) async throws -> NetworkAttachment {
-        logger.info("Connecting container to network", metadata: [
-            "container": "\(containerID)",
-            "network": "\(networkID)"
-        ])
-
-        let resolvedNetworkID = try resolveNetworkID(networkID)
-        guard var metadata = networks[resolvedNetworkID] else {
-            throw NetworkManagerError.networkNotFound(networkID)
-        }
-
-        // Check if already connected
-        if metadata.containers.contains(containerID) {
-            throw NetworkManagerError.alreadyConnected(containerID, metadata.name)
-        }
-
-        // Allocate IP address
-        let ip = try await ipamAllocator.allocateIP(
-            networkID: resolvedNetworkID,
-            subnet: metadata.subnet,
-            preferredIP: ipv4Address
-        )
-
-        // Generate MAC address
-        let mac = generateMACAddress()
-
-        // Determine device name (eth0, eth1, etc.)
-        let deviceIndex = deviceCounter[containerID] ?? 0
-        let device = "eth\(deviceIndex)"
-        deviceCounter[containerID] = deviceIndex + 1
-
-        // Get container's LinuxContainer reference for network attachment
-        guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
-            throw NetworkManagerError.containerNotFound(containerID)
-        }
-
-        // Route to appropriate provider based on driver
-        if metadata.driver == "bridge" {
-            // Attach via VLAN provider (no vsock port needed, uses VLANs directly)
-            try await vlanProvider.attachContainer(
-                container: container,
+        // Find which backend has this network
+        if let backend = ovsBackend, await backend.getNetwork(id: networkID) != nil {
+            return try await backend.attachContainer(
                 containerID: containerID,
-                networkID: resolvedNetworkID,
-                ipAddress: ip,
-                gateway: metadata.gateway,
-                device: device,
-                subnet: metadata.subnet
+                container: container,
+                networkID: networkID,
+                containerName: containerName,
+                aliases: aliases
             )
-
-            logger.info("VLAN interface created in container", metadata: [
-                "device": "\(device)",
-                "ip": "\(ip)"
-            ])
-        } else if metadata.driver == "overlay" {
-            // Allocate vsock port for TAP packet relay
-            let containerPort = try await networkBridge.allocateVsockPort()
-
-            do {
-                // Attach container to OVS bridge in helper VM
-                guard let ovnClient = await helperVM.getOVNClient() else {
-                    await networkBridge.releaseVsockPort(containerPort)
-                    throw NetworkManagerError.helperVMNotReady
-                }
-
-                let portName = try await ovnClient.attachContainer(
-                    containerID: containerID,
-                    networkID: resolvedNetworkID,
-                    ipAddress: ip,
-                    macAddress: mac,
-                    hostname: containerName,
-                    aliases: aliases,
-                    vsockPort: containerPort
-                )
-
-                logger.debug("Container attached to OVS bridge", metadata: [
-                    "port": "\(portName)",
-                    "ip": "\(ip)",
-                    "mac": "\(mac)",
-                    "vsockPort": "\(containerPort)"
-                ])
-
-                // Attach container to network via NetworkBridge (creates TAP device and starts relay)
-                try await networkBridge.attachContainerToNetwork(
-                    container: container,
-                    containerID: containerID,
-                    networkID: resolvedNetworkID,
-                    ipAddress: ip,
-                    gateway: metadata.gateway,
-                    device: device,
-                    containerPort: containerPort
-                )
-
-                logger.info("TAP device created and relay started", metadata: [
-                    "device": "\(device)",
-                    "ip": "\(ip)"
-                ])
-            } catch {
-                // Release port if anything fails
-                await networkBridge.releaseVsockPort(containerPort)
-                throw error
-            }
         }
 
-        // Update ContainerManager's network attachment tracking
-        try await containerManager.attachContainerToNetwork(
-            dockerID: containerID,
-            networkID: resolvedNetworkID,
-            ip: ip,
-            mac: mac,
-            aliases: aliases
-        )
-
-        // Track IP allocation
-        await ipamAllocator.trackAllocation(networkID: resolvedNetworkID, containerID: containerID, ip: ip)
-
-        // Update metadata
-        metadata.containers.insert(containerID)
-        networks[resolvedNetworkID] = metadata
-
-        // Track container's networks
-        if containerNetworks[containerID] == nil {
-            containerNetworks[containerID] = []
+        if let backend = vmnetBackend, await backend.getNetwork(id: networkID) != nil {
+            // vmnet backend doesn't support dynamic attach
+            try await backend.attachContainer(
+                containerID: containerID,
+                networkID: networkID,
+                ipAddress: "",  // Not used (will throw error)
+                gateway: ""     // Not used (will throw error)
+            )
+            // Should never reach here (attachContainer throws)
+            fatalError("vmnet backend should have thrown dynamicAttachNotSupported")
         }
-        containerNetworks[containerID]?.insert(resolvedNetworkID)
 
-        logger.info("Container connected to network", metadata: [
-            "container": "\(containerID)",
-            "network": "\(metadata.name)",
-            "ip": "\(ip)",
-            "mac": "\(mac)"
-        ])
-
-        return NetworkAttachment(
-            networkID: resolvedNetworkID,
-            ip: ip,
-            mac: mac,
-            aliases: aliases
-        )
+        throw NetworkManagerError.networkNotFound(networkID)
     }
 
-    /// Disconnect a container from a network
-    public func disconnectContainer(containerID: String, networkID: String, force: Bool = false) async throws {
-        logger.info("Disconnecting container from network", metadata: [
-            "container": "\(containerID)",
-            "network": "\(networkID)",
-            "force": "\(force)"
-        ])
-
-        let resolvedNetworkID = try resolveNetworkID(networkID)
-        guard var metadata = networks[resolvedNetworkID] else {
-            throw NetworkManagerError.networkNotFound(networkID)
+    /// Detach container from network
+    public func detachContainerFromNetwork(
+        containerID: String,
+        container: Containerization.LinuxContainer,
+        networkID: String
+    ) async throws {
+        // Find which backend has this network
+        if let backend = ovsBackend, await backend.getNetwork(id: networkID) != nil {
+            try await backend.detachContainer(
+                containerID: containerID,
+                container: container,
+                networkID: networkID
+            )
+            return
         }
 
-        // Check if connected
-        guard metadata.containers.contains(containerID) else {
-            throw NetworkManagerError.notConnected(containerID, metadata.name)
+        if let backend = vmnetBackend, await backend.getNetwork(id: networkID) != nil {
+            try await backend.detachContainer(containerID: containerID, networkID: networkID)
+            return
         }
 
-        // Route to appropriate provider based on driver
-        if metadata.driver == "bridge" {
-            // Detach via VLAN provider
-            if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
-                do {
-                    try await vlanProvider.detachContainer(
-                        container: container,
-                        containerID: containerID,
-                        networkID: resolvedNetworkID
-                    )
-                    logger.info("VLAN interface removed from container", metadata: [
-                        "containerID": "\(containerID)",
-                        "networkID": "\(resolvedNetworkID)"
-                    ])
-                } catch {
-                    logger.error("Failed to detach via VLANProvider", metadata: [
-                        "error": "\(error)"
-                    ])
-                    // Continue with cleanup even if VLAN detachment fails
-                }
-            } else {
-                logger.warning("Container not found for VLAN detachment", metadata: [
-                    "containerID": "\(containerID)"
-                ])
-                // Continue with cleanup even if container reference is not available
-            }
-        } else if metadata.driver == "overlay" {
-            // Detach from OVS bridge in helper VM
-            guard let ovnClient = await helperVM.getOVNClient() else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            try await ovnClient.detachContainer(containerID: containerID, networkID: resolvedNetworkID)
-
-            // Detach container from network via NetworkBridge (stops relay and removes TAP device)
-            if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
-                do {
-                    try await networkBridge.detachContainerFromNetwork(
-                        container: container,
-                        containerID: containerID,
-                        networkID: resolvedNetworkID
-                    )
-                    logger.info("TAP device removed and relay stopped", metadata: [
-                        "containerID": "\(containerID)",
-                        "networkID": "\(resolvedNetworkID)"
-                    ])
-                } catch {
-                    logger.error("Failed to detach via NetworkBridge", metadata: [
-                        "error": "\(error)"
-                    ])
-                    // Continue with cleanup even if NetworkBridge detachment fails
-                }
-            } else {
-                logger.warning("Container not found for NetworkBridge detachment", metadata: [
-                    "containerID": "\(containerID)"
-                ])
-                // Continue with cleanup even if container reference is not available
-            }
-        }
-
-        // Update ContainerManager's network attachment tracking
-        try await containerManager.detachContainerFromNetwork(
-            dockerID: containerID,
-            networkID: resolvedNetworkID
-        )
-
-        // Release IP address (tracked internally by IPAMAllocator)
-        await ipamAllocator.releaseIP(networkID: resolvedNetworkID, containerID: containerID)
-
-        // Update metadata
-        metadata.containers.remove(containerID)
-        networks[resolvedNetworkID] = metadata
-
-        // Update container mappings
-        containerNetworks[containerID]?.remove(resolvedNetworkID)
-
-        logger.info("Container disconnected from network", metadata: [
-            "container": "\(containerID)",
-            "network": "\(metadata.name)"
-        ])
+        throw NetworkManagerError.networkNotFound(networkID)
     }
 
-    /// Get all networks a container is connected to
-    public func getContainerNetworks(containerID: String) -> [String] {
-        return Array(containerNetworks[containerID] ?? [])
+    /// Get vmnet interface for container (vmnet backend only, called during container creation)
+    public func getVmnetInterfaceForContainer(containerID: String, networkID: String) async throws -> Any? {
+        guard let backend = vmnetBackend else {
+            return nil  // Not using vmnet backend
+        }
+
+        guard await backend.getNetwork(id: networkID) != nil else {
+            return nil  // Network not found in vmnet backend
+        }
+
+        return try await backend.getInterfaceForContainer(containerID: containerID, networkID: networkID)
+    }
+
+    // MARK: - Network Queries
+
+    /// Get network by ID
+    public func getNetwork(id: String) async -> NetworkMetadata? {
+        // Try OVS backend first
+        if let backend = ovsBackend, let network = await backend.getNetwork(id: id) {
+            return network
+        }
+
+        // Try vmnet backend
+        if let backend = vmnetBackend, let network = await backend.getNetwork(id: id) {
+            return network
+        }
+
+        return nil
+    }
+
+    /// Get network by name
+    public func getNetworkByName(name: String) async -> NetworkMetadata? {
+        // Try OVS backend first
+        if let backend = ovsBackend, let network = await backend.getNetworkByName(name: name) {
+            return network
+        }
+
+        // Try vmnet backend
+        if let backend = vmnetBackend, let network = await backend.getNetworkByName(name: name) {
+            return network
+        }
+
+        return nil
+    }
+
+    /// List all networks
+    public func listNetworks() async -> [NetworkMetadata] {
+        var networks: [NetworkMetadata] = []
+
+        if let backend = ovsBackend {
+            networks.append(contentsOf: await backend.listNetworks())
+        }
+
+        if let backend = vmnetBackend {
+            networks.append(contentsOf: await backend.listNetworks())
+        }
+
+        return networks
+    }
+
+    /// Get networks for a container
+    public func getContainerNetworks(containerID: String) async -> [NetworkMetadata] {
+        var networks: [NetworkMetadata] = []
+
+        if let backend = ovsBackend {
+            networks.append(contentsOf: await backend.getContainerNetworks(containerID: containerID))
+        }
+
+        if let backend = vmnetBackend {
+            // vmnet backend doesn't track container networks separately
+            // (containers are attached at creation time)
+        }
+
+        return networks
+    }
+
+    /// Resolve network ID from short ID or name
+    public func resolveNetworkID(_ idOrName: String) async -> String? {
+        // Try exact name match first
+        if let network = await getNetworkByName(name: idOrName) {
+            return network.id
+        }
+
+        // Try exact ID match
+        if let network = await getNetwork(id: idOrName) {
+            return network.id
+        }
+
+        // Try prefix match
+        let allNetworks = await listNetworks()
+        let matches = allNetworks.filter { $0.id.hasPrefix(idOrName) }
+
+        if matches.count == 1 {
+            return matches[0].id
+        } else if matches.count > 1 {
+            // Ambiguous - return nil
+            return nil
+        }
+
+        return nil
     }
 
     // MARK: - Helper Methods
 
-    /// Resolve network ID from full ID, short ID, or name
-    private func resolveNetworkID(_ idOrName: String) throws -> String {
-        // Try exact name match first
-        if let networkID = networksByName[idOrName] {
-            return networkID
-        }
-
-        // Try exact ID match
-        if networks[idOrName] != nil {
-            return idOrName
-        }
-
-        // Try short ID match (4+ hex chars)
-        if idOrName.count >= 4 && idOrName.allSatisfy(\.isHexDigit) {
-            let matches = networks.keys.filter { $0.hasPrefix(idOrName) }
-            if matches.count == 1 {
-                return matches.first!
-            } else if matches.count > 1 {
-                throw NetworkManagerError.ambiguousID(idOrName, matches.count)
-            }
-        }
-
-        throw NetworkManagerError.networkNotFound(idOrName)
-    }
-
-    /// Generate a Docker-style network ID (64-char hex)
+    /// Generate a Docker-compatible network ID (64-char hex)
     private func generateNetworkID() -> String {
-        // Generate UUID and convert to hex string, then duplicate to reach 64 chars
-        let uuid = UUID()
-        let hex = uuid.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        return hex + hex  // 32 chars * 2 = 64 chars
-    }
-
-    /// Generate a MAC address for a container NIC
-    /// Format: 02:XX:XX:XX:XX:XX (locally administered, unicast)
-    private func generateMACAddress() -> String {
-        var bytes: [UInt8] = [0x02]  // Locally administered, unicast
-        for _ in 0..<5 {
-            bytes.append(UInt8.random(in: 0...255))
-        }
-        return bytes.map { String(format: "%02x", $0) }.joined(separator: ":")
+        let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        // Duplicate to get 64 chars
+        return uuid + uuid
     }
 }
 
@@ -612,6 +409,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case ipAllocationFailed(String)
     case helperVMNotReady
     case containerNotFound(String)
+    case dynamicAttachNotSupported(backend: String, suggestion: String)
 
     public var description: String {
         switch self {
@@ -624,7 +422,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
         case .ambiguousID(let id, let count):
             return "multiple IDs found with prefix '\(id)': \(count) IDs matched"
         case .unsupportedDriver(let driver):
-            return "network driver \(driver) not supported (only 'bridge' is supported)"
+            return "network driver \(driver) not supported"
         case .hasActiveEndpoints(let name, let count):
             return "network \(name) has active endpoints (\(count) containers connected)"
         case .cannotDeleteDefault:
@@ -639,6 +437,8 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "Network helper VM is not ready or OVN client is not connected"
         case .containerNotFound(let id):
             return "Container not found: \(id)"
+        case .dynamicAttachNotSupported(let backend, let suggestion):
+            return "\(backend) backend does not support 'docker network connect' after container creation.\n\(suggestion)"
         }
     }
 }

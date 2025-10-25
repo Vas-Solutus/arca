@@ -37,6 +37,92 @@ type VLANInfo struct {
 	CreatedAt     time.Time
 }
 
+// getParentInterface finds the first real physical/virtual network interface to use as the parent for VLANs
+// Skips pseudo-interfaces like loopback, tunnels, bridges, traffic shaping queues
+func (s *RouterServer) getParentInterface() (netlink.Link, error) {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list network interfaces: %w", err)
+	}
+
+	log.Printf("Found %d network interfaces:", len(links))
+	for _, link := range links {
+		attrs := link.Attrs()
+		log.Printf("  - %s: type=%s, flags=%s, mtu=%d",
+			attrs.Name, link.Type(), attrs.Flags.String(), attrs.MTU)
+	}
+
+	// Pseudo-interface names to skip (traffic shaping, tunnels, etc.)
+	pseudoInterfaces := map[string]bool{
+		"teql0":      true, // Traffic shaping queue
+		"tunl0":      true, // IP-in-IP tunnel
+		"sit0":       true, // IPv6-in-IPv4 tunnel
+		"ip6tnl0":    true, // IPv6 tunnel
+		"gre0":       true, // GRE tunnel
+		"gretap0":    true, // GRE tap tunnel
+		"erspan0":    true, // ERSPAN tunnel
+		"ip_vti0":    true, // VTI tunnel
+		"ip6_vti0":   true, // IPv6 VTI tunnel
+		"ovs-netdev": true, // OVS internal port
+		"ovs-system": true, // OVS system device
+	}
+
+	// Pseudo-interface types to skip
+	pseudoTypes := map[string]bool{
+		"ipip":    true, // IP-in-IP tunnel
+		"sit":     true, // IPv6-in-IPv4 tunnel
+		"ip6tnl":  true, // IPv6 tunnel
+		"gre":     true, // GRE tunnel
+		"gretap":  true, // GRE tap tunnel
+		"erspan":  true, // ERSPAN tunnel
+		"vti":     true, // VTI tunnel
+		"tuntap":  true, // TAP/TUN (OVS creates these)
+	}
+
+	// Find first real interface (physical or vmnet virtual)
+	for _, link := range links {
+		attrs := link.Attrs()
+		linkType := link.Type()
+
+		// Skip loopback
+		if attrs.Flags&net.FlagLoopback != 0 {
+			log.Printf("Skipping loopback interface: %s", attrs.Name)
+			continue
+		}
+
+		// Skip VLAN interfaces (they contain a dot)
+		if strings.Contains(attrs.Name, ".") {
+			log.Printf("Skipping VLAN interface: %s", attrs.Name)
+			continue
+		}
+
+		// Skip bridge interfaces (OVS bridges, Linux bridges)
+		if strings.HasPrefix(attrs.Name, "br-") || attrs.Name == "br-int" || strings.HasPrefix(attrs.Name, "virbr") {
+			log.Printf("Skipping bridge interface: %s", attrs.Name)
+			continue
+		}
+
+		// Skip known pseudo-interfaces by name
+		if pseudoInterfaces[attrs.Name] {
+			log.Printf("Skipping pseudo-interface: %s (type=%s)", attrs.Name, linkType)
+			continue
+		}
+
+		// Skip known pseudo-interface types
+		if pseudoTypes[linkType] {
+			log.Printf("Skipping pseudo-interface type: %s (type=%s)", attrs.Name, linkType)
+			continue
+		}
+
+		// At this point, we should have a real interface (en0, eth0, ens0, etc.)
+		// These typically have type "device" or "veth" and are real network interfaces
+		log.Printf("Selected parent interface: %s (type=%s)", attrs.Name, linkType)
+		return link, nil
+	}
+
+	return nil, fmt.Errorf("no suitable parent interface found (need physical or vmnet interface, found only pseudo-interfaces)")
+}
+
 // CreateVLAN creates a VLAN interface on the helper VM
 func (s *RouterServer) CreateVLAN(ctx context.Context, req *pb.CreateVLANRequest) (*pb.CreateVLANResponse, error) {
 	log.Printf("CreateVLAN: vlanID=%d subnet=%s gateway=%s network=%s",
@@ -60,17 +146,18 @@ func (s *RouterServer) CreateVLAN(ctx context.Context, req *pb.CreateVLANRequest
 		s.deleteVLANLocked(req.VlanId)
 	}
 
-	// Get parent interface (eth0)
-	parent, err := netlink.LinkByName("eth0")
+	// Get parent interface (first non-loopback interface)
+	parent, err := s.getParentInterface()
 	if err != nil {
 		return &pb.CreateVLANResponse{
 			Success: false,
-			Error:   fmt.Sprintf("failed to find parent interface eth0: %v", err),
+			Error:   fmt.Sprintf("failed to find parent interface: %v", err),
 		}, nil
 	}
+	parentName := parent.Attrs().Name
 
-	// Create VLAN interface name (e.g., eth0.100)
-	vlanName := fmt.Sprintf("eth0.%d", req.VlanId)
+	// Create VLAN interface name (e.g., en0.100 or eth0.100)
+	vlanName := fmt.Sprintf("%s.%d", parentName, req.VlanId)
 
 	// Create VLAN subinterface
 	vlan := &netlink.Vlan{
@@ -147,6 +234,9 @@ func (s *RouterServer) CreateVLAN(ctx context.Context, req *pb.CreateVLANRequest
 
 	log.Printf("Brought up VLAN interface %s", vlanName)
 
+	// Log detailed network state for debugging
+	s.logNetworkState(vlanName)
+
 	// Configure NAT if enabled (default: true unless explicitly disabled)
 	enableNAT := true
 	if req.EnableNat {
@@ -195,7 +285,24 @@ func (s *RouterServer) DeleteVLAN(ctx context.Context, req *pb.DeleteVLANRequest
 
 // deleteVLANLocked deletes a VLAN (must hold lock)
 func (s *RouterServer) deleteVLANLocked(vlanID uint32) error {
-	vlanName := fmt.Sprintf("eth0.%d", vlanID)
+	// Get parent interface to construct VLAN name
+	parent, err := s.getParentInterface()
+	if err != nil {
+		log.Printf("Warning: failed to get parent interface for VLAN deletion: %v", err)
+		// Try common names as fallback
+		for _, name := range []string{"en0", "eth0", "ens0"} {
+			vlanName := fmt.Sprintf("%s.%d", name, vlanID)
+			if link, err := netlink.LinkByName(vlanName); err == nil {
+				parent = link
+				break
+			}
+		}
+		if parent == nil {
+			return fmt.Errorf("failed to find VLAN interface for deletion: %w", err)
+		}
+	}
+	parentName := parent.Attrs().Name
+	vlanName := fmt.Sprintf("%s.%d", parentName, vlanID)
 
 	// Get VLAN info
 	vlanInfo, exists := s.vlans[vlanID]
@@ -593,6 +700,105 @@ func (s *RouterServer) GetHealth(ctx context.Context, req *pb.HealthRequest) (*p
 		ActiveVlans:   uint32(len(s.vlans)),
 		UptimeSeconds: uptime,
 	}, nil
+}
+
+// logNetworkState logs detailed network configuration for debugging
+func (s *RouterServer) logNetworkState(vlanName string) {
+	log.Printf("=== Network State Dump ===")
+
+	// Get all interfaces
+	links, err := netlink.LinkList()
+	if err != nil {
+		log.Printf("ERROR: Failed to list interfaces: %v", err)
+		return
+	}
+
+	// Log interface information
+	log.Printf("Active network interfaces:")
+	for _, link := range links {
+		attrs := link.Attrs()
+		log.Printf("  Interface: %s", attrs.Name)
+		log.Printf("    Type: %s", link.Type())
+		log.Printf("    Flags: %s", attrs.Flags.String())
+		log.Printf("    MTU: %d", attrs.MTU)
+		log.Printf("    MAC: %s", attrs.HardwareAddr.String())
+
+		// Get addresses
+		addrs, err := netlink.AddrList(link, 0) // 0 = all address families
+		if err != nil {
+			log.Printf("    ERROR getting addresses: %v", err)
+			continue
+		}
+		if len(addrs) > 0 {
+			log.Printf("    IP Addresses:")
+			for _, addr := range addrs {
+				log.Printf("      - %s", addr.IPNet.String())
+			}
+		}
+
+		// Get routes for this interface
+		routes, err := netlink.RouteList(link, 0) // 0 = all address families
+		if err != nil {
+			log.Printf("    ERROR getting routes: %v", err)
+		} else if len(routes) > 0 {
+			log.Printf("    Routes:")
+			for _, route := range routes {
+				dst := "default"
+				if route.Dst != nil {
+					dst = route.Dst.String()
+				}
+				gw := "direct"
+				if route.Gw != nil {
+					gw = route.Gw.String()
+				}
+				log.Printf("      - dst=%s gw=%s", dst, gw)
+			}
+		}
+	}
+
+	// Log all routes in system
+	allRoutes, err := netlink.RouteList(nil, 0) // 0 = all address families
+	if err != nil {
+		log.Printf("ERROR: Failed to list routes: %v", err)
+	} else {
+		log.Printf("System routing table:")
+		for _, route := range allRoutes {
+			dst := "default"
+			if route.Dst != nil {
+				dst = route.Dst.String()
+			}
+			gw := "direct"
+			if route.Gw != nil {
+				gw = route.Gw.String()
+			}
+
+			// Get interface name
+			ifName := "unknown"
+			if link, err := netlink.LinkByIndex(route.LinkIndex); err == nil {
+				ifName = link.Attrs().Name
+			}
+
+			log.Printf("  - dst=%s gw=%s dev=%s", dst, gw, ifName)
+		}
+	}
+
+	// Log iptables NAT rules
+	cmd := exec.Command("iptables", "-t", "nat", "-L", "-n", "-v")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("ERROR: Failed to get iptables NAT rules: %v", err)
+	} else {
+		log.Printf("iptables NAT rules:\n%s", string(output))
+	}
+
+	// Log IP forwarding status
+	cmd = exec.Command("sysctl", "net.ipv4.ip_forward")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("ERROR: Failed to get IP forwarding status: %v", err)
+	} else {
+		log.Printf("IP forwarding: %s", strings.TrimSpace(string(output)))
+	}
+
+	log.Printf("=== End Network State Dump ===")
 }
 
 // NewRouterServer creates a new router server instance

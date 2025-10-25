@@ -173,11 +173,34 @@ Arca uses a JSON configuration file with the following structure:
 {
   "kernelPath": "~/.arca/vmlinux",
   "socketPath": "/var/run/arca.sock",
-  "logLevel": "info"
+  "logLevel": "info",
+  "networkBackend": "ovs"
 }
 ```
 
+**Configuration options**:
+- `kernelPath`: Path to custom Linux kernel (required for helper VM)
+- `socketPath`: Docker API socket path (default: `/var/run/arca.sock`)
+- `logLevel`: Logging verbosity (debug, info, warning, error)
+- `networkBackend`: Network backend to use (default: `ovs`)
+  - **`ovs`** - Full Docker compatibility via OVS/OVN helper VM (default)
+    - ✅ Dynamic network attach/detach (`docker network connect/disconnect`)
+    - ✅ Multi-network containers (eth0, eth1, eth2...)
+    - ✅ Port mapping (`-p` flag)
+    - ✅ DNS resolution by container name
+    - ✅ Network isolation
+    - ⚠️ ~4-7ms latency (4 vsock hops + OVS switching)
+  - **`vmnet`** - High-performance native Apple networking
+    - ✅ ~0.5ms latency (10x faster than OVS)
+    - ✅ Simple architecture (no helper VM)
+    - ❌ Must specify `--network` at `docker run` time (no dynamic attach)
+    - ❌ Single network per container only
+    - ❌ No port mapping
+    - ❌ No overlay networks
+
 **Kernel setup**: The `vmlinux` kernel must exist at the configured path. Without it, Arca will fail to start with `ConfigError.kernelNotFound`.
+
+**Network backend selection**: See `Documentation/NETWORK_ARCHITECTURE.md` for detailed comparison and migration guide between OVS and vmnet backends.
 
 ## Architecture
 
@@ -204,9 +227,15 @@ The project is organized into four Swift Package Manager targets:
 4. **ContainerBridge** - Apple Containerization API wrapper
    - `ContainerManager.swift` - Container lifecycle management
    - `ImageManager.swift` - OCI image operations
-   - `ExecManager.swift` - Exec instance management (Phase 2)
-   - `NetworkHelperVM.swift` - Helper VM lifecycle for OVN/OVS networking (Phase 3)
-   - `OVNClient.swift` - gRPC client for network control API (Phase 3)
+   - `ExecManager.swift` - Exec instance management
+   - **Networking (Dual Backend)**:
+     - `NetworkManager.swift` - Facade routing to backend implementations
+     - `OVSNetworkBackend.swift` - Full Docker compatibility via OVS/OVN (default)
+     - `VmnetNetworkBackend.swift` - High-performance native vmnet
+     - `NetworkHelperVM.swift` - Helper VM lifecycle for OVS backend
+     - `OVNClient.swift` - gRPC client for OVS network control API
+     - `NetworkBridge.swift` - vsock packet relay for TAP-over-vsock
+     - `IPAMAllocator.swift` - IP address management
    - `StreamingWriter.swift` - Streaming output for attach/exec
    - `Config.swift` - Configuration management
    - `Types.swift`, `ImageTypes.swift` - Bridging types
@@ -312,7 +341,7 @@ Arca uses **two different networking implementations** based on Docker network d
 
 ## Implementation Status
 
-**Current State**: Phase 3.5.5 Starting - VLAN + Router for Bridge Networks
+**Current State**: Phase 3 Complete - Dual-Backend Networking (OVS + vmnet)
 
 The codebase contains:
 - ✅ Full SwiftNIO-based Unix socket server
@@ -322,12 +351,22 @@ The codebase contains:
 - ✅ Container lifecycle (create, start, stop, list, inspect, remove, logs, wait, attach, exec)
 - ✅ Image operations (list, inspect, pull, remove, tag)
 - ✅ Real-time streaming progress for image pulls
-- ✅ Exec API (Phase 2) - Complete with attach support
-- ✅ Helper VM infrastructure (Phase 3.1) - NetworkHelperVM, OVNClient, gRPC API
-- ✅ Network API (Phase 3.2-3.5) - NetworkManager with OVS-based bridge networks
-- ✅ Volume API (Phase 3.3) - Basic volume operations
-- ✅ vminitd fork as submodule - Ready for extensions
-- 🚧 VLAN + Router for bridge networks (Phase 3.5.5) - Architecture documented, implementation starting
+- ✅ Exec API - Complete with attach support
+- ✅ **Networking (Phase 3) - Dual Backend Complete**:
+  - OVS Backend (default): Full Docker compatibility via TAP-over-vsock + OVS helper VM
+    - Dynamic network attach/detach
+    - Multi-network containers
+    - DNS resolution by container name
+    - Network isolation
+  - vmnet Backend (optional): High-performance native Apple networking
+    - 10x lower latency than OVS
+    - Limited features (no dynamic attach, single network only)
+  - NetworkManager facade pattern routing to backends
+  - Helper VM with OVS/OVN + dnsmasq
+  - TAP-over-vsock packet relay
+  - IPAM for IP address allocation
+- ✅ Volume API - Basic volume operations
+- ✅ vminitd fork as submodule with Arca networking extensions
 - 🚧 Build API (Phase 4)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.

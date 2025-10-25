@@ -38,6 +38,9 @@ public actor ContainerManager {
     // Optional NetworkManager reference for auto-attachment to networks
     private var networkManager: NetworkManager?
 
+    // Shared vmnet network for Layer 2 connectivity (VLAN networking)
+    private var sharedNetwork: SharedVmnetNetwork?
+
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
         let image: Containerization.Image
@@ -67,11 +70,12 @@ public actor ContainerManager {
         }
     }
 
-    public init(imageManager: ImageManager, kernelPath: String, logger: Logger) {
+    public init(imageManager: ImageManager, kernelPath: String, logger: Logger, sharedNetwork: SharedVmnetNetwork? = nil) {
         self.imageManager = imageManager
         self.kernelPath = kernelPath
         self.logger = logger
         self.logManager = ContainerLogManager(logger: logger)
+        self.sharedNetwork = sharedNetwork
     }
 
     /// Set the NetworkManager (called after NetworkManager is initialized)
@@ -103,10 +107,11 @@ public actor ContainerManager {
         ])
 
         // Initialize the native container manager with kernel and initfs
-        // This will pull the vminit image if not already present
+        // Note: Custom vminit is loaded centrally in ArcaDaemon before any ContainerManagers are created
+        // The custom vminit is tagged as "arca-vminit:latest"
         nativeManager = try await Containerization.ContainerManager(
             kernel: kernel,
-            initfsReference: "vminit:latest"
+            initfsReference: "arca-vminit:latest"  // Custom vminit loaded and tagged by ArcaDaemon
         )
 
         logger.info("ContainerManager initialized successfully")
@@ -294,6 +299,10 @@ public actor ContainerManager {
                 "hostname": "\(containerName)"
             ])
 
+            // Capture values for the configuration closure to avoid actor isolation issues
+            let network = self.sharedNetwork
+            let configLogger = self.logger
+
             let container = try await manager.create(
                 dockerID,
                 image: containerImage,
@@ -318,6 +327,38 @@ public actor ContainerManager {
 
                 // Set hostname (OCI spec field)
                 config.hostname = containerName
+
+                // Network interface configuration depends on backend:
+                // - vmnet backend: Attach shared vmnet interface at creation time
+                // - OVS backend: No interface at creation - TAP devices added dynamically via arca-tap-forwarder
+                if let net = network {
+                    // vmnet backend: Create interface from shared network
+                    if let sharedInterface = try? net.createInterface(dockerID) {
+                        config.interfaces = [sharedInterface]
+                        configLogger.debug("Container using shared vmnet", metadata: [
+                            "container_id": "\(dockerID)",
+                            "ip": "\(sharedInterface.address)"
+                        ])
+                    } else {
+                        // Fallback to NAT if allocation fails
+                        let natInterface = NATInterface(
+                            address: "192.168.64.10/24",
+                            gateway: "192.168.64.1",
+                            macAddress: nil
+                        )
+                        config.interfaces = [natInterface]
+                        configLogger.warning("Failed to allocate shared vmnet IP, using NAT fallback", metadata: [
+                            "container_id": "\(dockerID)"
+                        ])
+                    }
+                } else {
+                    // OVS backend: No interface at creation time
+                    // TAP devices will be created dynamically by arca-tap-forwarder after container starts
+                    config.interfaces = []
+                    configLogger.debug("Using OVS backend - no interface at creation", metadata: [
+                        "container_id": "\(dockerID)"
+                    ])
+                }
 
                 // Inject arca-tap-forwarder binary via bind mount for networking
                 // Mount the entire ~/.arca/bin directory to /.arca/bin in the container
@@ -648,17 +689,27 @@ public actor ContainerManager {
                 ])
 
                 do {
+                    // Resolve network name/ID to actual network ID
+                    guard let resolvedNetworkID = await networkManager.resolveNetworkID(targetNetwork) else {
+                        logger.warning("Failed to resolve network", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(targetNetwork)"
+                        ])
+                        return  // Skip network attachment if network doesn't exist
+                    }
+
                     let containerName = info.name ?? String(dockerID.prefix(12))
-                    _ = try await networkManager.connectContainer(
+                    _ = try await networkManager.attachContainerToNetwork(
                         containerID: dockerID,
+                        container: nativeContainer,
+                        networkID: resolvedNetworkID,
                         containerName: containerName,
-                        networkID: targetNetwork,
-                        ipv4Address: nil,
                         aliases: []
                     )
                     logger.info("Container auto-attached to network successfully", metadata: [
                         "container": "\(dockerID)",
-                        "network": "\(targetNetwork)"
+                        "network": "\(targetNetwork)",
+                        "resolved_id": "\(resolvedNetworkID)"
                     ])
                 } catch {
                     // Log the error but don't fail the container start

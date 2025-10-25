@@ -17,6 +17,7 @@ public actor NetworkHelperVM {
     private var isShuttingDown = false
     private var ovnClient: OVNClient?
     private var monitorTask: Task<Void, Never>?
+    private let sharedNetwork: SharedVmnetNetwork?
 
     // Container configuration
     private let helperImageReference = "arca-network-helper:latest"
@@ -55,15 +56,17 @@ public actor NetworkHelperVM {
         }
     }
 
-    public init(imageManager: ImageManager, kernelPath: String, logger: Logger? = nil) {
+    public init(imageManager: ImageManager, kernelPath: String, logger: Logger? = nil, sharedNetwork: SharedVmnetNetwork? = nil) {
         self.imageManager = imageManager
         self.kernelPath = kernelPath
         self.logger = logger ?? Logger(label: "arca.network.helpervm")
+        self.sharedNetwork = sharedNetwork
 
         logger?.info("NetworkHelperVM initialized", metadata: [
             "imageReference": "\(helperImageReference)",
             "kernelPath": "\(kernelPath)",
-            "vsockPort": "\(vsockPort)"
+            "vsockPort": "\(vsockPort)",
+            "sharedNetwork": "\(sharedNetwork != nil ? "enabled" : "disabled")"
         ])
     }
 
@@ -84,9 +87,11 @@ public actor NetworkHelperVM {
         )
 
         // Initialize the container manager for helper VM
+        // Note: Custom vminit is loaded centrally in ArcaDaemon before NetworkHelperVM is created
+        // The custom vminit is tagged as "arca-vminit:latest"
         containerManager = try await Containerization.ContainerManager(
             kernel: kernel,
-            initfsReference: "vminit:latest"
+            initfsReference: "arca-vminit:latest"  // Custom vminit loaded and tagged by ArcaDaemon
         )
 
         logger.info("NetworkHelperVM ContainerManager initialized successfully")
@@ -133,6 +138,12 @@ public actor NetworkHelperVM {
 
         // Create the helper container
         logger.debug("Creating helper container...")
+
+        // Capture values needed in the configuration closure to avoid actor isolation issues
+        let network = self.sharedNetwork
+        let containerID = self.helperContainerID
+        let configLogger = self.logger
+
         let newContainer: Containerization.LinuxContainer
         do {
             newContainer = try await manager.create(
@@ -143,6 +154,32 @@ public actor NetworkHelperVM {
                 // Configure helper VM
                 config.process.arguments = ["/usr/local/bin/startup.sh"]
                 config.hostname = "arca-network-helper"
+
+                // CRITICAL: Attach shared vmnet interface to the helper VM
+                // This provides Layer 2 connectivity with all containers for VLAN networking
+                // All VMs on this network can see each other's VLAN-tagged packets
+                if let net = network {
+                    // Create interface from shared network (allocates IP automatically)
+                    guard let sharedInterface = try net.createInterface(containerID) else {
+                        throw NetworkHelperVMError.containerCreationFailed("Failed to allocate IP from shared network")
+                    }
+                    config.interfaces = [sharedInterface]
+
+                    configLogger.info("Helper VM using shared vmnet", metadata: [
+                        "ip": "\(sharedInterface.address)",
+                        "gateway": "\(sharedInterface.gateway ?? "none")"
+                    ])
+                } else {
+                    // Fallback to NAT if shared network not available
+                    let natInterface = NATInterface(
+                        address: "192.168.64.2/24",
+                        gateway: "192.168.64.1",
+                        macAddress: nil
+                    )
+                    config.interfaces = [natInterface]
+
+                    configLogger.warning("Helper VM using NAT interface (VLAN networking will not work)")
+                }
 
                 // Configure stdio to capture output for debugging
                 let logDir = FileManager.default.homeDirectoryForCurrentUser
@@ -159,8 +196,9 @@ public actor NetworkHelperVM {
                 config.process.stderr = stderrWriter
             }
             self.container = newContainer
-            logger.info("Helper VM container created successfully", metadata: [
-                "containerID": "\(helperContainerID)"
+            logger.info("Helper VM container created successfully with NAT interface", metadata: [
+                "containerID": "\(helperContainerID)",
+                "interface": "192.168.64.2/24"
             ])
         } catch {
             logger.error("Failed to create helper container: \(error)")

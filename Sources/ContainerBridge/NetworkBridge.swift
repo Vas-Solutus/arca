@@ -70,11 +70,16 @@ public actor NetworkBridge {
 
         logger.info("Launching arca-tap-forwarder daemon", metadata: ["containerID": "\(containerID)"])
 
+        // Create log writer for forwarder output
+        let logWriter = try ForwarderLogWriter(logger: logger, containerID: containerID)
+
         // Create process configuration for arca-tap-forwarder
         // The binary is bind-mounted at /.arca/bin/arca-tap-forwarder by ContainerManager
         var processConfig = LinuxProcessConfiguration()
         processConfig.arguments = ["/.arca/bin/arca-tap-forwarder"]
         processConfig.terminal = false
+        processConfig.stdout = logWriter
+        processConfig.stderr = logWriter
 
         let execID = "arca-tap-forwarder-\(containerID)"
         let process = try await container.exec(execID, configuration: processConfig)
@@ -294,9 +299,14 @@ public actor NetworkBridge {
             let containerConnection = try await container.dialVsock(port: containerPort)
             relayLogger.info("Container connected")
 
-            // Dial helper VM
+            // Dial helper VM with retry logic (listener needs time to start)
             relayLogger.debug("Dialing helper VM", metadata: ["port": "\(helperPort)"])
-            let helperConnection = try await helperVMContainer.dialVsock(port: helperPort)
+            let helperConnection = try await dialWithRetry(
+                container: helperVMContainer,
+                port: helperPort,
+                maxAttempts: 10,
+                logger: relayLogger
+            )
             relayLogger.info("Helper VM connected")
 
             // Run bidirectional relay using detached tasks for true independence
@@ -626,10 +636,89 @@ public actor NetworkBridge {
         ])
     }
 
+    // MARK: - Helper Methods
+
+    /// Dial vsock with exponential backoff retry
+    private func dialWithRetry(
+        container: LinuxContainer,
+        port: UInt32,
+        maxAttempts: Int,
+        logger: Logger
+    ) async throws -> FileHandle {
+        var attempt = 0
+        var lastError: Error?
+
+        while attempt < maxAttempts {
+            attempt += 1
+
+            do {
+                let handle = try await container.dialVsock(port: port)
+                logger.debug("Successfully connected to vsock port \(port) on attempt \(attempt)")
+                return handle
+            } catch {
+                lastError = error
+                logger.debug("Connection attempt \(attempt) failed: \(error)")
+
+                if attempt < maxAttempts {
+                    // Exponential backoff: 50ms, 100ms, 200ms, 400ms...
+                    let delayMs = min(50 * (1 << (attempt - 1)), 3000)
+                    logger.debug("Retrying in \(delayMs)ms...")
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+                }
+            }
+        }
+
+        throw lastError ?? BridgeError.relayFailed("Failed to connect after \(maxAttempts) attempts")
+    }
+
     // MARK: - Statistics
 
     /// Get count of active network attachments
     public func activeAttachmentCount() -> Int {
         return attachments.values.reduce(0) { $0 + $1.count }
+    }
+}
+
+// MARK: - ForwarderLogWriter
+
+/// Writer that logs arca-tap-forwarder output to a file in ~/.arca/logs/
+private final class ForwarderLogWriter: Writer, @unchecked Sendable {
+    private let fileHandle: FileHandle
+    private let logger: Logger
+    private let containerID: String
+
+    init(logger: Logger, containerID: String) throws {
+        self.logger = logger
+        self.containerID = containerID
+
+        // Create log directory if needed
+        let logsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".arca/logs")
+        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+
+        // Create log file for this forwarder
+        let logFile = logsDir.appendingPathComponent("tap-forwarder-\(containerID).log")
+
+        // Create or truncate the file
+        FileManager.default.createFile(atPath: logFile.path, contents: nil)
+
+        guard let handle = FileHandle(forWritingAtPath: logFile.path) else {
+            logger.error("Failed to open forwarder log file", metadata: ["path": "\(logFile.path)"])
+            throw NSError(domain: "NetworkBridge", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not create forwarder log file"])
+        }
+
+        self.fileHandle = handle
+        logger.debug("Created forwarder log file", metadata: [
+            "path": "\(logFile.path)",
+            "container": "\(containerID)"
+        ])
+    }
+
+    func write(_ data: Data) throws {
+        try fileHandle.write(contentsOf: data)
+    }
+
+    func close() throws {
+        try fileHandle.close()
     }
 }

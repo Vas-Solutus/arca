@@ -101,37 +101,55 @@ fi
 echo "  ✓ vminitd built: $VMINITD_BINARY"
 echo "  ✓ vmexec built: $VMEXEC_BINARY"
 
-# Create OCI image layout
+# Create vminit rootfs using cctl (includes Swift runtime and all dependencies)
 echo ""
-echo "→ Creating OCI image layout..."
+echo "→ Creating vminit rootfs with cctl..."
 
-OCI_DIR="$HOME/.arca/vminit"
-ROOTFS_DIR="$OCI_DIR/rootfs"
+# Path to cctl binary
+CCTL_BINARY="$VMINITD_DIR/bin/cctl"
 
-# Clean and recreate directories
-rm -rf "$OCI_DIR"
-mkdir -p "$ROOTFS_DIR/sbin"
-mkdir -p "$ROOTFS_DIR/usr/local/bin"
+if [ ! -f "$CCTL_BINARY" ]; then
+    echo "ERROR: cctl binary not found at $CCTL_BINARY"
+    echo "Please build containerization first: cd containerization && make"
+    exit 1
+fi
 
-# Copy binaries to rootfs
-echo "  Copying vminitd → /sbin/vminitd"
-cp "$VMINITD_BINARY" "$ROOTFS_DIR/sbin/vminitd"
-chmod +x "$ROOTFS_DIR/sbin/vminitd"
+# Output directory
+VMINIT_DIR="$HOME/.arca/vminit"
+rm -rf "$VMINIT_DIR"
+mkdir -p "$VMINIT_DIR"
 
-echo "  Copying vmexec → /sbin/vmexec"
-cp "$VMEXEC_BINARY" "$ROOTFS_DIR/sbin/vmexec"
-chmod +x "$ROOTFS_DIR/sbin/vmexec"
+# Create rootfs tarball with cctl, adding our custom binaries
+ROOTFS_TAR="$VMINIT_DIR/vminit-rootfs.tar"
+OCI_DIR="$VMINIT_DIR/oci"
 
-echo "  Copying vlan-service → /usr/local/bin/vlan-service"
-cp "$VMINITD_DIR/vminitd/extensions/vlan-service/vlan-service" "$ROOTFS_DIR/usr/local/bin/vlan-service"
-chmod +x "$ROOTFS_DIR/usr/local/bin/vlan-service"
+echo "  Using cctl to create rootfs with Swift runtime..."
+"$CCTL_BINARY" rootfs create \
+    --vminitd "$VMINITD_BINARY" \
+    --vmexec "$VMEXEC_BINARY" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/vlan-service/vlan-service:/sbin/vlan-service" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/tap-forwarder/arca-tap-forwarder:/sbin/arca-tap-forwarder" \
+    --image arca-vminit:latest \
+    --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
+    "$ROOTFS_TAR"
 
-echo "  Copying arca-tap-forwarder → /usr/local/bin/arca-tap-forwarder"
-cp "$VMINITD_DIR/vminitd/extensions/tap-forwarder/arca-tap-forwarder" "$ROOTFS_DIR/usr/local/bin/arca-tap-forwarder"
-chmod +x "$ROOTFS_DIR/usr/local/bin/arca-tap-forwarder"
+if [ ! -f "$ROOTFS_TAR" ]; then
+    echo "ERROR: cctl failed to create rootfs tarball"
+    exit 1
+fi
 
-# Create OCI image manifest
-echo "  Creating OCI manifest..."
+echo "  ✓ Rootfs tarball created: $(du -h "$ROOTFS_TAR" | awk '{print $1}')"
+
+# Convert tarball to OCI image layout for loading into ImageStore
+echo "  Converting rootfs to OCI image layout..."
+
+# Extract tarball to temp directory
+TEMP_ROOTFS="$VMINIT_DIR/temp_rootfs"
+mkdir -p "$TEMP_ROOTFS"
+tar -xf "$ROOTFS_TAR" -C "$TEMP_ROOTFS"
+
+# Create OCI layout structure
+mkdir -p "$OCI_DIR/blobs/sha256"
 
 cat > "$OCI_DIR/oci-layout" <<EOF
 {
@@ -139,20 +157,12 @@ cat > "$OCI_DIR/oci-layout" <<EOF
 }
 EOF
 
-mkdir -p "$OCI_DIR/blobs/sha256"
-
-# Create layer tarball
-echo "  Creating layer tarball..."
-LAYER_TAR="$OCI_DIR/layer.tar"
-tar -C "$ROOTFS_DIR" -cf "$LAYER_TAR" .
-
-# Calculate layer digest
+# Create layer from extracted rootfs
+LAYER_TAR="$VMINIT_DIR/layer.tar"
+tar -C "$TEMP_ROOTFS" -cf "$LAYER_TAR" .
 LAYER_DIGEST=$(shasum -a 256 "$LAYER_TAR" | awk '{print $1}')
 LAYER_SIZE=$(stat -f%z "$LAYER_TAR")
 mv "$LAYER_TAR" "$OCI_DIR/blobs/sha256/$LAYER_DIGEST"
-
-echo "  Layer digest: sha256:$LAYER_DIGEST"
-echo "  Layer size: $LAYER_SIZE bytes"
 
 # Create config
 CONFIG_JSON=$(cat <<EOF
@@ -170,13 +180,11 @@ CONFIG_JSON=$(cat <<EOF
 EOF
 )
 
-CONFIG_FILE="$OCI_DIR/config.json"
+CONFIG_FILE="$VMINIT_DIR/config.json"
 echo "$CONFIG_JSON" > "$CONFIG_FILE"
 CONFIG_DIGEST=$(shasum -a 256 "$CONFIG_FILE" | awk '{print $1}')
 CONFIG_SIZE=$(stat -f%z "$CONFIG_FILE")
 mv "$CONFIG_FILE" "$OCI_DIR/blobs/sha256/$CONFIG_DIGEST"
-
-echo "  Config digest: sha256:$CONFIG_DIGEST"
 
 # Create manifest
 MANIFEST_JSON=$(cat <<EOF
@@ -199,14 +207,12 @@ MANIFEST_JSON=$(cat <<EOF
 EOF
 )
 
-MANIFEST_FILE="$OCI_DIR/manifest.json"
+MANIFEST_FILE="$VMINIT_DIR/manifest.json"
 echo "$MANIFEST_JSON" > "$MANIFEST_FILE"
 MANIFEST_DIGEST=$(shasum -a 256 "$MANIFEST_FILE" | awk '{print $1}')
 mv "$MANIFEST_FILE" "$OCI_DIR/blobs/sha256/$MANIFEST_DIGEST"
 
-echo "  Manifest digest: sha256:$MANIFEST_DIGEST"
-
-# Create index pointing to manifest with "latest" tag
+# Create index with "arca-vminit:latest" tag
 INDEX_JSON=$(cat <<EOF
 {
   "schemaVersion": 2,
@@ -217,7 +223,7 @@ INDEX_JSON=$(cat <<EOF
       "digest": "sha256:$MANIFEST_DIGEST",
       "size": $(stat -f%z "$OCI_DIR/blobs/sha256/$MANIFEST_DIGEST"),
       "annotations": {
-        "org.opencontainers.image.ref.name": "latest"
+        "org.opencontainers.image.ref.name": "arca-vminit:latest"
       }
     }
   ]
@@ -227,21 +233,27 @@ EOF
 
 echo "$INDEX_JSON" > "$OCI_DIR/index.json"
 
-# Clean up rootfs (no longer needed)
-rm -rf "$ROOTFS_DIR"
+# Clean up temp files
+rm -rf "$TEMP_ROOTFS" "$ROOTFS_TAR"
+
+# Move OCI layout contents to vminit directory root
+# OCI layout is currently at $VMINIT_DIR/oci/, we want it at $VMINIT_DIR/
+mv "$OCI_DIR"/* "$VMINIT_DIR/"
+rmdir "$OCI_DIR"
 
 echo ""
 echo "========================================"
-echo "✓ vminit:latest built successfully"
+echo "✓ arca-vminit:latest built successfully"
 echo "========================================"
 echo ""
-echo "OCI image location: $OCI_DIR"
+echo "OCI image location: $VMINIT_DIR"
 echo ""
 echo "Contents:"
-echo "  /sbin/vminitd              - Init system (PID 1)"
-echo "  /sbin/vmexec               - Exec helper"
-echo "  /usr/local/bin/vlan-service       - VLAN configuration (vsock:50051)"
-echo "  /usr/local/bin/arca-tap-forwarder - TAP forwarder (legacy)"
+echo "  /sbin/vminitd         - Init system (PID 1)"
+echo "  /sbin/vmexec          - Exec helper"
+echo "  /sbin/vlan-service    - VLAN configuration service (vsock:50051)"
+echo "  /sbin/arca-tap-forwarder - TAP forwarder (Phase 3.4)"
+echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
-echo "This image will be used automatically by all containers."
+echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."
 echo "Restart Arca daemon to pick up the new vminit image."
