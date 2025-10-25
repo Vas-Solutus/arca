@@ -1634,6 +1634,221 @@ cd tests/compose/web-redis && docker compose up -d  # Web + Redis works
 
 ---
 
+### Phase 3.5.5: VLAN + Router for Bridge Networks 🚧 IN PROGRESS
+
+**Rationale**: Implement native vmnet performance for bridge networks using VLAN tagging and simple Linux routing, while preserving OVS/OVN for future overlay network support. This provides 5-10x performance improvement for 95% of use cases.
+
+**Architecture**: See `Documentation/VLAN_ROUTER_ARCHITECTURE.md` for complete design.
+
+**Status**: PLANNING - Architecture documented, vminitd fork created as submodule
+
+#### vminitd Extensions
+
+- [ ] **Create vlan-service directory structure**
+  - Create `vminitd/extensions/vlan-service/` directory
+  - Create `proto/network.proto` with VLAN gRPC service definitions
+  - Define NetworkConfig service with CreateVLAN, DeleteVLAN, ConfigureIP, AddRoute RPCs
+  - Files: `vminitd/extensions/vlan-service/proto/network.proto`
+
+- [ ] **Implement VLAN service using netlink**
+  - Implement CreateVLAN RPC handler using vishvananda/netlink library
+  - Create VLAN subinterfaces (eth0.100, eth0.200, etc.)
+  - Configure IP addresses via netlink.AddrAdd
+  - Bring interfaces up via netlink.LinkSetUp
+  - Add routes via netlink.RouteAdd
+  - Files: `vminitd/extensions/vlan-service/server.go`, `vminitd/extensions/vlan-service/vlan.go`
+
+- [ ] **Integrate VLAN service with vminitd**
+  - Modify vminitd startup to launch VLAN gRPC service
+  - Ensure service listens on vsock (compatible with Container.dial())
+  - Add proper error handling and logging
+  - Files: `vminitd/vminitd/Sources/vminitd/main.swift` (or equivalent integration point)
+
+- [ ] **Build custom vminit:latest OCI image**
+  - Update vminitd build scripts to include VLAN service
+  - Cross-compile VLAN service for Linux ARM64
+  - Package into vminit:latest OCI image
+  - Test image with Containerization framework
+  - Files: `vminitd/scripts/build-vminit.sh`, `vminitd/Makefile`
+
+#### Helper VM Router Service
+
+- [ ] **Create router-service directory structure**
+  - Create `helpervm/router-service/` directory
+  - Define RouterService gRPC API in `helpervm/proto/router.proto`
+  - Define CreateVLAN, DeleteVLAN, ConfigureNAT, ConfigureDNS RPCs
+  - Files: `helpervm/proto/router.proto`, `helpervm/router-service/main.go`
+
+- [ ] **Implement RouterService gRPC server**
+  - Implement CreateVLAN handler (creates eth0.X on helper VM)
+  - Implement DeleteVLAN handler (removes eth0.X)
+  - Implement ConfigureNAT handler (iptables MASQUERADE rules)
+  - Implement ConfigureDNS handler (dnsmasq per-VLAN configuration)
+  - Use netlink library for VLAN interface management
+  - Files: `helpervm/router-service/server.go`, `helpervm/router-service/router.go`
+
+- [ ] **Update helper VM Dockerfile**
+  - Add router-service binary to helper VM image
+  - Update startup.sh to start router-service alongside OVS
+  - Configure iptables for routing and NAT
+  - Enable IP forwarding in kernel
+  - Files: `helpervm/Dockerfile`, `helpervm/scripts/startup.sh`
+
+- [ ] **Test router service in helper VM**
+  - Launch helper VM with router service
+  - Test VLAN creation via gRPC
+  - Verify eth0.100, eth0.200 interfaces created
+  - Test NAT configuration with iptables
+  - Test routing between VLANs
+  - Files: `tests/router-service-test.sh`
+
+#### Arca Daemon Integration
+
+- [ ] **Create VLANNetworkProvider**
+  - Implement NetworkProvider protocol for VLAN-based networking
+  - Create VLANNetworkProvider.swift
+  - Implement createNetwork() to allocate VLAN ID and create VLAN on helper VM
+  - Implement deleteNetwork() to clean up VLAN
+  - Implement connectContainer() to create VLAN subinterface in container
+  - Implement disconnectContainer() to remove VLAN subinterface
+  - Files: `Sources/ContainerBridge/VLANNetworkProvider.swift`
+
+- [ ] **Create RouterClient for helper VM communication**
+  - Implement RouterClient.swift for gRPC communication with helper VM router service
+  - Use Container.dial() for vsock communication
+  - Implement createVLAN(), deleteVLAN(), configureNAT(), configureDNS() methods
+  - Handle connection failures and retries
+  - Files: `Sources/ContainerBridge/RouterClient.swift`
+
+- [ ] **Create NetworkConfigClient for vminitd communication**
+  - Implement NetworkConfigClient.swift for gRPC communication with vminitd
+  - Use Container.dial() for vsock communication to container VMs
+  - Implement createVLAN(), deleteVLAN(), configureIP(), addRoute() methods
+  - Handle distroless containers gracefully
+  - Files: `Sources/ContainerBridge/NetworkConfigClient.swift`
+
+- [ ] **Implement VLAN ID allocator**
+  - Create VLANAllocator actor
+  - Manage VLAN ID allocation (100-4094 range)
+  - Track allocated VLAN IDs per network
+  - Handle VLAN ID release on network deletion
+  - Files: `Sources/ContainerBridge/VLANAllocator.swift`
+
+- [ ] **Update NetworkManager to route by driver**
+  - Modify createNetwork() to select provider based on driver
+  - Route "bridge" driver to VLANNetworkProvider
+  - Route "overlay" driver to OVSNetworkProvider (existing)
+  - Maintain backward compatibility with existing networks
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+- [ ] **Update container connection logic**
+  - Modify connectContainerToNetwork() to use provider pattern
+  - Call VLANNetworkProvider.connectContainer() for bridge networks
+  - Call OVSNetworkProvider.connectContainer() for overlay networks
+  - Handle VLAN subinterface creation in container VMs
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+- [ ] **Implement network disconnect support**
+  - Add disconnectContainerFromNetwork() method
+  - Remove VLAN subinterfaces from container VMs
+  - Update container network state
+  - Handle graceful cleanup on errors
+  - Files: `Sources/ContainerBridge/NetworkManager.swift`
+
+#### Testing
+
+- [ ] **Test VLAN network creation**
+  - Create bridge network via Docker API
+  - Verify VLAN ID allocated
+  - Verify helper VM VLAN interface created (eth0.X)
+  - Verify NAT rules configured
+  - Files: `tests/test-vlan-network-create.sh`
+
+- [ ] **Test container connection to VLAN network**
+  - Create container and connect to VLAN network
+  - Verify VLAN subinterface created in container (eth0.X)
+  - Verify IP address configured
+  - Verify routing table includes gateway
+  - Test connectivity to helper VM gateway
+  - Files: `tests/test-vlan-container-connect.sh`
+
+- [ ] **Test inter-container communication (same network)**
+  - Create two containers on same VLAN network
+  - Verify containers can ping each other
+  - Verify low latency (<1ms)
+  - Measure throughput (expect >1 Gbps)
+  - Files: `tests/test-vlan-inter-container.sh`
+
+- [ ] **Test network isolation (different networks)**
+  - Create two VLAN networks (VLAN 100, VLAN 200)
+  - Create containers on each network
+  - Verify containers on different VLANs cannot communicate
+  - Verify L2 isolation works correctly
+  - Files: `tests/test-vlan-isolation.sh`
+
+- [ ] **Test distroless container support**
+  - Create distroless container (gcr.io/distroless/static)
+  - Connect to VLAN network
+  - Verify VLAN created via vminitd gRPC (no shell needed)
+  - Verify networking works
+  - Files: `tests/test-vlan-distroless.sh`
+
+- [ ] **Test port mapping**
+  - Create container with port mapping (-p 8080:80)
+  - Verify iptables DNAT rule on helper VM
+  - Test external connectivity to mapped port
+  - Files: `tests/test-vlan-port-mapping.sh`
+
+- [ ] **Test DNS resolution**
+  - Create network with custom DNS
+  - Verify dnsmasq configured per-VLAN
+  - Test container name resolution
+  - Test internet DNS resolution
+  - Files: `tests/test-vlan-dns.sh`
+
+- [ ] **Performance benchmarks**
+  - Benchmark VLAN latency vs TAP-over-vsock
+  - Benchmark VLAN throughput vs TAP-over-vsock
+  - Document performance improvements
+  - Files: `tests/benchmark-vlan-vs-tap.sh`, `Documentation/PERFORMANCE.md`
+
+#### Documentation
+
+- [ ] **Update CLAUDE.md with VLAN architecture**
+  - Document dual architecture (VLAN for bridge, OVS for overlay)
+  - Explain when each is used
+  - Document VLAN ID allocation
+  - Provide troubleshooting guide
+  - Files: `CLAUDE.md`
+
+- [ ] **Create user guide for VLAN networking**
+  - Document bridge network creation
+  - Explain VLAN limitations (4094 networks max)
+  - Provide examples and best practices
+  - Document performance characteristics
+  - Files: `Documentation/VLAN_USER_GUIDE.md`
+
+- [ ] **Document distroless container support**
+  - Explain vminitd gRPC approach
+  - Provide distroless container examples
+  - Document limitations and workarounds
+  - Files: `Documentation/DISTROLESS_SUPPORT.md`
+
+#### Success Criteria
+
+- ✅ Bridge networks use VLAN + Router (not OVS)
+- ✅ 5-10x latency improvement over TAP-over-vsock
+- ✅ 5x throughput improvement over TAP-over-vsock
+- ✅ 90% reduction in helper VM memory usage (for bridge networks)
+- ✅ Distroless containers fully supported
+- ✅ All Docker bridge network features work
+- ✅ OVS path preserved for future overlay networks
+- ✅ Comprehensive test coverage
+
+**Expected Outcome**: Native vmnet performance for 95% of use cases (bridge networks) while maintaining OVS for future multi-host overlay support. Clean separation of concerns with provider pattern.
+
+---
+
 ## Phase 4: Build & Advanced Features (Weeks 9-12)
 
 ### API Endpoints to Implement
