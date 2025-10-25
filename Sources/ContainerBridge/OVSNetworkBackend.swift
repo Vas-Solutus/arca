@@ -33,6 +33,9 @@ public actor OVSNetworkBackend {
     private var deviceCounter: [String: Int] = [:]  // Container ID -> next device index (eth0, eth1, etc.)
     private var portAllocator: PortAllocator  // vsock port allocator for TAP forwarding
 
+    // Container attachment details: networkID -> containerID -> (ip, mac, aliases)
+    private var containerAttachments: [String: [String: NetworkAttachment]] = [:]
+
     public init(
         helperVM: NetworkHelperVM,
         ipamAllocator: IPAMAllocator,
@@ -274,6 +277,18 @@ public actor OVSNetworkBackend {
         }
         containerNetworks[containerID]?.insert(networkID)
 
+        // Store attachment details for network inspect
+        if containerAttachments[networkID] == nil {
+            containerAttachments[networkID] = [:]
+        }
+        let attachment = NetworkAttachment(
+            networkID: networkID,
+            ip: ipAddress,
+            mac: macAddress,
+            aliases: aliases
+        )
+        containerAttachments[networkID]![containerID] = attachment
+
         logger.info("Container attached to OVS network", metadata: [
             "container_id": "\(containerID)",
             "network_id": "\(networkID)",
@@ -281,12 +296,7 @@ public actor OVSNetworkBackend {
             "ip": "\(ipAddress)"
         ])
 
-        return NetworkAttachment(
-            networkID: networkID,
-            ip: ipAddress,
-            mac: macAddress,
-            aliases: aliases
-        )
+        return attachment
     }
 
     /// Detach container from network
@@ -329,6 +339,9 @@ public actor OVSNetworkBackend {
             deviceCounter.removeValue(forKey: containerID)
         }
 
+        // Remove attachment details
+        containerAttachments[networkID]?.removeValue(forKey: containerID)
+
         logger.info("Container detached from OVS network", metadata: [
             "container_id": "\(containerID)",
             "network_id": "\(networkID)"
@@ -357,6 +370,11 @@ public actor OVSNetworkBackend {
     public func getContainerNetworks(containerID: String) -> [NetworkMetadata] {
         guard let networkIDs = containerNetworks[containerID] else { return [] }
         return networkIDs.compactMap { networks[$0] }
+    }
+
+    /// Get container attachments for a network
+    public func getNetworkAttachments(networkID: String) -> [String: NetworkAttachment] {
+        return containerAttachments[networkID] ?? [:]
     }
 
     // MARK: - Helper Methods

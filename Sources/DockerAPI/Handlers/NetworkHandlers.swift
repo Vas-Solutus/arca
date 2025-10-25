@@ -46,8 +46,9 @@ public struct NetworkHandlers: Sendable {
             let filteredMetadata = applyFilters(allNetworks, filters: filters)
 
             // Convert to Docker API format
-            let networks = filteredMetadata.map { metadata in
-                convertToDockerNetwork(metadata)
+            var networks: [Network] = []
+            for metadata in filteredMetadata {
+                networks.append(await convertToDockerNetwork(metadata))
             }
 
             logger.info("Listed networks", metadata: ["count": "\(networks.count)"])
@@ -73,7 +74,7 @@ public struct NetworkHandlers: Sendable {
             guard let metadata = await networkManager.getNetwork(id: resolvedID) else {
                 return .failure(NetworkError.notFound(id))
             }
-            let network = convertToDockerNetwork(metadata)
+            let network = await convertToDockerNetwork(metadata)
 
             logger.info("Inspected network", metadata: [
                 "id": "\(network.id)",
@@ -169,7 +170,12 @@ public struct NetworkHandlers: Sendable {
         ])
 
         do {
-            try await networkManager.deleteNetwork(id: id)
+            // Resolve network name or ID to full network ID
+            guard let resolvedID = await networkManager.resolveNetworkID(id) else {
+                return .failure(NetworkError.notFound(id))
+            }
+
+            try await networkManager.deleteNetwork(id: resolvedID)
 
             logger.info("Network deleted successfully", metadata: ["id": "\(id)"])
             return .success(())
@@ -214,6 +220,11 @@ public struct NetworkHandlers: Sendable {
         let aliases = endpointConfig?.aliases ?? []
 
         do {
+            // Resolve network name or ID to full network ID
+            guard let resolvedNetworkID = await networkManager.resolveNetworkID(networkID) else {
+                return .failure(NetworkError.notFound("network \(networkID) not found"))
+            }
+
             // Get the container object
             guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
                 return .failure(NetworkError.notFound("Container \(containerID) not found"))
@@ -225,7 +236,7 @@ public struct NetworkHandlers: Sendable {
             _ = try await networkManager.attachContainerToNetwork(
                 containerID: containerID,
                 container: container,
-                networkID: networkID,
+                networkID: resolvedNetworkID,
                 containerName: containerName,
                 aliases: aliases
             )
@@ -366,7 +377,7 @@ public struct NetworkHandlers: Sendable {
     }
 
     /// Convert NetworkMetadata to Docker API Network format
-    private func convertToDockerNetwork(_ metadata: NetworkMetadata) -> Network {
+    private func convertToDockerNetwork(_ metadata: NetworkMetadata) async -> Network {
         // Format created timestamp as ISO8601
         let iso8601Formatter = ISO8601DateFormatter()
         let createdString = iso8601Formatter.string(from: metadata.created)
@@ -378,8 +389,22 @@ public struct NetworkHandlers: Sendable {
         )
         let ipam = IPAM(driver: "default", config: [ipamConfig])
 
-        // Convert containers map (currently empty - will be populated when containers are attached)
-        let containers: [String: NetworkContainer] = [:]
+        // Get container attachments for this network
+        let attachments = await networkManager.getNetworkAttachments(networkID: metadata.id)
+        var containers: [String: NetworkContainer] = [:]
+
+        for (containerID, attachment) in attachments {
+            // Get container name
+            let containerName = await containerManager.getContainerName(dockerID: containerID) ?? containerID
+
+            containers[containerID] = NetworkContainer(
+                name: containerName,
+                endpointID: containerID,  // Use container ID as endpoint ID
+                macAddress: attachment.mac,
+                ipv4Address: "\(attachment.ip)/\(metadata.subnet.split(separator: "/").last ?? "16")",
+                ipv6Address: ""  // IPv6 not supported yet
+            )
+        }
 
         return Network(
             name: metadata.name,

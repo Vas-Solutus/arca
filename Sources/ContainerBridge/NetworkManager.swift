@@ -327,6 +327,21 @@ public actor NetworkManager {
         return nil
     }
 
+    /// Get container attachments for a network
+    public func getNetworkAttachments(networkID: String) async -> [String: NetworkAttachment] {
+        // Try OVS backend first
+        if let backend = ovsBackend, await backend.getNetwork(id: networkID) != nil {
+            return await backend.getNetworkAttachments(networkID: networkID)
+        }
+
+        // Try vmnet backend
+        if let backend = vmnetBackend, await backend.getNetwork(id: networkID) != nil {
+            return await backend.getNetworkAttachments(networkID: networkID)
+        }
+
+        return [:]
+    }
+
     /// List all networks
     public func listNetworks() async -> [NetworkMetadata] {
         var networks: [NetworkMetadata] = []

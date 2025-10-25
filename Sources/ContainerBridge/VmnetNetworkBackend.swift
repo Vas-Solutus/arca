@@ -179,6 +179,13 @@ public actor VmnetNetworkBackend {
         return networkMetadata.values.first { $0.name == name }
     }
 
+    /// Get container attachments for a network
+    public func getNetworkAttachments(networkID: String) -> [String: NetworkAttachment] {
+        // vmnet backend doesn't store detailed attachment info
+        // Return empty for now - could be enhanced if needed
+        return [:]
+    }
+
     // MARK: - Subnet Allocation
 
     private var nextSubnetIndex: Int = 0

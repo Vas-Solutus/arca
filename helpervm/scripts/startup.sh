@@ -107,10 +107,11 @@ ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
     --detach --log-file=/var/log/ovn/ovn-controller.log \
     unix:/var/run/openvswitch/db.sock
 
-# Start dnsmasq
-echo "Starting dnsmasq..."
+# Per-network dnsmasq instances will be started dynamically by control-api
+# when networks are created. No global dnsmasq instance needed.
+echo "dnsmasq will be started per-network by control-api..."
 mkdir -p /etc/dnsmasq.d
-dnsmasq --conf-file=/etc/dnsmasq.conf &
+mkdir -p /var/run
 
 # Wait for services to be ready
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for all services to stabilize..."

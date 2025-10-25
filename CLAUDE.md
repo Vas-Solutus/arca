@@ -315,29 +315,44 @@ All behaviors must follow these specs for:
 - Used for: image pull progress, exec attach, container attach, log streaming
 - Docker progress format: newline-delimited JSON with progress details
 
-**Networking Architecture (Phase 3 - Dual Architecture)**:
+**Networking Architecture (Phase 3 - OVN Native DHCP/DNS)**:
 
-Arca uses **two different networking implementations** based on Docker network driver:
+**ARCHITECTURAL PIVOT (In Progress)**: Moving from custom IPAM/dnsmasq to OVN's native DHCP/DNS capabilities.
 
-1. **Bridge Networks** (Phase 3.5.5+) - VLAN + Simple Router
-   - Uses VLAN tagging for network isolation (eth0.100, eth0.200, etc.)
-   - Native vmnet performance (5-10x faster than TAP-over-vsock)
-   - Simple Linux routing in helper VM (no OVS required)
-   - 90% less memory usage compared to OVS approach
-   - Configured via vminitd gRPC API (works with distroless containers)
-   - See `Documentation/VLAN_ROUTER_ARCHITECTURE.md` for complete design
+**Why this change**:
+- OVN has built-in DHCP server and DNS support
+- Eliminates 1000+ lines of custom IPAM and dnsmasq configuration code
+- OVN manages IP allocation, DNS records, and DHCP reservations natively
+- Network-scoped DNS works out-of-the-box without custom cross-network propagation
+- Simpler, more maintainable, uses solved problems instead of reinventing
 
-2. **Overlay Networks** (Future) - OVS/OVN + TAP-over-vsock
-   - For multi-host networking scenarios
-   - Uses TAP devices + vsock relay to OVS bridges
-   - Supports tunnel protocols (VXLAN, Geneve)
-   - See `Documentation/TAP_OVER_VSOCK_ARCHITECTURE.md` for complete design
+**Current Architecture (OVS + custom IPAM + dnsmasq)**:
+- Helper VM runs OVS bridges + OVN logical switches
+- Custom Go code for IP allocation (PortAllocator)
+- Custom dnsmasq configuration per network
+- Manual DNS record management and cross-network propagation
+- Static IP assignment via gRPC to containers
+- TAP-over-vsock for packet forwarding (unchanged)
 
-**Common Infrastructure**:
-- Helper VM managed as a Container via Apple Containerization framework
-- gRPC control API over vsock using `Container.dial()`
-- Router selects implementation based on `--driver` flag (bridge vs overlay)
-- See `Documentation/NETWORK_ARCHITECTURE.md` for overview
+**Target Architecture (OVN native DHCP/DNS)**:
+- Helper VM runs OVS bridges + OVN logical switches (unchanged)
+- **OVN DHCP server** provides IP addresses via standard DHCP protocol
+- **OVN DNS** provides name resolution (network-scoped automatically)
+- Containers use DHCP client to obtain IP (standard Linux DHCP)
+- DHCP packets flow through TAP-over-vsock like all other traffic
+- Optional DHCP reservations for containers with explicit IPs
+- DNS records added to OVN database via `ovn-nbctl` commands
+
+**Migration Tasks**:
+1. ✅ Document architectural change
+2. ⏳ Remove custom IPAM code (PortAllocator, IP tracking maps)
+3. ⏳ Remove dnsmasq configuration code
+4. ⏳ Add OVN DHCP configuration for logical switches
+5. ⏳ Add OVN DNS record management
+6. ⏳ Update container configuration to use DHCP instead of static IPs
+7. ⏳ Test DHCP/DNS flow with multi-network containers
+
+See `Documentation/NETWORK_ARCHITECTURE.md` for complete design details.
 
 ## Implementation Status
 

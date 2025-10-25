@@ -1664,6 +1664,145 @@ cd tests/compose/web-redis && docker compose up -d  # Web + Redis works
 
 ---
 
+### Phase 3.6: OVN Native DHCP/DNS Migration ⏳ IN PROGRESS
+
+**Status**: Architectural pivot from custom IPAM/dnsmasq to OVN's native DHCP/DNS
+
+**Motivation**: Stop reinventing the wheel - OVN has built-in DHCP server and DNS that we were reimplementing poorly. This eliminates ~1000+ lines of custom code and provides better, more maintainable networking.
+
+#### Documentation
+
+- [x] **Document architectural change in CLAUDE.md**
+  - Added "Networking Architecture (Phase 3 - OVN Native DHCP/DNS)" section
+  - Explained why this change is being made
+  - Listed migration tasks
+  - Files: `CLAUDE.md:318-355`
+  - **COMPLETED**: Architectural pivot documented
+
+- [x] **Update NETWORK_ARCHITECTURE.md with OVN DHCP/DNS design**
+  - Added "OVN Native DHCP/DNS Design" section
+  - Documented DHCP and DNS flow diagrams
+  - Provided OVN configuration command examples
+  - Listed code to remove and code to add
+  - Files: `Documentation/NETWORK_ARCHITECTURE.md:181-326`
+  - **COMPLETED**: Detailed design documentation added
+
+- [x] **Update IMPLEMENTATION_PLAN.md with Phase 3.6**
+  - Added Phase 3.6 section for OVN DHCP/DNS migration
+  - Listed all tasks for the migration
+  - Files: `Documentation/IMPLEMENTATION_PLAN.md:1666-1750`
+  - **COMPLETED**: Implementation plan updated
+
+#### Code Removal (Helper VM)
+
+- [ ] **Remove dnsmasq configuration code**
+  - Remove `dnsEntries` map from NetworkServer struct
+  - Remove `writeDnsmasqConfig()` function
+  - Remove `configureDNS()` function
+  - Remove `removeDNS()` function
+  - Remove all dnsmasq process management (PID tracking, kill, restart)
+  - Remove dnsmasq startup from `helpervm/scripts/startup.sh`
+  - Remove dnsmasq config directory creation
+  - Files: `helpervm/control-api/server.go:lines 21,417-570`, `helpervm/scripts/startup.sh`
+  - **TODO**: ~400 lines of dnsmasq code to remove
+
+- [ ] **Remove custom IPAM tracking**
+  - Remove `containerIPs` map (containerID → networkID → IP)
+  - Remove IP allocation/deallocation logic from AttachContainer/DetachContainer
+  - OVN will handle IP allocation via DHCP
+  - Files: `helpervm/control-api/server.go:lines 22,224-227,307-312`
+  - **TODO**: ~50 lines of IPAM tracking to remove
+
+#### Code Removal (Swift)
+
+- [ ] **Remove IPAMAllocator.swift**
+  - Delete entire file - OVN DHCP handles IP allocation
+  - Remove from Package.swift targets
+  - Remove imports from OVSNetworkBackend
+  - Files: `Sources/ContainerBridge/IPAMAllocator.swift` (entire file ~200 lines)
+  - **TODO**: Delete file
+
+- [ ] **Remove PortAllocator from OVSNetworkBackend**
+  - Remove `portAllocator` property
+  - Remove IP allocation calls in `attachToNetwork()`
+  - Remove IP deallocation calls in `detachFromNetwork()`
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift:38,265-271,315-318`
+  - **TODO**: ~30 lines of IPAM integration to remove
+
+#### OVN DHCP Implementation
+
+- [ ] **Add DHCP options creation in CreateBridge**
+  - Call `ovn-nbctl dhcp-options-create <subnet>` when creating network
+  - Store DHCP options UUID in bridge metadata
+  - Configure DHCP options: lease_time, router (gateway), dns_server (gateway)
+  - Files: `helpervm/control-api/server.go:CreateBridge()`
+  - **TODO**: Add ~20 lines for DHCP options setup
+
+- [ ] **Add DHCP configuration in AttachContainer**
+  - Create logical switch port via `ovn-nbctl lsp-add`
+  - Set port addresses to "dynamic" or specific MAC+IP for reservations
+  - Link DHCP options to port via `ovn-nbctl lsp-set-dhcpv4-options`
+  - Files: `helpervm/control-api/server.go:AttachContainer()`
+  - **TODO**: Replace static IP assignment with DHCP port configuration
+
+#### OVN DNS Implementation
+
+- [ ] **Add DNS record management**
+  - Add DNS records via `ovn-nbctl set logical_switch <id> dns_records='{...}'`
+  - Store container hostname → IP mappings in OVN database
+  - Handle DNS record updates when containers join/leave networks
+  - Network-scoped DNS handled automatically by OVN
+  - Files: `helpervm/control-api/server.go:AttachContainer(),DetachContainer()`
+  - **TODO**: Add ~30 lines for DNS record management
+
+- [ ] **Remove cross-network DNS propagation logic**
+  - Delete the complex bidirectional DNS propagation code (lines 235-284)
+  - OVN provides network-scoped DNS automatically
+  - No manual cross-network propagation needed
+  - Files: `helpervm/control-api/server.go:lines 235-284`
+  - **TODO**: Remove ~50 lines of cross-network DNS code
+
+#### Container DHCP Client Configuration
+
+- [ ] **Configure containers to use DHCP**
+  - Remove static IP configuration in `OVSNetworkBackend.attachToNetwork()`
+  - Container TAP devices should use DHCP client (udhcpc for Alpine)
+  - DHCP packets flow through TAP-over-vsock to OVN
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift:attachToNetwork()`
+  - **TODO**: Replace static IP with DHCP client configuration
+
+- [ ] **Handle container hostname for DNS**
+  - Pass container hostname to OVN when creating logical switch port
+  - OVN will create DNS record for hostname → IP
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift`, `helpervm/control-api/server.go`
+  - **TODO**: Add hostname parameter to AttachContainer gRPC call
+
+#### Testing
+
+- [ ] **Test DHCP flow**
+  - Verify container obtains IP via DHCP
+  - Verify gateway and DNS server configured correctly
+  - Verify DHCP lease renewal works
+  - Files: New test script `scripts/test-ovn-dhcp.sh`
+  - **TODO**: Create integration test
+
+- [ ] **Test DNS resolution**
+  - Verify container can resolve other containers by name
+  - Verify network-scoped DNS (container on network-a resolves IPs from network-a)
+  - Verify multi-network containers can resolve names on all their networks
+  - Files: Extend `scripts/test-phase3-dns.sh`
+  - **TODO**: Add OVN DNS test cases
+
+- [ ] **Test DHCP reservations**
+  - Verify containers with explicit IPs get reserved addresses
+  - Verify DHCP reservation persists across container restarts
+  - Files: New test script `scripts/test-ovn-dhcp-reservation.sh`
+  - **TODO**: Create reservation test
+
+**Expected Outcome**: Cleaner, simpler networking code using OVN's native DHCP/DNS. Eliminates ~1000 lines of custom IPAM and dnsmasq code. More maintainable, uses solved problems, better network-scoped DNS.
+
+---
+
 ## Phase 4: Build & Advanced Features (Weeks 9-12)
 
 ### API Endpoints to Implement

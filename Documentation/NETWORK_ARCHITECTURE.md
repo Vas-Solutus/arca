@@ -1,4 +1,31 @@
-# Network Architecture: Dual Backend Design
+# Network Architecture: OVN Native DHCP/DNS
+
+## 🚨 ARCHITECTURAL PIVOT (In Progress)
+
+**Status**: Migrating from custom IPAM + dnsmasq to OVN's native DHCP/DNS capabilities
+
+**Why this change**:
+- OVN has built-in DHCP server and DNS - we were reinventing the wheel
+- Eliminates ~1000+ lines of custom IP allocation and DNS configuration code
+- Network-scoped DNS works automatically without manual cross-network propagation
+- Standard DHCP protocol means less code to maintain and debug
+- Leverages solved problems instead of reimplementing them
+
+**What's changing**:
+- ❌ **Removing**: Custom Go IPAM code (PortAllocator, IP tracking maps)
+- ❌ **Removing**: dnsmasq configuration and per-network instance management
+- ❌ **Removing**: Manual DNS record management and cross-network DNS propagation
+- ✅ **Adding**: OVN DHCP configuration via `ovn-nbctl ls-add` and `ovn-nbctl dhcp-options-create`
+- ✅ **Adding**: OVN DNS records via `ovn-nbctl set logical_switch_port`
+- ✅ **Adding**: Container DHCP client configuration (udhcpc/dhclient)
+
+**What stays the same**:
+- ✅ TAP-over-vsock architecture (containers ↔ helper VM communication)
+- ✅ OVS bridges and OVN logical switches
+- ✅ Helper VM lifecycle management
+- ✅ gRPC control API (but simplified methods)
+
+---
 
 ## Executive Summary
 
@@ -145,8 +172,157 @@ Container B eth0 (TAP) → Application
 ✅ Port mapping via OVS DNAT
 ✅ Network isolation via separate OVS bridges
 ✅ SNAT for internet access
-✅ DNS resolution
+✅ DNS resolution (via OVN native DNS)
+✅ DHCP (via OVN native DHCP server)
 ✅ Future: VXLAN overlay networks
+
+---
+
+## OVN Native DHCP/DNS Design
+
+### Overview
+
+Instead of custom IPAM and dnsmasq, Arca leverages OVN's built-in DHCP and DNS capabilities:
+
+**OVN DHCP Server**:
+- Each OVN logical switch has DHCP options configured
+- Containers use standard DHCP client (udhcpc/dhclient)
+- DHCP packets flow through TAP-over-vsock like all other traffic
+- OVN responds to DHCP DISCOVER/REQUEST with IP lease
+
+**OVN DNS**:
+- DNS records stored in OVN Northbound database
+- Network-scoped automatically (each logical switch has own DNS)
+- Records added via `ovn-nbctl set logical_switch_port` commands
+- DNS queries resolved by OVN's built-in DNS responder
+
+### DHCP Flow
+
+```
+1. Container boots
+   ↓
+2. DHCP client (udhcpc) sends DHCP DISCOVER broadcast
+   ↓ TAP device → arca-tap-forwarder → vsock
+   ↓ NetworkBridge relay → Helper VM vsock
+   ↓ TAPRelay → OVS port
+   ↓
+3. OVN logical switch receives DHCP DISCOVER
+   ↓ OVN checks DHCP options for this logical switch
+   ↓ Allocates IP from subnet range (or uses reservation)
+   ↓
+4. OVN sends DHCP OFFER
+   ↓ OVS port → TAPRelay → vsock
+   ↓ NetworkBridge relay
+   ↓ TAP device → container
+   ↓
+5. Container sends DHCP REQUEST
+   ↓ (same path as step 2)
+   ↓
+6. OVN sends DHCP ACK with IP configuration
+   ↓ IP address, subnet mask, gateway, DNS server
+   ↓ Container configures interface
+```
+
+### DNS Flow
+
+```
+Container: nslookup container2
+   ↓ DNS query to nameserver (OVN logical switch IP)
+   ↓ TAP → arca-tap-forwarder → vsock → NetworkBridge
+   ↓ Helper VM → TAPRelay → OVS port
+   ↓
+OVN Logical Switch DNS Responder
+   ↓ Looks up "container2" in logical switch DNS records
+   ↓ Returns IP address (network-scoped)
+   ↓
+Response flows back through same path
+```
+
+### OVN Configuration Commands
+
+**Create network with DHCP**:
+```bash
+# Create logical switch
+ovn-nbctl ls-add <network-id>
+
+# Create DHCP options
+ovn-nbctl dhcp-options-create <subnet>
+
+# Set DHCP options (IP range, gateway, DNS)
+ovn-nbctl dhcp-options-set-options <uuid> \
+  lease_time=3600 \
+  router=<gateway-ip> \
+  server_id=<gateway-ip> \
+  server_mac=<gateway-mac> \
+  dns_server=<gateway-ip>
+
+# Link DHCP options to logical switch
+ovn-nbctl set logical_switch <network-id> \
+  other_config:subnet=<subnet> \
+  other_config:exclude_ips=<gateway-ip>
+```
+
+**Attach container with DNS record**:
+```bash
+# Create logical switch port
+ovn-nbctl lsp-add <network-id> <container-port-name>
+
+# Set port type and addresses (optional static IP)
+ovn-nbctl lsp-set-addresses <container-port-name> \
+  "<mac-address> <ip-address>"  # Or "dynamic" for DHCP
+
+# Add DNS record for container hostname
+ovn-nbctl set logical_switch <network-id> \
+  dns_records='{"<hostname>": "<ip-address>"}'
+
+# Enable DHCP on port
+ovn-nbctl lsp-set-dhcpv4-options <container-port-name> <dhcp-options-uuid>
+```
+
+**DHCP Reservation** (for containers with explicit IP):
+```bash
+# Reserve specific IP for MAC address
+ovn-nbctl dhcp-options-add-option <uuid> \
+  reserved_addresses="{<mac-address>=<ip-address>}"
+```
+
+### Multi-Network Containers
+
+When a container joins multiple networks:
+
+1. **Each network has its own DHCP scope**
+   - eth0 gets DHCP from network-a
+   - eth1 gets DHCP from network-b
+
+2. **DNS is network-scoped**
+   - Query via network-a's DNS → returns IPs from network-a
+   - Query via network-b's DNS → returns IPs from network-b
+
+3. **No cross-network DNS propagation needed**
+   - OVN handles network isolation automatically
+   - Each logical switch maintains its own DNS records
+
+### Migration from Custom IPAM/dnsmasq
+
+**Code to Remove**:
+- `helpervm/control-api/server.go:dnsEntries` map
+- `helpervm/control-api/server.go:containerIPs` map
+- `helpervm/control-api/server.go:writeDnsmasqConfig()`
+- `helpervm/control-api/server.go:configureDNS()`
+- All dnsmasq process management code
+- `Sources/ContainerBridge/IPAMAllocator.swift` (entire file)
+- `Sources/ContainerBridge/OVSNetworkBackend.swift:portAllocator`
+
+**Code to Add**:
+- `ovn-nbctl dhcp-options-create` in CreateBridge
+- `ovn-nbctl lsp-add` and `lsp-set-dhcpv4-options` in AttachContainer
+- `ovn-nbctl set logical_switch dns_records` for DNS
+- Container DHCP client configuration (udhcpc in Alpine-based containers)
+
+**Swift Changes**:
+- `OVSNetworkBackend.attachToNetwork()`: Remove static IP assignment, let DHCP handle it
+- `NetworkHelperVM`: Remove dnsmasq startup code
+- `OVNClient`: Add methods for DHCP options and DNS record management
 
 ---
 

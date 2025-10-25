@@ -109,11 +109,12 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 
 	log.Printf("Handling TAP relay connection for container %s on network %s (bridge: %s, port %d)", containerID, networkID, bridgeName, port)
 
-	// Create OVS internal port for this container
-	// Format: port-{short-container-id}
+	// Create OVS internal port for this container+network combination
+	// Format: port-{hash} where hash uniquely identifies container+network
 	// Linux interface names are limited to 15 characters (IFNAMSIZ-1)
-	// "port-" is 5 chars, so we can use 10 chars of container ID
-	portName := fmt.Sprintf("port-%s", containerID[:10])
+	// "port-" is 5 chars, so we can use 10 chars of hash
+	// Use first 5 chars of container ID + first 5 chars of network ID
+	portName := fmt.Sprintf("port-%s%s", containerID[:5], networkID[:5])
 
 	// Add internal port to OVS bridge
 	if err := addOVSInternalPort(bridgeName, portName); err != nil {
