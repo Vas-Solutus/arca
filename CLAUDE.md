@@ -79,7 +79,7 @@ swift package clean            # Swift-only clean
 git submodule update --init --recursive
 
 # 2. Install Swift Static Linux SDK (one-time, ~5 minutes)
-cd vminitd/vminitd
+cd containerization/vminitd
 make cross-prep
 cd ../..
 

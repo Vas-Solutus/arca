@@ -72,7 +72,7 @@ public actor NetworkBridge {
 
         // Create process configuration for arca-tap-forwarder
         // The binary is bind-mounted at /.arca/bin/arca-tap-forwarder by ContainerManager
-        var processConfig = LinuxContainer.Configuration.Process()
+        var processConfig = LinuxProcessConfiguration()
         processConfig.arguments = ["/.arca/bin/arca-tap-forwarder"]
         processConfig.terminal = false
 

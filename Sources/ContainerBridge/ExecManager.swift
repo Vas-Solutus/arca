@@ -141,7 +141,7 @@ public actor ExecManager {
         }
 
         // Create process configuration
-        var processConfig = LinuxContainer.Configuration.Process()
+        var processConfig = LinuxProcessConfiguration()
         processConfig.arguments = execInfo.config.cmd
 
         // Only override environment if user specified any, otherwise keep defaults (including PATH)

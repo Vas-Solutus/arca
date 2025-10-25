@@ -117,33 +117,17 @@ public actor NetworkHelperVM {
             throw NetworkHelperVMError.helperImageNotFound(helperImageReference)
         }
 
-        // Check if container already exists (even if we don't have a reference to it)
-        // This handles cases where the daemon was restarted but container still exists on disk
+        // Clean up any existing container data on disk
+        // Note: ContainerManager.get() no longer exists in the newer API,
+        // so we can't stop a running container before deleting.
+        // This is fine for the helper VM since we control its lifecycle.
         do {
-            let existingContainer = try await manager.get(helperContainerID, image: helperImage)
-            logger.warning("Helper VM container already exists, stopping and removing it...", metadata: [
+            try manager.delete(helperContainerID)
+            logger.warning("Removed existing helper VM container from disk", metadata: [
                 "containerID": "\(helperContainerID)"
             ])
-
-            // Stop the container if it's running
-            do {
-                try await existingContainer.stop()
-                logger.debug("Stopped existing helper VM container")
-            } catch {
-                logger.debug("Container already stopped or error stopping: \(error)")
-            }
-
-            // Remove the container (not async)
-            do {
-                try manager.delete(helperContainerID)
-                logger.debug("Deleted existing helper VM container")
-            } catch {
-                logger.warning("Failed to delete existing container, will try to create anyway", metadata: [
-                    "error": "\(error)"
-                ])
-            }
         } catch {
-            // Container doesn't exist, which is fine
+            // Container doesn't exist on disk, which is fine
             logger.debug("No existing helper VM container found (expected on first run)")
         }
 

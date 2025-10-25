@@ -9,7 +9,7 @@ let package = Package(
         .macOS("26.0")  // macOS Sequoia
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/containerization", from: "0.1.0"),
+        .package(path: "containerization"),  // Use local containerization submodule
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.87.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
