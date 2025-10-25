@@ -122,7 +122,17 @@ echo "========================================================"
 echo "✓ All services started successfully"
 echo "✓ Total startup time: ${TOTAL_STARTUP}s"
 echo "========================================================"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Network Control API..."
+
+# Start router service in background
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Router Service on vsock port 50052..."
+/usr/local/bin/router-service --vsock-port=50052 &
+ROUTER_PID=$!
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Router service started (PID: $ROUTER_PID)"
+
+# Brief pause to let router service initialize
+sleep 1
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Network Control API on vsock port 9999..."
 
 # Start the control API server (foreground - this keeps the container running)
 # Uses mdlayher/vsock library for proper vsock net.Listener support
