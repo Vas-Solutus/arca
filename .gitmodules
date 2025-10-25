@@ -1,0 +1,3 @@
+[submodule "vminitd"]
+	path = vminitd
+	url = git@github.com:Liquescent-Development/arca-vminitd.git
