@@ -79,13 +79,14 @@ echo "  ✓ TAP forwarder built: arca-tap-forwarder"
 # Build vminitd (Swift cross-compiled to Linux)
 echo ""
 echo "→ Building vminitd (Swift → Linux ARM64)..."
-cd "$VMINITD_DIR/vminitd"
+cd "$VMINITD_DIR"
 
-# Use vminitd's Makefile to build for Linux (builds both vminitd and vmexec)
-BUILD_CONFIGURATION=release make all
+# Build using parent Makefile's init target which handles the nested package properly
+BUILD_CONFIGURATION=release make init
 
-VMINITD_BINARY="$VMINITD_DIR/vminitd/.build/aarch64-unknown-linux-musl/release/vminitd"
-VMEXEC_BINARY="$VMINITD_DIR/vminitd/.build/aarch64-unknown-linux-musl/release/vmexec"
+# The binaries are placed in vminitd/bin/ by the parent Makefile
+VMINITD_BINARY="$VMINITD_DIR/vminitd/bin/vminitd"
+VMEXEC_BINARY="$VMINITD_DIR/vminitd/bin/vmexec"
 
 if [ ! -f "$VMINITD_BINARY" ]; then
     echo "ERROR: vminitd binary not built at $VMINITD_BINARY"
