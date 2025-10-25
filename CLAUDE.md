@@ -75,19 +75,25 @@ swift package clean            # Swift-only clean
 **Critical prerequisite**: Arca uses a custom fork of Apple's vminitd with extensions for networking. The fork is managed as a git submodule.
 
 ```bash
-# Initialize vminitd submodule (one-time)
+# 1. Initialize vminitd submodule (one-time)
 git submodule update --init --recursive
 
-# Build custom vminit:latest with Arca extensions
+# 2. Install Swift Static Linux SDK (one-time, ~5 minutes)
+cd vminitd/vminitd
+make cross-prep
+cd ../..
+
+# 3. Build custom vminit:latest with Arca extensions
 make vminit
 ```
 
-This creates `vminit:latest` OCI image containing:
+This creates `vminit:latest` OCI image at `~/.arca/vminit/` containing:
 - `/sbin/vminitd` - Apple's init system (PID 1) with Arca extensions
 - `/sbin/vmexec` - Apple's exec helper
-- **Extensions** (in vminitd submodule):
-  - `arca-tap-forwarder` - TAP networking forwarder for overlay networks
-  - `vlan-service` - VLAN configuration service for bridge networks (Phase 3.5.5+)
+- `/usr/local/bin/vlan-service` - VLAN configuration service (vsock:50051) for bridge networks
+- `/usr/local/bin/arca-tap-forwarder` - TAP forwarder for overlay networks
+
+**Build time:** ~5 minutes first time (includes Swift Static Linux SDK setup), ~2-3 minutes after that
 
 **Why this is needed**:
 - vminit runs as PID 1 inside each container's Linux VM
@@ -99,8 +105,10 @@ This creates `vminit:latest` OCI image containing:
 
 **vminitd Submodule**: The fork is at `vminitd/` (git submodule → `github.com/Liquescent-Development/arca-vminitd`), which is a fork of Apple's containerization repo. This allows us to:
 - Stay in sync with upstream Apple changes
-- Add Arca-specific extensions in `vminitd/extensions/`
+- Add Arca-specific extensions in `vminitd/vminitd/extensions/`
 - Maintain separate git history for vminitd changes
+
+**Detailed build guide**: See [Documentation/VMINIT_BUILD.md](Documentation/VMINIT_BUILD.md) for troubleshooting and development workflow.
 
 ### One-Time Setup: Building Kernel with TUN Support
 
