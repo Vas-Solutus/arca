@@ -32,6 +32,11 @@ playground.xcworkspace
 .build/
 .arca-build/
 
+# Go binaries
+helpervm/router-service/router-service
+vminitd/vminitd/extensions/vlan-service/vlan-service
+vminitd/vminitd/extensions/tap-forwarder/arca-tap-forwarder
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However
