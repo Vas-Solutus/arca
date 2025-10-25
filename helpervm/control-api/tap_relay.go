@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
@@ -110,7 +111,9 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 
 	// Create OVS internal port for this container
 	// Format: port-{short-container-id}
-	portName := fmt.Sprintf("port-%s", containerID[:12])
+	// Linux interface names are limited to 15 characters (IFNAMSIZ-1)
+	// "port-" is 5 chars, so we can use 10 chars of container ID
+	portName := fmt.Sprintf("port-%s", containerID[:10])
 
 	// Add internal port to OVS bridge
 	if err := addOVSInternalPort(bridgeName, portName); err != nil {
@@ -143,6 +146,7 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 	go func() {
 		defer func() { done <- struct{}{} }()
 		buffer := make([]byte, 65536)
+		packetCount := 0
 		for {
 			n, err := conn.Read(buffer)
 			if err != nil {
@@ -150,6 +154,10 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 					log.Printf("Error reading from vsock: %v", err)
 				}
 				return
+			}
+			packetCount++
+			if packetCount <= 5 {
+				log.Printf("vsock->OVS: port=%s bytes=%d packet=%d", portName, n, packetCount)
 			}
 			if _, err := tapFile.Write(buffer[:n]); err != nil {
 				log.Printf("Error writing to TAP: %v", err)
@@ -162,6 +170,7 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 	go func() {
 		defer func() { done <- struct{}{} }()
 		buffer := make([]byte, 65536)
+		packetCount := 0
 		for {
 			n, err := tapFile.Read(buffer)
 			if err != nil {
@@ -169,6 +178,10 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 					log.Printf("Error reading from TAP: %v", err)
 				}
 				return
+			}
+			packetCount++
+			if packetCount <= 5 {
+				log.Printf("OVS->vsock: port=%s bytes=%d packet=%d", portName, n, packetCount)
 			}
 			if _, err := conn.Write(buffer[:n]); err != nil {
 				log.Printf("Error writing to vsock: %v", err)
@@ -188,8 +201,19 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 func addOVSInternalPort(bridgeName, portName string) error {
 	// Add internal port to OVS bridge
 	// Internal ports appear as network interfaces that can be used for packet I/O
+	log.Printf("Creating OVS internal port: bridge=%s port=%s", bridgeName, portName)
 	cmd := exec.Command("ovs-vsctl", "add-port", bridgeName, portName, "--", "set", "interface", portName, "type=internal")
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("OVS add-port failed: %v, output: %s", err, string(output))
+		return err
+	}
+	log.Printf("OVS port created successfully: %s", portName)
+
+	// Give OVS a moment to create the interface
+	time.Sleep(100 * time.Millisecond)
+
+	return nil
 }
 
 func deleteOVSPort(bridgeName, portName string) error {
@@ -198,17 +222,35 @@ func deleteOVSPort(bridgeName, portName string) error {
 }
 
 func bringInterfaceUp(ifName string) error {
+	log.Printf("Bringing interface up: %s", ifName)
 	cmd := exec.Command("ip", "link", "set", ifName, "up")
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Failed to bring interface up: %v, output: %s", err, string(output))
+		return err
+	}
+	log.Printf("Interface brought up successfully: %s", ifName)
+	return nil
 }
 
 func openTAPDevice(ifName string) (*os.File, error) {
 	// For OVS internal ports, we need to use raw sockets
+	log.Printf("Opening TAP device: %s", ifName)
+
+	// List all interfaces to debug
+	interfaces, _ := net.Interfaces()
+	log.Printf("Available interfaces:")
+	for _, iface := range interfaces {
+		log.Printf("  - %s (index: %d)", iface.Name, iface.Index)
+	}
+
 	// Get interface index
 	iface, err := net.InterfaceByName(ifName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get interface %s: %w", ifName, err)
 	}
+
+	log.Printf("Interface found: %s (index: %d, MAC: %s)", iface.Name, iface.Index, iface.HardwareAddr)
 
 	// Create raw socket (AF_PACKET, ETH_P_ALL)
 	// This allows us to send/receive raw Ethernet frames

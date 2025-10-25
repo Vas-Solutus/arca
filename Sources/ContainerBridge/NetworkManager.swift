@@ -80,12 +80,15 @@ public actor NetworkManager {
     }
 
     /// Initialize the network manager and create default "bridge" network
+    /// NOTE: Assumes helper VM is already initialized and started by ArcaDaemon
     public func initialize() async throws {
         logger.info("Initializing NetworkManager")
 
-        // Ensure helper VM is initialized and started
-        try await helperVM.initialize()
-        try await helperVM.start()
+        // Helper VM should already be initialized and started by ArcaDaemon
+        // Verify it's ready to accept gRPC calls
+        guard await helperVM.getOVNClient() != nil else {
+            throw NetworkManagerError.helperVMNotReady
+        }
 
         // Create default "bridge" network if it doesn't exist
         if networksByName["bridge"] == nil {
