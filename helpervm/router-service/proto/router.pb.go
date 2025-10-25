@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/router.proto
+// source: router.proto
 
 package proto
 
@@ -42,7 +42,7 @@ type CreateVLANRequest struct {
 
 func (x *CreateVLANRequest) Reset() {
 	*x = CreateVLANRequest{}
-	mi := &file_proto_router_proto_msgTypes[0]
+	mi := &file_router_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -54,7 +54,7 @@ func (x *CreateVLANRequest) String() string {
 func (*CreateVLANRequest) ProtoMessage() {}
 
 func (x *CreateVLANRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[0]
+	mi := &file_router_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -67,7 +67,7 @@ func (x *CreateVLANRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateVLANRequest.ProtoReflect.Descriptor instead.
 func (*CreateVLANRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{0}
+	return file_router_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *CreateVLANRequest) GetVlanId() uint32 {
@@ -128,7 +128,7 @@ type CreateVLANResponse struct {
 
 func (x *CreateVLANResponse) Reset() {
 	*x = CreateVLANResponse{}
-	mi := &file_proto_router_proto_msgTypes[1]
+	mi := &file_router_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +140,7 @@ func (x *CreateVLANResponse) String() string {
 func (*CreateVLANResponse) ProtoMessage() {}
 
 func (x *CreateVLANResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[1]
+	mi := &file_router_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +153,7 @@ func (x *CreateVLANResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateVLANResponse.ProtoReflect.Descriptor instead.
 func (*CreateVLANResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{1}
+	return file_router_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *CreateVLANResponse) GetSuccess() bool {
@@ -194,7 +194,7 @@ type DeleteVLANRequest struct {
 
 func (x *DeleteVLANRequest) Reset() {
 	*x = DeleteVLANRequest{}
-	mi := &file_proto_router_proto_msgTypes[2]
+	mi := &file_router_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -206,7 +206,7 @@ func (x *DeleteVLANRequest) String() string {
 func (*DeleteVLANRequest) ProtoMessage() {}
 
 func (x *DeleteVLANRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[2]
+	mi := &file_router_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -219,7 +219,7 @@ func (x *DeleteVLANRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVLANRequest.ProtoReflect.Descriptor instead.
 func (*DeleteVLANRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{2}
+	return file_router_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *DeleteVLANRequest) GetVlanId() uint32 {
@@ -241,7 +241,7 @@ type DeleteVLANResponse struct {
 
 func (x *DeleteVLANResponse) Reset() {
 	*x = DeleteVLANResponse{}
-	mi := &file_proto_router_proto_msgTypes[3]
+	mi := &file_router_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -253,7 +253,7 @@ func (x *DeleteVLANResponse) String() string {
 func (*DeleteVLANResponse) ProtoMessage() {}
 
 func (x *DeleteVLANResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[3]
+	mi := &file_router_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -266,7 +266,7 @@ func (x *DeleteVLANResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteVLANResponse.ProtoReflect.Descriptor instead.
 func (*DeleteVLANResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{3}
+	return file_router_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DeleteVLANResponse) GetSuccess() bool {
@@ -295,7 +295,7 @@ type ConfigureNATRequest struct {
 
 func (x *ConfigureNATRequest) Reset() {
 	*x = ConfigureNATRequest{}
-	mi := &file_proto_router_proto_msgTypes[4]
+	mi := &file_router_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -307,7 +307,7 @@ func (x *ConfigureNATRequest) String() string {
 func (*ConfigureNATRequest) ProtoMessage() {}
 
 func (x *ConfigureNATRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[4]
+	mi := &file_router_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -320,7 +320,7 @@ func (x *ConfigureNATRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureNATRequest.ProtoReflect.Descriptor instead.
 func (*ConfigureNATRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{4}
+	return file_router_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ConfigureNATRequest) GetVlanId() uint32 {
@@ -349,7 +349,7 @@ type ConfigureNATResponse struct {
 
 func (x *ConfigureNATResponse) Reset() {
 	*x = ConfigureNATResponse{}
-	mi := &file_proto_router_proto_msgTypes[5]
+	mi := &file_router_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -361,7 +361,7 @@ func (x *ConfigureNATResponse) String() string {
 func (*ConfigureNATResponse) ProtoMessage() {}
 
 func (x *ConfigureNATResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[5]
+	mi := &file_router_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -374,7 +374,7 @@ func (x *ConfigureNATResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureNATResponse.ProtoReflect.Descriptor instead.
 func (*ConfigureNATResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{5}
+	return file_router_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ConfigureNATResponse) GetSuccess() bool {
@@ -403,7 +403,7 @@ type RemoveNATRequest struct {
 
 func (x *RemoveNATRequest) Reset() {
 	*x = RemoveNATRequest{}
-	mi := &file_proto_router_proto_msgTypes[6]
+	mi := &file_router_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +415,7 @@ func (x *RemoveNATRequest) String() string {
 func (*RemoveNATRequest) ProtoMessage() {}
 
 func (x *RemoveNATRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[6]
+	mi := &file_router_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +428,7 @@ func (x *RemoveNATRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveNATRequest.ProtoReflect.Descriptor instead.
 func (*RemoveNATRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{6}
+	return file_router_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RemoveNATRequest) GetVlanId() uint32 {
@@ -457,7 +457,7 @@ type RemoveNATResponse struct {
 
 func (x *RemoveNATResponse) Reset() {
 	*x = RemoveNATResponse{}
-	mi := &file_proto_router_proto_msgTypes[7]
+	mi := &file_router_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +469,7 @@ func (x *RemoveNATResponse) String() string {
 func (*RemoveNATResponse) ProtoMessage() {}
 
 func (x *RemoveNATResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[7]
+	mi := &file_router_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +482,7 @@ func (x *RemoveNATResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveNATResponse.ProtoReflect.Descriptor instead.
 func (*RemoveNATResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{7}
+	return file_router_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RemoveNATResponse) GetSuccess() bool {
@@ -518,7 +518,7 @@ type ConfigureDNSRequest struct {
 
 func (x *ConfigureDNSRequest) Reset() {
 	*x = ConfigureDNSRequest{}
-	mi := &file_proto_router_proto_msgTypes[8]
+	mi := &file_router_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -530,7 +530,7 @@ func (x *ConfigureDNSRequest) String() string {
 func (*ConfigureDNSRequest) ProtoMessage() {}
 
 func (x *ConfigureDNSRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[8]
+	mi := &file_router_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -543,7 +543,7 @@ func (x *ConfigureDNSRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureDNSRequest.ProtoReflect.Descriptor instead.
 func (*ConfigureDNSRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{8}
+	return file_router_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ConfigureDNSRequest) GetVlanId() uint32 {
@@ -593,7 +593,7 @@ type ConfigureDNSResponse struct {
 
 func (x *ConfigureDNSResponse) Reset() {
 	*x = ConfigureDNSResponse{}
-	mi := &file_proto_router_proto_msgTypes[9]
+	mi := &file_router_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -605,7 +605,7 @@ func (x *ConfigureDNSResponse) String() string {
 func (*ConfigureDNSResponse) ProtoMessage() {}
 
 func (x *ConfigureDNSResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[9]
+	mi := &file_router_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -618,7 +618,7 @@ func (x *ConfigureDNSResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigureDNSResponse.ProtoReflect.Descriptor instead.
 func (*ConfigureDNSResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{9}
+	return file_router_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ConfigureDNSResponse) GetSuccess() bool {
@@ -653,7 +653,7 @@ type AddPortMappingRequest struct {
 
 func (x *AddPortMappingRequest) Reset() {
 	*x = AddPortMappingRequest{}
-	mi := &file_proto_router_proto_msgTypes[10]
+	mi := &file_router_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -665,7 +665,7 @@ func (x *AddPortMappingRequest) String() string {
 func (*AddPortMappingRequest) ProtoMessage() {}
 
 func (x *AddPortMappingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[10]
+	mi := &file_router_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -678,7 +678,7 @@ func (x *AddPortMappingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddPortMappingRequest.ProtoReflect.Descriptor instead.
 func (*AddPortMappingRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{10}
+	return file_router_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AddPortMappingRequest) GetContainerIp() string {
@@ -728,7 +728,7 @@ type AddPortMappingResponse struct {
 
 func (x *AddPortMappingResponse) Reset() {
 	*x = AddPortMappingResponse{}
-	mi := &file_proto_router_proto_msgTypes[11]
+	mi := &file_router_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -740,7 +740,7 @@ func (x *AddPortMappingResponse) String() string {
 func (*AddPortMappingResponse) ProtoMessage() {}
 
 func (x *AddPortMappingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[11]
+	mi := &file_router_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -753,7 +753,7 @@ func (x *AddPortMappingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddPortMappingResponse.ProtoReflect.Descriptor instead.
 func (*AddPortMappingResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{11}
+	return file_router_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AddPortMappingResponse) GetSuccess() bool {
@@ -782,7 +782,7 @@ type RemovePortMappingRequest struct {
 
 func (x *RemovePortMappingRequest) Reset() {
 	*x = RemovePortMappingRequest{}
-	mi := &file_proto_router_proto_msgTypes[12]
+	mi := &file_router_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -794,7 +794,7 @@ func (x *RemovePortMappingRequest) String() string {
 func (*RemovePortMappingRequest) ProtoMessage() {}
 
 func (x *RemovePortMappingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[12]
+	mi := &file_router_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -807,7 +807,7 @@ func (x *RemovePortMappingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePortMappingRequest.ProtoReflect.Descriptor instead.
 func (*RemovePortMappingRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{12}
+	return file_router_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RemovePortMappingRequest) GetHostPort() uint32 {
@@ -836,7 +836,7 @@ type RemovePortMappingResponse struct {
 
 func (x *RemovePortMappingResponse) Reset() {
 	*x = RemovePortMappingResponse{}
-	mi := &file_proto_router_proto_msgTypes[13]
+	mi := &file_router_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -848,7 +848,7 @@ func (x *RemovePortMappingResponse) String() string {
 func (*RemovePortMappingResponse) ProtoMessage() {}
 
 func (x *RemovePortMappingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[13]
+	mi := &file_router_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -861,7 +861,7 @@ func (x *RemovePortMappingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePortMappingResponse.ProtoReflect.Descriptor instead.
 func (*RemovePortMappingResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{13}
+	return file_router_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RemovePortMappingResponse) GetSuccess() bool {
@@ -888,7 +888,7 @@ type ListVLANsRequest struct {
 
 func (x *ListVLANsRequest) Reset() {
 	*x = ListVLANsRequest{}
-	mi := &file_proto_router_proto_msgTypes[14]
+	mi := &file_router_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -900,7 +900,7 @@ func (x *ListVLANsRequest) String() string {
 func (*ListVLANsRequest) ProtoMessage() {}
 
 func (x *ListVLANsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[14]
+	mi := &file_router_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -913,7 +913,7 @@ func (x *ListVLANsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVLANsRequest.ProtoReflect.Descriptor instead.
 func (*ListVLANsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{14}
+	return file_router_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListVLANsRequest) GetVlanId() uint32 {
@@ -935,7 +935,7 @@ type ListVLANsResponse struct {
 
 func (x *ListVLANsResponse) Reset() {
 	*x = ListVLANsResponse{}
-	mi := &file_proto_router_proto_msgTypes[15]
+	mi := &file_router_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -947,7 +947,7 @@ func (x *ListVLANsResponse) String() string {
 func (*ListVLANsResponse) ProtoMessage() {}
 
 func (x *ListVLANsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[15]
+	mi := &file_router_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -960,7 +960,7 @@ func (x *ListVLANsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVLANsResponse.ProtoReflect.Descriptor instead.
 func (*ListVLANsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{15}
+	return file_router_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListVLANsResponse) GetVlans() []*VLANInterface {
@@ -1001,7 +1001,7 @@ type VLANInterface struct {
 
 func (x *VLANInterface) Reset() {
 	*x = VLANInterface{}
-	mi := &file_proto_router_proto_msgTypes[16]
+	mi := &file_router_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1013,7 +1013,7 @@ func (x *VLANInterface) String() string {
 func (*VLANInterface) ProtoMessage() {}
 
 func (x *VLANInterface) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[16]
+	mi := &file_router_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1026,7 +1026,7 @@ func (x *VLANInterface) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VLANInterface.ProtoReflect.Descriptor instead.
 func (*VLANInterface) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{16}
+	return file_router_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *VLANInterface) GetVlanId() uint32 {
@@ -1093,7 +1093,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_proto_router_proto_msgTypes[17]
+	mi := &file_router_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1105,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[17]
+	mi := &file_router_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1118,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{17}
+	return file_router_proto_rawDescGZIP(), []int{17}
 }
 
 type HealthResponse struct {
@@ -1137,7 +1137,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_proto_router_proto_msgTypes[18]
+	mi := &file_router_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1149,7 +1149,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_router_proto_msgTypes[18]
+	mi := &file_router_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1162,7 +1162,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_proto_router_proto_rawDescGZIP(), []int{18}
+	return file_router_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *HealthResponse) GetHealthy() bool {
@@ -1193,11 +1193,11 @@ func (x *HealthResponse) GetUptimeSeconds() uint64 {
 	return 0
 }
 
-var File_proto_router_proto protoreflect.FileDescriptor
+var File_router_proto protoreflect.FileDescriptor
 
-const file_proto_router_proto_rawDesc = "" +
+const file_router_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/router.proto\x12\x06router\"\xb2\x01\n" +
+	"\frouter.proto\x12\x06router\"\xb2\x01\n" +
 	"\x11CreateVLANRequest\x12\x17\n" +
 	"\avlan_id\x18\x01 \x01(\rR\x06vlanId\x12\x16\n" +
 	"\x06subnet\x18\x02 \x01(\tR\x06subnet\x12\x18\n" +
@@ -1293,19 +1293,19 @@ const file_proto_router_proto_rawDesc = "" +
 	"\tGetHealth\x12\x15.router.HealthRequest\x1a\x16.router.HealthResponseBFZDgithub.com/Liquescent-Development/arca/helpervm/router-service/protob\x06proto3"
 
 var (
-	file_proto_router_proto_rawDescOnce sync.Once
-	file_proto_router_proto_rawDescData []byte
+	file_router_proto_rawDescOnce sync.Once
+	file_router_proto_rawDescData []byte
 )
 
-func file_proto_router_proto_rawDescGZIP() []byte {
-	file_proto_router_proto_rawDescOnce.Do(func() {
-		file_proto_router_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_router_proto_rawDesc), len(file_proto_router_proto_rawDesc)))
+func file_router_proto_rawDescGZIP() []byte {
+	file_router_proto_rawDescOnce.Do(func() {
+		file_router_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_router_proto_rawDesc), len(file_router_proto_rawDesc)))
 	})
-	return file_proto_router_proto_rawDescData
+	return file_router_proto_rawDescData
 }
 
-var file_proto_router_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
-var file_proto_router_proto_goTypes = []any{
+var file_router_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_router_proto_goTypes = []any{
 	(*CreateVLANRequest)(nil),         // 0: router.CreateVLANRequest
 	(*CreateVLANResponse)(nil),        // 1: router.CreateVLANResponse
 	(*DeleteVLANRequest)(nil),         // 2: router.DeleteVLANRequest
@@ -1327,7 +1327,7 @@ var file_proto_router_proto_goTypes = []any{
 	(*HealthResponse)(nil),            // 18: router.HealthResponse
 	nil,                               // 19: router.ConfigureDNSRequest.HostsEntry
 }
-var file_proto_router_proto_depIdxs = []int32{
+var file_router_proto_depIdxs = []int32{
 	19, // 0: router.ConfigureDNSRequest.hosts:type_name -> router.ConfigureDNSRequest.HostsEntry
 	16, // 1: router.ListVLANsResponse.vlans:type_name -> router.VLANInterface
 	0,  // 2: router.RouterService.CreateVLAN:input_type -> router.CreateVLANRequest
@@ -1355,26 +1355,26 @@ var file_proto_router_proto_depIdxs = []int32{
 	0,  // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_proto_router_proto_init() }
-func file_proto_router_proto_init() {
-	if File_proto_router_proto != nil {
+func init() { file_router_proto_init() }
+func file_router_proto_init() {
+	if File_router_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_router_proto_rawDesc), len(file_proto_router_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_router_proto_rawDesc), len(file_router_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_router_proto_goTypes,
-		DependencyIndexes: file_proto_router_proto_depIdxs,
-		MessageInfos:      file_proto_router_proto_msgTypes,
+		GoTypes:           file_router_proto_goTypes,
+		DependencyIndexes: file_router_proto_depIdxs,
+		MessageInfos:      file_router_proto_msgTypes,
 	}.Build()
-	File_proto_router_proto = out.File
-	file_proto_router_proto_goTypes = nil
-	file_proto_router_proto_depIdxs = nil
+	File_router_proto = out.File
+	file_router_proto_goTypes = nil
+	file_router_proto_depIdxs = nil
 }
