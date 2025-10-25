@@ -1,14 +1,16 @@
 import Foundation
 import Logging
 
-/// Manages Docker networks using OVN/OVS via NetworkHelperVM
-/// Provides translation layer between Docker Network API and OVN/OVS
+/// Manages Docker networks with driver-based routing:
+/// - bridge driver: VLAN-based networking via VLANNetworkProvider (native vmnet performance)
+/// - overlay driver: OVS/OVN networking via NetworkBridge (TAP-over-vsock)
 /// Thread-safe via Swift actor isolation
 public actor NetworkManager {
     private let helperVM: NetworkHelperVM
     private let ipamAllocator: IPAMAllocator
     private let containerManager: ContainerManager
-    private let networkBridge: NetworkBridge
+    private let networkBridge: NetworkBridge      // For overlay networks (TAP-based)
+    private let vlanProvider: VLANNetworkProvider // For bridge networks (VLAN-based)
     private let logger: Logger
 
     // Network state tracking
@@ -71,11 +73,12 @@ public actor NetworkManager {
         }
     }
 
-    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, networkBridge: NetworkBridge, logger: Logger) {
+    public init(helperVM: NetworkHelperVM, ipamAllocator: IPAMAllocator, containerManager: ContainerManager, networkBridge: NetworkBridge, vlanProvider: VLANNetworkProvider, logger: Logger) {
         self.helperVM = helperVM
         self.ipamAllocator = ipamAllocator
         self.containerManager = containerManager
         self.networkBridge = networkBridge
+        self.vlanProvider = vlanProvider
         self.logger = logger
     }
 
@@ -89,6 +92,10 @@ public actor NetworkManager {
         guard await helperVM.getOVNClient() != nil else {
             throw NetworkManagerError.helperVMNotReady
         }
+
+        // Initialize VLAN provider with helper VM
+        try await vlanProvider.setHelperVM(helperVM)
+        logger.info("VLAN network provider initialized")
 
         // Create default "bridge" network if it doesn't exist
         if networksByName["bridge"] == nil {
@@ -138,8 +145,8 @@ public actor NetworkManager {
             throw NetworkManagerError.nameExists(name)
         }
 
-        // Validate driver (only support "bridge" for now)
-        guard driver == "bridge" else {
+        // Validate driver (support "bridge" and "overlay")
+        guard driver == "bridge" || driver == "overlay" else {
             throw NetworkManagerError.unsupportedDriver(driver)
         }
 
@@ -161,18 +168,30 @@ public actor NetworkManager {
         // Generate Docker network ID (64-char hex)
         let networkID = generateNetworkID()
 
-        // Create bridge in helper VM via OVN
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
+        // Route to appropriate provider based on driver
+        if driver == "bridge" {
+            // Create VLAN network via VLANNetworkProvider
+            try await vlanProvider.createNetwork(
+                networkID: networkID,
+                networkName: name,
+                subnet: finalSubnet,
+                gateway: finalGateway
+            )
+            logger.debug("VLAN network created in helper VM", metadata: ["network": "\(name)"])
+        } else if driver == "overlay" {
+            // Create OVS bridge via OVN client
+            guard let ovnClient = await helperVM.getOVNClient() else {
+                throw NetworkManagerError.helperVMNotReady
+            }
+
+            let bridgeName = try await ovnClient.createBridge(
+                networkID: networkID,
+                subnet: finalSubnet,
+                gateway: finalGateway
+            )
+
+            logger.debug("OVS bridge created in helper VM", metadata: ["bridge": "\(bridgeName)"])
         }
-
-        let bridgeName = try await ovnClient.createBridge(
-            networkID: networkID,
-            subnet: finalSubnet,
-            gateway: finalGateway
-        )
-
-        logger.debug("Bridge created in helper VM", metadata: ["bridge": "\(bridgeName)"])
 
         // Store network metadata
         let metadata = NetworkMetadata(
@@ -221,12 +240,17 @@ public actor NetworkManager {
             throw NetworkManagerError.hasActiveEndpoints(metadata.name, metadata.containers.count)
         }
 
-        // Delete bridge from helper VM
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
+        // Route to appropriate provider based on driver
+        if metadata.driver == "bridge" {
+            // Delete VLAN network via VLANNetworkProvider
+            try await vlanProvider.deleteNetwork(networkID: networkID)
+        } else if metadata.driver == "overlay" {
+            // Delete OVS bridge via OVN client
+            guard let ovnClient = await helperVM.getOVNClient() else {
+                throw NetworkManagerError.helperVMNotReady
+            }
+            try await ovnClient.deleteBridge(networkID: networkID)
         }
-
-        try await ovnClient.deleteBridge(networkID: networkID)
 
         // Clean up metadata
         networks.removeValue(forKey: networkID)
@@ -313,59 +337,77 @@ public actor NetworkManager {
         let device = "eth\(deviceIndex)"
         deviceCounter[containerID] = deviceIndex + 1
 
-        // Allocate vsock port for TAP packet relay
-        let containerPort = try await networkBridge.allocateVsockPort()
+        // Get container's LinuxContainer reference for network attachment
+        guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
+            throw NetworkManagerError.containerNotFound(containerID)
+        }
 
-        do {
-            // Attach container to OVS bridge in helper VM
-            guard let ovnClient = await helperVM.getOVNClient() else {
-                await networkBridge.releaseVsockPort(containerPort)
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            let portName = try await ovnClient.attachContainer(
-                containerID: containerID,
-                networkID: resolvedNetworkID,
-                ipAddress: ip,
-                macAddress: mac,
-                hostname: containerName,
-                aliases: aliases,
-                vsockPort: containerPort
-            )
-
-            logger.debug("Container attached to OVS bridge", metadata: [
-                "port": "\(portName)",
-                "ip": "\(ip)",
-                "mac": "\(mac)",
-                "vsockPort": "\(containerPort)"
-            ])
-
-            // Get container's LinuxContainer reference for vsock communication
-            guard let container = try await containerManager.getLinuxContainer(dockerID: containerID) else {
-                await networkBridge.releaseVsockPort(containerPort)
-                throw NetworkManagerError.containerNotFound(containerID)
-            }
-
-            // Attach container to network via NetworkBridge (creates TAP device and starts relay)
-            try await networkBridge.attachContainerToNetwork(
+        // Route to appropriate provider based on driver
+        if metadata.driver == "bridge" {
+            // Attach via VLAN provider (no vsock port needed, uses VLANs directly)
+            try await vlanProvider.attachContainer(
                 container: container,
                 containerID: containerID,
                 networkID: resolvedNetworkID,
                 ipAddress: ip,
                 gateway: metadata.gateway,
                 device: device,
-                containerPort: containerPort
+                subnet: metadata.subnet
             )
-        } catch {
-            // Release port if anything fails
-            await networkBridge.releaseVsockPort(containerPort)
-            throw error
-        }
 
-        logger.info("TAP device created and relay started", metadata: [
-            "device": "\(device)",
-            "ip": "\(ip)"
-        ])
+            logger.info("VLAN interface created in container", metadata: [
+                "device": "\(device)",
+                "ip": "\(ip)"
+            ])
+        } else if metadata.driver == "overlay" {
+            // Allocate vsock port for TAP packet relay
+            let containerPort = try await networkBridge.allocateVsockPort()
+
+            do {
+                // Attach container to OVS bridge in helper VM
+                guard let ovnClient = await helperVM.getOVNClient() else {
+                    await networkBridge.releaseVsockPort(containerPort)
+                    throw NetworkManagerError.helperVMNotReady
+                }
+
+                let portName = try await ovnClient.attachContainer(
+                    containerID: containerID,
+                    networkID: resolvedNetworkID,
+                    ipAddress: ip,
+                    macAddress: mac,
+                    hostname: containerName,
+                    aliases: aliases,
+                    vsockPort: containerPort
+                )
+
+                logger.debug("Container attached to OVS bridge", metadata: [
+                    "port": "\(portName)",
+                    "ip": "\(ip)",
+                    "mac": "\(mac)",
+                    "vsockPort": "\(containerPort)"
+                ])
+
+                // Attach container to network via NetworkBridge (creates TAP device and starts relay)
+                try await networkBridge.attachContainerToNetwork(
+                    container: container,
+                    containerID: containerID,
+                    networkID: resolvedNetworkID,
+                    ipAddress: ip,
+                    gateway: metadata.gateway,
+                    device: device,
+                    containerPort: containerPort
+                )
+
+                logger.info("TAP device created and relay started", metadata: [
+                    "device": "\(device)",
+                    "ip": "\(ip)"
+                ])
+            } catch {
+                // Release port if anything fails
+                await networkBridge.releaseVsockPort(containerPort)
+                throw error
+            }
+        }
 
         // Update ContainerManager's network attachment tracking
         try await containerManager.attachContainerToNetwork(
@@ -422,36 +464,64 @@ public actor NetworkManager {
             throw NetworkManagerError.notConnected(containerID, metadata.name)
         }
 
-        // Detach container from OVS bridge in helper VM
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
-        }
-
-        try await ovnClient.detachContainer(containerID: containerID, networkID: resolvedNetworkID)
-
-        // Detach container from network via NetworkBridge (stops relay and removes TAP device)
-        if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
-            do {
-                try await networkBridge.detachContainerFromNetwork(
-                    container: container,
-                    containerID: containerID,
-                    networkID: resolvedNetworkID
-                )
-                logger.info("TAP device removed and relay stopped", metadata: [
-                    "containerID": "\(containerID)",
-                    "networkID": "\(resolvedNetworkID)"
+        // Route to appropriate provider based on driver
+        if metadata.driver == "bridge" {
+            // Detach via VLAN provider
+            if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
+                do {
+                    try await vlanProvider.detachContainer(
+                        container: container,
+                        containerID: containerID,
+                        networkID: resolvedNetworkID
+                    )
+                    logger.info("VLAN interface removed from container", metadata: [
+                        "containerID": "\(containerID)",
+                        "networkID": "\(resolvedNetworkID)"
+                    ])
+                } catch {
+                    logger.error("Failed to detach via VLANProvider", metadata: [
+                        "error": "\(error)"
+                    ])
+                    // Continue with cleanup even if VLAN detachment fails
+                }
+            } else {
+                logger.warning("Container not found for VLAN detachment", metadata: [
+                    "containerID": "\(containerID)"
                 ])
-            } catch {
-                logger.error("Failed to detach via NetworkBridge", metadata: [
-                    "error": "\(error)"
-                ])
-                // Continue with cleanup even if NetworkBridge detachment fails
+                // Continue with cleanup even if container reference is not available
             }
-        } else {
-            logger.warning("Container not found for NetworkBridge detachment", metadata: [
-                "containerID": "\(containerID)"
-            ])
-            // Continue with cleanup even if container reference is not available
+        } else if metadata.driver == "overlay" {
+            // Detach from OVS bridge in helper VM
+            guard let ovnClient = await helperVM.getOVNClient() else {
+                throw NetworkManagerError.helperVMNotReady
+            }
+
+            try await ovnClient.detachContainer(containerID: containerID, networkID: resolvedNetworkID)
+
+            // Detach container from network via NetworkBridge (stops relay and removes TAP device)
+            if let container = try await containerManager.getLinuxContainer(dockerID: containerID) {
+                do {
+                    try await networkBridge.detachContainerFromNetwork(
+                        container: container,
+                        containerID: containerID,
+                        networkID: resolvedNetworkID
+                    )
+                    logger.info("TAP device removed and relay stopped", metadata: [
+                        "containerID": "\(containerID)",
+                        "networkID": "\(resolvedNetworkID)"
+                    ])
+                } catch {
+                    logger.error("Failed to detach via NetworkBridge", metadata: [
+                        "error": "\(error)"
+                    ])
+                    // Continue with cleanup even if NetworkBridge detachment fails
+                }
+            } else {
+                logger.warning("Container not found for NetworkBridge detachment", metadata: [
+                    "containerID": "\(containerID)"
+                ])
+                // Continue with cleanup even if container reference is not available
+            }
         }
 
         // Update ContainerManager's network attachment tracking
