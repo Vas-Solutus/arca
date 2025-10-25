@@ -19,10 +19,11 @@ CONTROL_API_GO_DIR="$PROJECT_ROOT/helpervm/control-api/proto"
 ROUTER_SERVICE_GO_DIR="$PROJECT_ROOT/helpervm/router-service/proto"
 VLAN_SERVICE_GO_DIR="$PROJECT_ROOT/vminitd/vminitd/extensions/vlan-service/proto"
 
-# Create output directories
-mkdir -p "$SWIFT_OUTPUT_DIR/ControlAPI"
-mkdir -p "$SWIFT_OUTPUT_DIR/RouterService"
-mkdir -p "$SWIFT_OUTPUT_DIR/VLANService"
+# Create output directory
+mkdir -p "$SWIFT_OUTPUT_DIR"
+
+# Clean up old subdirectory structure (files are now in root with prefixed names)
+rm -rf "$SWIFT_OUTPUT_DIR/ControlAPI" "$SWIFT_OUTPUT_DIR/RouterService" "$SWIFT_OUTPUT_DIR/VLANService"
 
 # Check if protoc is installed
 if ! command -v protoc &> /dev/null; then
@@ -53,9 +54,14 @@ echo "→ Generating Swift code for Control API..."
 if [ -f "$CONTROL_API_PROTO" ]; then
     protoc "$CONTROL_API_PROTO" \
         --proto_path="$(dirname "$CONTROL_API_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR/ControlAPI" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR/ControlAPI"
-    echo "  ✓ Generated Swift code in $SWIFT_OUTPUT_DIR/ControlAPI"
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+
+    # Rename to avoid filename conflicts (both control_api and vlan_service use network.proto)
+    mv "$SWIFT_OUTPUT_DIR/network.pb.swift" "$SWIFT_OUTPUT_DIR/control_api.pb.swift"
+    mv "$SWIFT_OUTPUT_DIR/network.grpc.swift" "$SWIFT_OUTPUT_DIR/control_api.grpc.swift"
+
+    echo "  ✓ Generated Swift code: control_api.{pb,grpc}.swift"
 else
     echo "  ⚠ Skipping - proto file not found: $CONTROL_API_PROTO"
 fi
@@ -66,9 +72,14 @@ echo "→ Generating Swift code for Router Service..."
 if [ -f "$ROUTER_SERVICE_PROTO" ]; then
     protoc "$ROUTER_SERVICE_PROTO" \
         --proto_path="$(dirname "$ROUTER_SERVICE_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR/RouterService" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR/RouterService"
-    echo "  ✓ Generated Swift code in $SWIFT_OUTPUT_DIR/RouterService"
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+
+    # Rename for consistency
+    mv "$SWIFT_OUTPUT_DIR/router.pb.swift" "$SWIFT_OUTPUT_DIR/router_service.pb.swift"
+    mv "$SWIFT_OUTPUT_DIR/router.grpc.swift" "$SWIFT_OUTPUT_DIR/router_service.grpc.swift"
+
+    echo "  ✓ Generated Swift code: router_service.{pb,grpc}.swift"
 else
     echo "  ⚠ Skipping - proto file not found: $ROUTER_SERVICE_PROTO"
 fi
@@ -79,9 +90,14 @@ echo "→ Generating Swift code for VLAN Service..."
 if [ -f "$VLAN_SERVICE_PROTO" ]; then
     protoc "$VLAN_SERVICE_PROTO" \
         --proto_path="$(dirname "$VLAN_SERVICE_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR/VLANService" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR/VLANService"
-    echo "  ✓ Generated Swift code in $SWIFT_OUTPUT_DIR/VLANService"
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+
+    # Rename to avoid filename conflicts with control_api
+    mv "$SWIFT_OUTPUT_DIR/network.pb.swift" "$SWIFT_OUTPUT_DIR/vlan_service.pb.swift"
+    mv "$SWIFT_OUTPUT_DIR/network.grpc.swift" "$SWIFT_OUTPUT_DIR/vlan_service.grpc.swift"
+
+    echo "  ✓ Generated Swift code: vlan_service.{pb,grpc}.swift"
 else
     echo "  ⚠ Skipping - proto file not found: $VLAN_SERVICE_PROTO"
 fi
