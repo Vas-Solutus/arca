@@ -26,11 +26,11 @@ fi
 # Ensure Swift Static Linux SDK is installed (required for cross-compilation)
 echo ""
 echo "→ Checking for Swift Static Linux SDK..."
-if ! swift sdk list 2>/dev/null | grep -q "swift-6.0.3-RELEASE-static-linux"; then
+if ! swift sdk list 2>/dev/null | grep -q "static-linux"; then
     echo "ERROR: Swift Static Linux SDK not installed"
     echo ""
     echo "Install it with:"
-    echo "  cd $VMINITD_DIR"
+    echo "  cd $VMINITD_DIR/vminitd"
     echo "  make cross-prep"
     echo ""
     echo "This is a one-time setup that takes ~5 minutes."
