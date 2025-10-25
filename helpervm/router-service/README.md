@@ -24,7 +24,7 @@ The router service runs in the helper VM and provides:
 1. VLAN interface management via netlink
 2. NAT/DNAT via iptables for connectivity and port forwarding
 3. DNS resolution via dnsmasq with per-network configuration
-4. gRPC API accessible from Arca daemon via vsock
+4. gRPC API over vsock (port 50052)
 
 See `Documentation/VLAN_ROUTER_ARCHITECTURE.md` for complete architecture details.
 
@@ -49,7 +49,7 @@ protoc --go_out=. --go_opt=paths=source_relative \
 
 ## Usage
 
-The service runs in the helper VM and listens on TCP port 50052 (accessible via vsock).
+The service runs in the helper VM and listens on vsock port 50052.
 
 From Arca daemon:
 ```swift
@@ -72,6 +72,7 @@ See `proto/router.proto` for the complete gRPC service definition.
 ## Dependencies
 
 - Go 1.24+
+- github.com/mdlayher/vsock v1.2.1
 - github.com/vishvananda/netlink v1.3.1
 - google.golang.org/grpc v1.76.0
 - google.golang.org/protobuf v1.36.10
@@ -82,7 +83,7 @@ The router service is started by the helper VM startup script alongside OVS/OVN 
 
 ```bash
 # In helper VM startup.sh
-/usr/local/bin/router-service --port 50052 &
+/usr/local/bin/router-service --vsock-port 50052 &
 ```
 
 The service requires:

@@ -3,20 +3,21 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/mdlayher/vsock"
 	pb "github.com/Liquescent-Development/arca/helpervm/router-service/proto"
 	"google.golang.org/grpc"
 )
 
 func main() {
-	port := flag.Int("port", 50052, "gRPC server port")
+	vsockPort := flag.Uint("vsock-port", 50052, "vsock port to listen on")
 	flag.Parse()
+
+	log.Println("Starting Arca Router Service...")
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer()
@@ -25,14 +26,14 @@ func main() {
 	routerServer := NewRouterServer()
 	pb.RegisterRouterServiceServer(grpcServer, routerServer)
 
-	// Listen on TCP port
-	listenAddr := fmt.Sprintf("0.0.0.0:%d", *port)
-	listener, err := net.Listen("tcp", listenAddr)
+	// Listen on vsock using mdlayher/vsock library
+	listener, err := vsock.Listen(uint32(*vsockPort), nil)
 	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", listenAddr, err)
+		log.Fatalf("Failed to listen on vsock port %d: %v", *vsockPort, err)
 	}
+	defer listener.Close()
 
-	log.Printf("Router service listening on %s", listenAddr)
+	log.Printf("Router service listening on vsock port %d", *vsockPort)
 
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

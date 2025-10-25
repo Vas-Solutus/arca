@@ -68,6 +68,12 @@ RUN go mod init arca-network-api || true && \
     go mod tidy && \
     CGO_ENABLED=0 go build -o /tmp/arca-network-api .
 
+# Build router service
+COPY router-service/ /build/router-service/
+WORKDIR /build/router-service
+RUN go mod download && \
+    CGO_ENABLED=0 go build -o /tmp/router-service .
+
 # ============================================================================
 # Stage 2: Runtime - Minimal image with only necessary components
 # ============================================================================
@@ -101,6 +107,10 @@ COPY --from=builder /usr/share/ovn /usr/share/ovn
 COPY --from=builder /tmp/arca-network-api /usr/local/bin/arca-network-api
 RUN chmod +x /usr/local/bin/arca-network-api
 
+# Copy router service
+COPY --from=builder /tmp/router-service /usr/local/bin/router-service
+RUN chmod +x /usr/local/bin/router-service
+
 # Copy startup scripts
 COPY scripts/startup.sh /usr/local/bin/startup.sh
 COPY scripts/ovs-init.sh /usr/local/bin/ovs-init.sh
@@ -118,8 +128,8 @@ RUN mkdir -p \
     /etc/ovn \
     /var/run/ovn
 
-# Expose TCP port for control API (port 9999)
-# Note: Using TCP instead of vsock due to grpc-swift limitation
-EXPOSE 9999
+# vsock ports (not TCP - using mdlayher/vsock library):
+# Port 9999: OVS/OVN control API
+# Port 50052: Router service for VLAN networking
 
 ENTRYPOINT ["/usr/local/bin/startup.sh"]
