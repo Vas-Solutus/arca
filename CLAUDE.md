@@ -72,33 +72,35 @@ swift package clean            # Swift-only clean
 
 ### One-Time Setup: Building Custom vminit with Networking Support
 
-**Critical prerequisite**: Arca requires a custom `vminit:latest` init system image with networking support before containers can use Arca's networking features.
+**Critical prerequisite**: Arca uses a custom fork of Apple's vminitd with extensions for networking. The fork is managed as a git submodule.
 
 ```bash
-# Install Swift Static Linux SDK (one-time, ~5 minutes)
-cd .build/checkouts/containerization/vminitd
-make cross-prep
-cd /Users/kiener/code/arca
+# Initialize vminitd submodule (one-time)
+git submodule update --init --recursive
 
-# Build arca-tap-forwarder (cross-compiled to Linux)
-make tap-forwarder
-
-# Build custom vminit:latest with arca-tap-forwarder included
+# Build custom vminit:latest with Arca extensions
 make vminit
 ```
 
 This creates `vminit:latest` OCI image containing:
-- `/sbin/vminitd` - Apple's init system (PID 1)
+- `/sbin/vminitd` - Apple's init system (PID 1) with Arca extensions
 - `/sbin/vmexec` - Apple's exec helper
-- `/sbin/arca-tap-forwarder` - Arca's TAP networking forwarder (Phase 3.4+)
+- **Extensions** (in vminitd submodule):
+  - `arca-tap-forwarder` - TAP networking forwarder for overlay networks
+  - `vlan-service` - VLAN configuration service for bridge networks (Phase 3.5.5+)
 
 **Why this is needed**:
 - vminit runs as PID 1 inside each container's Linux VM
 - Provides gRPC API over vsock for container management
-- arca-tap-forwarder enables container networking via TAP-over-vsock
-- All components must be cross-compiled to Linux using Swift Static Linux SDK
+- Extensions enable dynamic network configuration without requiring shell/utilities in containers
+- Works with distroless containers (e.g., gcr.io/distroless/static)
 
-**Important**: The custom vminit is used transparently by ALL containers. The TAP forwarder runs in the init system, not in user container space.
+**Important**: The custom vminit is used transparently by ALL containers.
+
+**vminitd Submodule**: The fork is at `vminitd/` (git submodule → `github.com/Liquescent-Development/arca-vminitd`), which is a fork of Apple's containerization repo. This allows us to:
+- Stay in sync with upstream Apple changes
+- Add Arca-specific extensions in `vminitd/extensions/`
+- Maintain separate git history for vminitd changes
 
 ### One-Time Setup: Building Kernel with TUN Support
 
@@ -276,29 +278,48 @@ All behaviors must follow these specs for:
 - Used for: image pull progress, exec attach, container attach, log streaming
 - Docker progress format: newline-delimited JSON with progress details
 
-**Networking Architecture (Phase 3)**:
-- Helper VM runs OVN/OVS for bridge network emulation
-- Managed as a Container via Apple Containerization framework
+**Networking Architecture (Phase 3 - Dual Architecture)**:
+
+Arca uses **two different networking implementations** based on Docker network driver:
+
+1. **Bridge Networks** (Phase 3.5.5+) - VLAN + Simple Router
+   - Uses VLAN tagging for network isolation (eth0.100, eth0.200, etc.)
+   - Native vmnet performance (5-10x faster than TAP-over-vsock)
+   - Simple Linux routing in helper VM (no OVS required)
+   - 90% less memory usage compared to OVS approach
+   - Configured via vminitd gRPC API (works with distroless containers)
+   - See `Documentation/VLAN_ROUTER_ARCHITECTURE.md` for complete design
+
+2. **Overlay Networks** (Future) - OVS/OVN + TAP-over-vsock
+   - For multi-host networking scenarios
+   - Uses TAP devices + vsock relay to OVS bridges
+   - Supports tunnel protocols (VXLAN, Geneve)
+   - See `Documentation/TAP_OVER_VSOCK_ARCHITECTURE.md` for complete design
+
+**Common Infrastructure**:
+- Helper VM managed as a Container via Apple Containerization framework
 - gRPC control API over vsock using `Container.dial()`
-- Each Docker network = separate OVS bridge in helper VM
-- Container VMs attach to bridges via virtio-net (VZFileHandleNetworkDeviceAttachment)
-- See `Documentation/NETWORK_ARCHITECTURE.md` for complete design
+- Router selects implementation based on `--driver` flag (bridge vs overlay)
+- See `Documentation/NETWORK_ARCHITECTURE.md` for overview
 
 ## Implementation Status
 
-**Current State**: Phase 3 In Progress - OVN/OVS Helper VM networking
+**Current State**: Phase 3.5.5 Starting - VLAN + Router for Bridge Networks
 
 The codebase contains:
 - ✅ Full SwiftNIO-based Unix socket server
-- ✅ Router with API version normalization
-- ✅ Handler structure for containers, images, system endpoints
+- ✅ Router with API version normalization and middleware pipeline
+- ✅ Handler structure for containers, images, system, network endpoints
 - ✅ Type definitions for Docker API models
-- ✅ Basic container lifecycle (create, start, stop, list, inspect, remove, logs, wait)
+- ✅ Container lifecycle (create, start, stop, list, inspect, remove, logs, wait, attach, exec)
 - ✅ Image operations (list, inspect, pull, remove, tag)
 - ✅ Real-time streaming progress for image pulls
 - ✅ Exec API (Phase 2) - Complete with attach support
-- 🚧 Helper VM networking (Phase 3.1) - NetworkHelperVM, OVNClient, and gRPC API implemented
-- 🚧 Network and Volume APIs (Phase 3)
+- ✅ Helper VM infrastructure (Phase 3.1) - NetworkHelperVM, OVNClient, gRPC API
+- ✅ Network API (Phase 3.2-3.5) - NetworkManager with OVS-based bridge networks
+- ✅ Volume API (Phase 3.3) - Basic volume operations
+- ✅ vminitd fork as submodule - Ready for extensions
+- 🚧 VLAN + Router for bridge networks (Phase 3.5.5) - Architecture documented, implementation starting
 - 🚧 Build API (Phase 4)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
@@ -474,6 +495,38 @@ When working with the helper VM networking stack:
    - Run `make helpervm` to rebuild OCI image
    - Restart Arca daemon to pick up new image
 
+### vminitd Submodule (Phase 3.5.5+)
+
+The `vminitd/` directory is a git submodule containing our fork of Apple's containerization repo with Arca-specific extensions:
+
+1. **Working with the submodule**:
+   - The submodule has its own git history (separate from arca repo)
+   - Changes to vminitd must be committed in the submodule first, then arca repo updated
+   - To update: `cd vminitd && git pull origin main && cd .. && git add vminitd`
+
+2. **Adding vminitd extensions**:
+   - Extensions go in `vminitd/extensions/`
+   - Current extensions:
+     - `tap-forwarder/` - Go-based TAP networking forwarder
+     - `vlan-service/` - (Phase 3.5.5) VLAN configuration service
+   - Extensions are built into `vminit:latest` OCI image
+
+3. **Protobuf changes for vminitd extensions**:
+   - Extension proto files go in `vminitd/extensions/*/proto/`
+   - Generate Go code with protoc in the vminitd submodule
+   - Extensions communicate with Arca daemon via `Container.dial()` vsock
+
+4. **Building custom vminit**: After modifying vminitd extensions
+   - Commit changes in vminitd submodule: `cd vminitd && git commit -am "..." && git push`
+   - Update arca repo: `cd .. && git add vminitd && git commit -m "chore: update vminitd submodule"`
+   - Rebuild vminit image: `make vminit`
+   - Containers created after this will use the new vminit
+
+5. **Staying in sync with Apple's upstream**:
+   - The fork tracks `apple/containerization` as upstream
+   - To merge Apple's changes: `cd vminitd && git pull upstream main && git push origin main`
+   - Our extensions in `vminitd/extensions/` are not in Apple's repo
+
 ### Critical Implementation Details
 
 1. **ID Mapping**: Always maintain bidirectional mapping in `ContainerManager.idMapping` and `reverseMapping`
@@ -541,20 +594,32 @@ The `helpervm/` directory contains everything needed for the networking helper V
 
 ```
 helpervm/
-├── Dockerfile                  # Multi-stage build: OVS/OVN + Go control API
+├── Dockerfile                  # Multi-stage build: OVS/OVN + Router + Go control API
 ├── proto/
-│   └── network.proto          # gRPC API definition (shared with Arca daemon)
-├── control-api/               # Go gRPC server
+│   ├── network.proto          # gRPC API definition for OVS (overlay networks)
+│   └── router.proto           # gRPC API definition for VLAN router (bridge networks)
+├── control-api/               # Go gRPC server (OVS management)
 │   ├── main.go                # Control API entry point
-│   └── proto/                 # Generated Go code (from network.proto)
+│   ├── server.go              # OVS bridge/port operations
+│   ├── tap_relay.go           # TAP-over-vsock relay for overlay networks
+│   └── proto/                 # Generated Go code
+├── router-service/            # Go gRPC server (VLAN routing - Phase 3.5.5+)
+│   ├── main.go                # Router service entry point
+│   ├── router.go              # VLAN interface management via netlink
+│   └── proto/                 # Generated Go code
 ├── scripts/
-│   ├── startup.sh             # VM entrypoint: starts OVS/OVN + control API
-│   └── ovs-init.sh            # OVS/OVN initialization
+│   ├── startup.sh             # VM entrypoint: starts OVS/OVN + Router + APIs
+│   ├── ovs-init.sh            # OVS/OVN initialization
+│   └── router-init.sh         # Router initialization (iptables, IP forwarding)
 └── config/
     └── dnsmasq.conf           # DHCP/DNS configuration for container networks
 ```
 
 **Build output**: `~/.arca/helpervm/oci-layout/` - OCI image layout compatible with Containerization framework
+
+**Dual Architecture**:
+- **Bridge networks**: Use router-service with VLAN tagging (simple, fast)
+- **Overlay networks**: Use control-api with OVS/OVN (complex, multi-host capable)
 
 ## Known Limitations
 
