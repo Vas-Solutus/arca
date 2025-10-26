@@ -149,7 +149,7 @@ public actor OVNClient {
         hostname: String,
         aliases: [String] = [],
         vsockPort: UInt32
-    ) async throws -> String {
+    ) async throws -> Arca_Network_AttachContainerResponse {
         guard let client = client else {
             throw OVNClientError.notConnected
         }
@@ -157,7 +157,7 @@ public actor OVNClient {
         logger.info("Attaching container to network", metadata: [
             "containerID": "\(containerID)",
             "networkID": "\(networkID)",
-            "ip": "\(ipAddress)",
+            "ip": "\(ipAddress.isEmpty ? "dynamic" : ipAddress)",
             "mac": "\(macAddress)",
             "vsockPort": "\(vsockPort)"
         ])
@@ -178,8 +178,11 @@ public actor OVNClient {
             throw OVNClientError.operationFailed(response.error)
         }
 
-        logger.info("Container attached successfully", metadata: ["portName": "\(response.portName)"])
-        return response.portName
+        logger.info("Container attached successfully", metadata: [
+            "portName": "\(response.portName)",
+            "ipAddress": "\(response.ipAddress)"
+        ])
+        return response
     }
 
     /// Detach a container from a network

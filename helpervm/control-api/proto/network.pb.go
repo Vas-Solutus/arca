@@ -435,6 +435,7 @@ type AttachContainerResponse struct {
 	PortName      string                 `protobuf:"bytes,1,opt,name=port_name,json=portName,proto3" json:"port_name,omitempty"` // OVS port name
 	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
 	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	IpAddress     string                 `protobuf:"bytes,4,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"` // Allocated IP address (dynamic or static)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -486,6 +487,13 @@ func (x *AttachContainerResponse) GetSuccess() bool {
 func (x *AttachContainerResponse) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *AttachContainerResponse) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
 	}
 	return ""
 }
@@ -1094,11 +1102,13 @@ const file_network_proto_rawDesc = "" +
 	"\bhostname\x18\x05 \x01(\tR\bhostname\x12\x18\n" +
 	"\aaliases\x18\x06 \x03(\tR\aaliases\x12\x1d\n" +
 	"\n" +
-	"vsock_port\x18\a \x01(\rR\tvsockPort\"f\n" +
+	"vsock_port\x18\a \x01(\rR\tvsockPort\"\x85\x01\n" +
 	"\x17AttachContainerResponse\x12\x1b\n" +
 	"\tport_name\x18\x01 \x01(\tR\bportName\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"Z\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x04 \x01(\tR\tipAddress\"Z\n" +
 	"\x16DetachContainerRequest\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1d\n" +
 	"\n" +

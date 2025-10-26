@@ -327,11 +327,12 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 		}
 	}
 
-	log.Printf("Successfully attached container %s to network %s", req.ContainerId, req.NetworkId)
+	log.Printf("Successfully attached container %s to network %s (IP: %s)", req.ContainerId, req.NetworkId, allocatedIP)
 
 	return &pb.AttachContainerResponse{
-		PortName: portName,
-		Success:  true,
+		PortName:  portName,
+		Success:   true,
+		IpAddress: allocatedIP,
 	}, nil
 }
 

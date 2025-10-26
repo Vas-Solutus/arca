@@ -126,6 +126,9 @@ public struct Arca_Network_AttachContainerResponse: Sendable {
 
   public var error: String = String()
 
+  /// Allocated IP address (dynamic or static)
+  public var ipAddress: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -582,7 +585,7 @@ extension Arca_Network_AttachContainerRequest: SwiftProtobuf.Message, SwiftProto
 
 extension Arca_Network_AttachContainerResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AttachContainerResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}port_name\0\u{1}success\0\u{1}error\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}port_name\0\u{1}success\0\u{1}error\0\u{3}ip_address\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -593,6 +596,7 @@ extension Arca_Network_AttachContainerResponse: SwiftProtobuf.Message, SwiftProt
       case 1: try { try decoder.decodeSingularStringField(value: &self.portName) }()
       case 2: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
       default: break
       }
     }
@@ -608,6 +612,9 @@ extension Arca_Network_AttachContainerResponse: SwiftProtobuf.Message, SwiftProt
     if !self.error.isEmpty {
       try visitor.visitSingularStringField(value: self.error, fieldNumber: 3)
     }
+    if !self.ipAddress.isEmpty {
+      try visitor.visitSingularStringField(value: self.ipAddress, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -615,6 +622,7 @@ extension Arca_Network_AttachContainerResponse: SwiftProtobuf.Message, SwiftProt
     if lhs.portName != rhs.portName {return false}
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
+    if lhs.ipAddress != rhs.ipAddress {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -55,7 +55,6 @@ do {
     print("     - Healthy: \(health.healthy)")
     print("     - OVS: \(health.ovsStatus)")
     print("     - OVN: \(health.ovnStatus)")
-    print("     - Dnsmasq: \(health.dnsmasqStatus)")
     print("     - Uptime: \(health.uptimeSeconds)s")
 
     if !health.healthy {

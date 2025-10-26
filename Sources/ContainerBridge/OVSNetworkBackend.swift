@@ -229,10 +229,7 @@ public actor OVSNetworkBackend {
             "network_name": "\(metadata.name)"
         ])
 
-        // TODO: Replace with OVN DHCP
-        // For now, use simple sequential IP allocation
-        // OVN will handle this via DHCP options and dynamic address assignment
-        let ipAddress = allocateIPFromSubnet(subnet: metadata.subnet, networkID: networkID)
+        // Use dynamic DHCP allocation (OVN will assign IP automatically)
         let macAddress = generateMACAddress()
 
         // Determine device name (eth0, eth1, etc.)
@@ -249,15 +246,19 @@ public actor OVSNetworkBackend {
             throw NetworkManagerError.helperVMNotReady
         }
 
-        _ = try await ovnClient.attachContainer(
+        // Attach to OVN - this will allocate IP via DHCP and return it
+        let response = try await ovnClient.attachContainer(
             containerID: containerID,
             networkID: networkID,
-            ipAddress: ipAddress,
+            ipAddress: "", // Empty = dynamic DHCP
             macAddress: macAddress,
             hostname: containerName,
             aliases: aliases,
             vsockPort: containerPort
         )
+
+        // Get the allocated IP from the response
+        let ipAddress = response.ipAddress
 
         // Attach to network bridge via NetworkBridge
         try await networkBridge.attachContainerToNetwork(
@@ -387,23 +388,6 @@ public actor OVSNetworkBackend {
         let uuid = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         // Duplicate to get 64 chars
         return uuid + uuid
-    }
-
-    /// Simple IP allocation from subnet
-    /// TODO: Remove when OVN DHCP is fully implemented
-    private func allocateIPFromSubnet(subnet: String, networkID: String) -> String {
-        // Simple sequential allocation: .2, .3, .4, etc. (.1 is gateway)
-        // This is a temporary solution until OVN DHCP takes over
-        let parts = subnet.split(separator: "/")
-        guard let networkPart = parts.first else { return subnet }
-        let octets = networkPart.split(separator: ".")
-        guard octets.count == 4 else { return String(networkPart) }
-
-        // Count existing attachments on this network and allocate next IP
-        let existingCount = containerAttachments[networkID]?.count ?? 0
-        let nextIP = existingCount + 2  // .1 is gateway, start from .2
-
-        return "\(octets[0]).\(octets[1]).\(octets[2]).\(nextIP)"
     }
 
     private func calculateGateway(subnet: String) -> String {
