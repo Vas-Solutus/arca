@@ -18,20 +18,17 @@ public actor NetworkManager {
 
     // Dependencies for OVS backend
     private let helperVM: NetworkHelperVM?
-    private let ipamAllocator: IPAMAllocator?
     private let networkBridge: NetworkBridge?
 
     /// Initialize NetworkManager with configuration
     public init(
         config: ArcaConfig,
         helperVM: NetworkHelperVM?,
-        ipamAllocator: IPAMAllocator?,
         networkBridge: NetworkBridge?,
         logger: Logger
     ) {
         self.config = config
         self.helperVM = helperVM
-        self.ipamAllocator = ipamAllocator
         self.networkBridge = networkBridge
         self.logger = logger
     }
@@ -46,14 +43,12 @@ public actor NetworkManager {
         case .ovs:
             // Initialize OVS backend (requires helper VM)
             guard let helperVM = helperVM,
-                  let ipamAllocator = ipamAllocator,
                   let networkBridge = networkBridge else {
                 throw NetworkManagerError.helperVMNotReady
             }
 
             let backend = OVSNetworkBackend(
                 helperVM: helperVM,
-                ipamAllocator: ipamAllocator,
                 networkBridge: networkBridge,
                 logger: logger
             )

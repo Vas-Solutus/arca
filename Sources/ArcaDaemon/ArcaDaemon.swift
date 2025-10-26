@@ -14,7 +14,6 @@ public final class ArcaDaemon {
     private var execManager: ExecManager?
     private var networkHelperVM: NetworkHelperVM?
     private var networkManager: NetworkManager?
-    private var ipamAllocator: IPAMAllocator?
     private var sharedNetwork: SharedVmnetNetwork?
 
     public init(socketPath: String, logger: Logger) {
@@ -186,10 +185,6 @@ public final class ArcaDaemon {
         let execManager = ExecManager(containerManager: containerManager, logger: logger)
         self.execManager = execManager
 
-        // Initialize IPAM allocator for network IP management
-        let ipamAllocator = IPAMAllocator(logger: logger)
-        self.ipamAllocator = ipamAllocator
-
         // Initialize NetworkBridge for TAP device management and packet relay
         let networkBridge: NetworkBridge?
         if config.networkBackend == .ovs, let helperVM = networkHelperVM {
@@ -205,7 +200,6 @@ public final class ArcaDaemon {
         let nm = NetworkManager(
             config: config,
             helperVM: networkHelperVM,
-            ipamAllocator: ipamAllocator,
             networkBridge: networkBridge,
             logger: logger
         )

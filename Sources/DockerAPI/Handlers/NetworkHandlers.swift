@@ -146,12 +146,6 @@ public struct NetworkHandlers: Sendable {
             default:
                 return .failure(NetworkError.createFailed(error.description))
             }
-        } catch let error as IPAMError {
-            logger.error("IPAM error creating network", metadata: [
-                "name": "\(request.name)",
-                "error": "\(error)"
-            ])
-            return .failure(NetworkError.createFailed(error.description))
         } catch {
             logger.error("Unexpected error creating network", metadata: [
                 "name": "\(request.name)",
@@ -261,13 +255,6 @@ public struct NetworkHandlers: Sendable {
             default:
                 return .failure(NetworkError.connectFailed(error.description))
             }
-        } catch let error as IPAMError {
-            logger.error("IPAM error connecting container", metadata: [
-                "network": "\(networkID)",
-                "container": "\(containerID)",
-                "error": "\(error)"
-            ])
-            return .failure(NetworkError.connectFailed(error.description))
         } catch {
             logger.error("Unexpected error connecting container", metadata: [
                 "network": "\(networkID)",

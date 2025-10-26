@@ -107,10 +107,9 @@ ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
     --detach --log-file=/var/log/ovn/ovn-controller.log \
     unix:/var/run/openvswitch/db.sock
 
-# Per-network dnsmasq instances will be started dynamically by control-api
-# when networks are created. No global dnsmasq instance needed.
-echo "dnsmasq will be started per-network by control-api..."
-mkdir -p /etc/dnsmasq.d
+# OVN native DHCP/DNS replaces dnsmasq
+# DNS records managed via ovn-nbctl, DHCP provided by OVN logical switches
+echo "Using OVN native DHCP/DNS (no dnsmasq needed)..."
 mkdir -p /var/run
 
 # Wait for services to be ready

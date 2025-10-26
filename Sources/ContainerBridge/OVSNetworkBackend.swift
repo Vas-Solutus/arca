@@ -22,7 +22,6 @@ import Containerization
 /// - 4 vsock hops per packet
 public actor OVSNetworkBackend {
     private let helperVM: NetworkHelperVM
-    private let ipamAllocator: IPAMAllocator
     private let networkBridge: NetworkBridge
     private let logger: Logger
 
@@ -33,17 +32,19 @@ public actor OVSNetworkBackend {
     private var deviceCounter: [String: Int] = [:]  // Container ID -> next device index (eth0, eth1, etc.)
     private var portAllocator: PortAllocator  // vsock port allocator for TAP forwarding
 
+    // Subnet allocation tracking (simple counter for auto-allocation)
+    // TODO: Remove when OVN DHCP is fully implemented
+    private var nextSubnetByte: UInt8 = 18  // Start at 172.18.0.0/16
+
     // Container attachment details: networkID -> containerID -> (ip, mac, aliases)
     private var containerAttachments: [String: [String: NetworkAttachment]] = [:]
 
     public init(
         helperVM: NetworkHelperVM,
-        ipamAllocator: IPAMAllocator,
         networkBridge: NetworkBridge,
         logger: Logger
     ) {
         self.helperVM = helperVM
-        self.ipamAllocator = ipamAllocator
         self.networkBridge = networkBridge
         self.logger = logger
         self.portAllocator = PortAllocator(basePort: 20000)
@@ -107,9 +108,13 @@ public actor OVSNetworkBackend {
             effectiveGateway = gateway ?? calculateGateway(subnet: subnet)
         } else {
             // Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16
-            let (allocatedSubnet, allocatedGateway) = try await ipamAllocator.allocateSubnet()
-            effectiveSubnet = allocatedSubnet
-            effectiveGateway = allocatedGateway
+            // Simple counter-based allocation (TODO: OVN will handle this via DHCP)
+            effectiveSubnet = "172.\(nextSubnetByte).0.0/16"
+            effectiveGateway = "172.\(nextSubnetByte).0.1"
+            nextSubnetByte += 1
+            if nextSubnetByte > 31 {
+                nextSubnetByte = 18  // Wrap around
+            }
         }
 
         // Create OVS bridge in helper VM
@@ -224,12 +229,10 @@ public actor OVSNetworkBackend {
             "network_name": "\(metadata.name)"
         ])
 
-        // Allocate IP address
-        let ipAddress = try await ipamAllocator.allocateIP(networkID: networkID, subnet: metadata.subnet, preferredIP: nil)
-
-        // Track the allocation immediately
-        await ipamAllocator.trackAllocation(networkID: networkID, containerID: containerID, ip: ipAddress)
-
+        // TODO: Replace with OVN DHCP
+        // For now, use simple sequential IP allocation
+        // OVN will handle this via DHCP options and dynamic address assignment
+        let ipAddress = allocateIPFromSubnet(subnet: metadata.subnet, networkID: networkID)
         let macAddress = generateMACAddress()
 
         // Determine device name (eth0, eth1, etc.)
@@ -326,8 +329,8 @@ public actor OVSNetworkBackend {
             networkID: networkID
         )
 
-        // Release IP address
-        await ipamAllocator.releaseIP(networkID: networkID, containerID: containerID)
+        // TODO: Release IP from OVN DHCP
+        // OVN will handle IP release automatically when logical switch port is deleted
 
         // Update tracking
         metadata.containers.remove(containerID)
@@ -386,7 +389,23 @@ public actor OVSNetworkBackend {
         return uuid + uuid
     }
 
-    /// Calculate gateway IP from subnet
+    /// Simple IP allocation from subnet
+    /// TODO: Remove when OVN DHCP is fully implemented
+    private func allocateIPFromSubnet(subnet: String, networkID: String) -> String {
+        // Simple sequential allocation: .2, .3, .4, etc. (.1 is gateway)
+        // This is a temporary solution until OVN DHCP takes over
+        let parts = subnet.split(separator: "/")
+        guard let networkPart = parts.first else { return subnet }
+        let octets = networkPart.split(separator: ".")
+        guard octets.count == 4 else { return String(networkPart) }
+
+        // Count existing attachments on this network and allocate next IP
+        let existingCount = containerAttachments[networkID]?.count ?? 0
+        let nextIP = existingCount + 2  // .1 is gateway, start from .2
+
+        return "\(octets[0]).\(octets[1]).\(octets[2]).\(nextIP)"
+    }
+
     private func calculateGateway(subnet: String) -> String {
         // Simple implementation: use .1 as gateway
         // e.g., 172.18.0.0/16 -> 172.18.0.1

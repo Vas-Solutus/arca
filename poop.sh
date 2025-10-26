@@ -1,0 +1,13 @@
+docker network create my-network;
+sleep 1;
+docker run -d --name container1 --network my-network alpine sleep 3600;
+sleep 1;
+docker run -d --name container2 --network my-network alpine sleep 3600;
+sleep 1;
+docker network create my-network2;
+sleep 1;
+docker run -d --name container3 --network my-network2 alpine sleep 3600;
+sleep 1;
+docker network connect my-network2 container1;
+sleep 1;
+docker exec -it container1 sh;
