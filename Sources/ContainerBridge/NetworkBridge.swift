@@ -142,10 +142,13 @@ public actor NetworkBridge {
         do {
             let client = try await TAPForwarderClient(container: container, logger: logger)
 
+            // For DHCP (empty IP), use placeholder that will be overridden by DHCP client
+            let effectiveIP = ipAddress.isEmpty ? "0.0.0.1" : ipAddress
+
             let response = try await client.attachNetwork(
                 device: device,
                 vsockPort: containerPort,
-                ipAddress: ipAddress,
+                ipAddress: effectiveIP,
                 gateway: gateway,
                 netmask: 24
             )

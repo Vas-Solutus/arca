@@ -127,8 +127,10 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		log.Printf("Warning: Failed to create DHCP options: %v", err)
 		// Continue anyway - DHCP is optional enhancement
 	} else {
-		dhcpUUID := strings.TrimSpace(dhcpOutput)
-		log.Printf("Created DHCP options with UUID: %s", dhcpUUID)
+		// Extract UUID from output (first line, trimmed)
+		lines := strings.Split(dhcpOutput, "\n")
+		dhcpUUID := strings.TrimSpace(lines[0])
+		log.Printf("Created DHCP options with UUID: %s (raw output: %q)", dhcpUUID, dhcpOutput)
 
 		// Set DHCP options: lease time, router (gateway), DNS server (gateway), server ID
 		// Generate a MAC address for the DHCP server (gateway)
