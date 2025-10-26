@@ -55,7 +55,7 @@ message DeleteBridgeResponse {
 message AttachContainerRequest {
   string container_id = 1;
   string network_id = 2;
-  string ip_address = 3;    // Container's IP on this network
+  string ip_address = 3;    // Optional: Static IP (empty = use DHCP dynamic allocation)
   string mac_address = 4;   // Container's MAC address
   string hostname = 5;      // Container hostname for DNS
   repeated string aliases = 6; // Additional DNS aliases
@@ -139,6 +139,5 @@ message GetHealthResponse {
   bool healthy = 1;
   string ovs_status = 2;    // OVS daemon status
   string ovn_status = 3;    // OVN controller status
-  string dnsmasq_status = 4; // dnsmasq status
-  uint64 uptime_seconds = 5; // Helper VM uptime
+  uint64 uptime_seconds = 4; // Helper VM uptime
 }

@@ -94,7 +94,7 @@ public struct Arca_Network_AttachContainerRequest: Sendable {
 
   public var networkID: String = String()
 
-  /// Container's IP on this network
+  /// Optional: Static IP (empty = use DHCP dynamic allocation)
   public var ipAddress: String = String()
 
   /// Container's MAC address
@@ -362,9 +362,6 @@ public struct Arca_Network_GetHealthResponse: Sendable {
 
   /// OVN controller status
   public var ovnStatus: String = String()
-
-  /// dnsmasq status
-  public var dnsmasqStatus: String = String()
 
   /// Helper VM uptime
   public var uptimeSeconds: UInt64 = 0
@@ -956,7 +953,7 @@ extension Arca_Network_GetHealthRequest: SwiftProtobuf.Message, SwiftProtobuf._M
 
 extension Arca_Network_GetHealthResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetHealthResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}healthy\0\u{3}ovs_status\0\u{3}ovn_status\0\u{3}dnsmasq_status\0\u{3}uptime_seconds\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}healthy\0\u{3}ovs_status\0\u{3}ovn_status\0\u{3}uptime_seconds\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -967,8 +964,7 @@ extension Arca_Network_GetHealthResponse: SwiftProtobuf.Message, SwiftProtobuf._
       case 1: try { try decoder.decodeSingularBoolField(value: &self.healthy) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.ovsStatus) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.ovnStatus) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.dnsmasqStatus) }()
-      case 5: try { try decoder.decodeSingularUInt64Field(value: &self.uptimeSeconds) }()
+      case 4: try { try decoder.decodeSingularUInt64Field(value: &self.uptimeSeconds) }()
       default: break
       }
     }
@@ -984,11 +980,8 @@ extension Arca_Network_GetHealthResponse: SwiftProtobuf.Message, SwiftProtobuf._
     if !self.ovnStatus.isEmpty {
       try visitor.visitSingularStringField(value: self.ovnStatus, fieldNumber: 3)
     }
-    if !self.dnsmasqStatus.isEmpty {
-      try visitor.visitSingularStringField(value: self.dnsmasqStatus, fieldNumber: 4)
-    }
     if self.uptimeSeconds != 0 {
-      try visitor.visitSingularUInt64Field(value: self.uptimeSeconds, fieldNumber: 5)
+      try visitor.visitSingularUInt64Field(value: self.uptimeSeconds, fieldNumber: 4)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -997,7 +990,6 @@ extension Arca_Network_GetHealthResponse: SwiftProtobuf.Message, SwiftProtobuf._
     if lhs.healthy != rhs.healthy {return false}
     if lhs.ovsStatus != rhs.ovsStatus {return false}
     if lhs.ovnStatus != rhs.ovnStatus {return false}
-    if lhs.dnsmasqStatus != rhs.dnsmasqStatus {return false}
     if lhs.uptimeSeconds != rhs.uptimeSeconds {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true

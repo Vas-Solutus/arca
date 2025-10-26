@@ -342,7 +342,7 @@ type AttachContainerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ContainerId   string                 `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
 	NetworkId     string                 `protobuf:"bytes,2,opt,name=network_id,json=networkId,proto3" json:"network_id,omitempty"`
-	IpAddress     string                 `protobuf:"bytes,3,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`    // Container's IP on this network
+	IpAddress     string                 `protobuf:"bytes,3,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"`    // Optional: Static IP (empty = use DHCP dynamic allocation)
 	MacAddress    string                 `protobuf:"bytes,4,opt,name=mac_address,json=macAddress,proto3" json:"mac_address,omitempty"` // Container's MAC address
 	Hostname      string                 `protobuf:"bytes,5,opt,name=hostname,proto3" json:"hostname,omitempty"`                       // Container hostname for DNS
 	Aliases       []string               `protobuf:"bytes,6,rep,name=aliases,proto3" json:"aliases,omitempty"`                         // Additional DNS aliases
@@ -999,8 +999,7 @@ type GetHealthResponse struct {
 	Healthy       bool                   `protobuf:"varint,1,opt,name=healthy,proto3" json:"healthy,omitempty"`
 	OvsStatus     string                 `protobuf:"bytes,2,opt,name=ovs_status,json=ovsStatus,proto3" json:"ovs_status,omitempty"`              // OVS daemon status
 	OvnStatus     string                 `protobuf:"bytes,3,opt,name=ovn_status,json=ovnStatus,proto3" json:"ovn_status,omitempty"`              // OVN controller status
-	DnsmasqStatus string                 `protobuf:"bytes,4,opt,name=dnsmasq_status,json=dnsmasqStatus,proto3" json:"dnsmasq_status,omitempty"`  // dnsmasq status
-	UptimeSeconds uint64                 `protobuf:"varint,5,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"` // Helper VM uptime
+	UptimeSeconds uint64                 `protobuf:"varint,4,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"` // Helper VM uptime
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1052,13 +1051,6 @@ func (x *GetHealthResponse) GetOvsStatus() string {
 func (x *GetHealthResponse) GetOvnStatus() string {
 	if x != nil {
 		return x.OvnStatus
-	}
-	return ""
-}
-
-func (x *GetHealthResponse) GetDnsmasqStatus() string {
-	if x != nil {
-		return x.DnsmasqStatus
 	}
 	return ""
 }
@@ -1152,15 +1144,14 @@ const file_network_proto_rawDesc = "" +
 	"\x18SetNetworkPolicyResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"\x12\n" +
-	"\x10GetHealthRequest\"\xb9\x01\n" +
+	"\x10GetHealthRequest\"\x92\x01\n" +
 	"\x11GetHealthResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy\x12\x1d\n" +
 	"\n" +
 	"ovs_status\x18\x02 \x01(\tR\tovsStatus\x12\x1d\n" +
 	"\n" +
 	"ovn_status\x18\x03 \x01(\tR\tovnStatus\x12%\n" +
-	"\x0ednsmasq_status\x18\x04 \x01(\tR\rdnsmasqStatus\x12%\n" +
-	"\x0euptime_seconds\x18\x05 \x01(\x04R\ruptimeSeconds2\x83\x05\n" +
+	"\x0euptime_seconds\x18\x04 \x01(\x04R\ruptimeSeconds2\x83\x05\n" +
 	"\x0eNetworkControl\x12U\n" +
 	"\fCreateBridge\x12!.arca.network.CreateBridgeRequest\x1a\".arca.network.CreateBridgeResponse\x12U\n" +
 	"\fDeleteBridge\x12!.arca.network.DeleteBridgeRequest\x1a\".arca.network.DeleteBridgeResponse\x12^\n" +
