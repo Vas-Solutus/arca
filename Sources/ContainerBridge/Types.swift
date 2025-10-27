@@ -163,7 +163,7 @@ public struct ContainerConfiguration: @unchecked Sendable {
     public let env: [String]
     public let cmd: [String]
     public let image: String
-    public let volumes: [String: Any]
+    public let volumes: [String: Any]  // Not directly Codable - handled in extension
     public let workingDir: String
     public let entrypoint: [String]?
     public let labels: [String: String]
@@ -235,7 +235,7 @@ public struct HostConfig: Sendable {
 }
 
 /// Port binding for host configuration
-public struct PortBinding: Sendable {
+public struct PortBinding: Codable, Sendable {
     public let hostIp: String
     public let hostPort: String
 
@@ -246,7 +246,7 @@ public struct PortBinding: Sendable {
 }
 
 /// Restart policy
-public struct RestartPolicy: Sendable {
+public struct RestartPolicy: Codable, Sendable {
     public let name: String  // "no", "always", "on-failure", "unless-stopped"
     public let maximumRetryCount: Int
 
@@ -344,4 +344,59 @@ public struct IPAMConfig: Sendable {
         self.ipv4Address = ipv4Address
         self.ipv6Address = ipv6Address
     }
+}
+
+// MARK: - Codable Conformance
+
+extension ContainerConfiguration: Codable {
+    enum CodingKeys: String, CodingKey {
+        case hostname, domainname, user
+        case attachStdin, attachStdout, attachStderr
+        case tty, openStdin, stdinOnce
+        case env, cmd, image, workingDir, entrypoint, labels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hostname = try container.decode(String.self, forKey: .hostname)
+        domainname = try container.decode(String.self, forKey: .domainname)
+        user = try container.decode(String.self, forKey: .user)
+        attachStdin = try container.decode(Bool.self, forKey: .attachStdin)
+        attachStdout = try container.decode(Bool.self, forKey: .attachStdout)
+        attachStderr = try container.decode(Bool.self, forKey: .attachStderr)
+        tty = try container.decode(Bool.self, forKey: .tty)
+        openStdin = try container.decode(Bool.self, forKey: .openStdin)
+        stdinOnce = try container.decode(Bool.self, forKey: .stdinOnce)
+        env = try container.decode([String].self, forKey: .env)
+        cmd = try container.decode([String].self, forKey: .cmd)
+        image = try container.decode(String.self, forKey: .image)
+        workingDir = try container.decode(String.self, forKey: .workingDir)
+        entrypoint = try container.decodeIfPresent([String].self, forKey: .entrypoint)
+        labels = try container.decode([String: String].self, forKey: .labels)
+        volumes = [:]  // Not persisted for now
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hostname, forKey: .hostname)
+        try container.encode(domainname, forKey: .domainname)
+        try container.encode(user, forKey: .user)
+        try container.encode(attachStdin, forKey: .attachStdin)
+        try container.encode(attachStdout, forKey: .attachStdout)
+        try container.encode(attachStderr, forKey: .attachStderr)
+        try container.encode(tty, forKey: .tty)
+        try container.encode(openStdin, forKey: .openStdin)
+        try container.encode(stdinOnce, forKey: .stdinOnce)
+        try container.encode(env, forKey: .env)
+        try container.encode(cmd, forKey: .cmd)
+        try container.encode(image, forKey: .image)
+        try container.encode(workingDir, forKey: .workingDir)
+        try container.encodeIfPresent(entrypoint, forKey: .entrypoint)
+        try container.encode(labels, forKey: .labels)
+        // volumes intentionally not encoded (not supported for persistence yet)
+    }
+}
+
+extension HostConfig: Codable {
+    // Codable synthesized automatically since all properties are Codable
 }

@@ -41,6 +41,9 @@ public actor ContainerManager {
     // Shared vmnet network for Layer 2 connectivity (VLAN networking)
     private var sharedNetwork: SharedVmnetNetwork?
 
+    // State persistence
+    private var stateStore: StateStore?
+
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
         let image: Containerization.Image
@@ -89,6 +92,16 @@ public actor ContainerManager {
             "kernel_path": "\(kernelPath)"
         ])
 
+        // Initialize state store
+        let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
+        do {
+            self.stateStore = try StateStore(path: stateDBPath, logger: logger)
+            logger.info("StateStore initialized", metadata: ["path": "\(stateDBPath)"])
+        } catch {
+            logger.error("Failed to initialize StateStore", metadata: ["error": "\(error)"])
+            throw error
+        }
+
         // Verify kernel file exists
         guard FileManager.default.fileExists(atPath: kernelPath) else {
             throw ContainerManagerError.kernelNotFound(kernelPath)
@@ -115,6 +128,148 @@ public actor ContainerManager {
         )
 
         logger.info("ContainerManager initialized successfully")
+
+        // Load persisted container state and reconcile
+        try await loadPersistedState()
+    }
+
+    /// Load persisted containers from StateStore and reconcile with actual state
+    private func loadPersistedState() async throws {
+        guard let stateStore = stateStore else {
+            logger.warning("StateStore not initialized, skipping state recovery")
+            return
+        }
+
+        logger.info("Loading persisted container state...")
+
+        // Load all containers from database
+        let persistedContainers = try await stateStore.loadAllContainers()
+
+        logger.info("Found persisted containers", metadata: [
+            "count": "\(persistedContainers.count)"
+        ])
+
+        // Reconstruct in-memory state for each container
+        for containerData in persistedContainers {
+            // Parse config and hostConfig JSON
+            guard let configData = containerData.configJSON.data(using: .utf8),
+                  let hostConfigData = containerData.hostConfigJSON.data(using: .utf8) else {
+                logger.warning("Failed to parse JSON for container", metadata: [
+                    "id": "\(containerData.id)"
+                ])
+                continue
+            }
+
+            // Decode JSON into structs
+            let decoder = JSONDecoder()
+            let config: ContainerConfiguration
+            let hostConfig: HostConfig
+
+            do {
+                config = try decoder.decode(ContainerConfiguration.self, from: configData)
+                hostConfig = try decoder.decode(HostConfig.self, from: hostConfigData)
+            } catch {
+                logger.error("Failed to decode container config", metadata: [
+                    "id": "\(containerData.id)",
+                    "error": "\(error)"
+                ])
+                continue
+            }
+
+            // Load network attachments
+            let attachments = try await stateStore.loadNetworkAttachments(containerID: containerData.id)
+            var networkAttachments: [String: NetworkAttachment] = [:]
+            for attachment in attachments {
+                networkAttachments[attachment.networkID] = NetworkAttachment(
+                    networkID: attachment.networkID,
+                    ip: attachment.ipAddress,
+                    mac: attachment.macAddress,
+                    aliases: attachment.aliases
+                )
+            }
+
+            // Reconstruct ContainerInfo
+            let containerInfo = ContainerInfo(
+                nativeID: containerData.id, // We'll need to handle native ID mapping
+                name: containerData.name,
+                image: containerData.image,
+                imageID: containerData.imageID,
+                created: containerData.createdAt,
+                state: containerData.status,
+                command: config.cmd ?? [],
+                path: config.entrypoint?.first ?? "",
+                args: Array((config.cmd ?? []).dropFirst()),
+                env: config.env ?? [],
+                workingDir: config.workingDir ?? "",
+                labels: config.labels ?? [:],
+                ports: [],
+                hostConfig: hostConfig,
+                config: config,
+                networkSettings: NetworkSettings(networks: [:]),
+                pid: containerData.pid,
+                exitCode: containerData.exitCode,
+                startedAt: containerData.startedAt,
+                finishedAt: containerData.finishedAt,
+                tty: config.tty ?? false,
+                needsCreate: false,
+                networkAttachments: networkAttachments
+            )
+
+            // Store in containers map
+            containers[containerData.id] = containerInfo
+
+            // Create ID mappings (using container ID as both Docker and native for now)
+            idMapping[containerData.id] = containerData.id
+            reverseMapping[containerData.id] = containerData.id
+
+            logger.debug("Restored container from state", metadata: [
+                "id": "\(containerData.id)",
+                "name": "\(containerData.name)",
+                "status": "\(containerData.status)"
+            ])
+        }
+
+        logger.info("Container state recovery complete", metadata: [
+            "restored": "\(containers.count)"
+        ])
+
+        // Apply restart policies
+        try await applyRestartPolicies()
+    }
+
+    /// Apply restart policies to containers on startup
+    private func applyRestartPolicies() async throws {
+        guard let stateStore = stateStore else {
+            return
+        }
+
+        logger.info("Applying restart policies...")
+
+        let containersToRestart = try await stateStore.getContainersToRestart()
+
+        for container in containersToRestart {
+            logger.info("Auto-restarting container", metadata: [
+                "id": "\(container.id)",
+                "name": "\(container.name)",
+                "policy": "\(container.policy)"
+            ])
+
+            do {
+                try await startContainer(id: container.id)
+                logger.info("Container auto-restarted successfully", metadata: [
+                    "id": "\(container.id)"
+                ])
+            } catch {
+                logger.error("Failed to auto-restart container", metadata: [
+                    "id": "\(container.id)",
+                    "error": "\(error)"
+                ])
+            }
+        }
+
+        logger.info("Restart policy application complete", metadata: [
+            "restarted": "\(containersToRestart.count)"
+        ])
     }
 
     // MARK: - Platform Detection
