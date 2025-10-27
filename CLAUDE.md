@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚨 CRITICAL: Phase 3.7 Blocker - Universal Persistence
+
+**DO NOT IMPLEMENT ANY NEW FEATURES UNTIL PHASE 3.7 IS COMPLETE**
+
+**Problem**: Arca currently has NO persistence. Daemon restart = total amnesia:
+- All containers lost
+- All networks lost
+- Control plane deleted and recreated (OVN databases destroyed)
+- Subnet allocation resets (causes collisions)
+
+**Solution**: Phase 3.7 implements universal persistence with unified container management:
+1. Container state files (`~/.arca/containers/{id}/config.json`)
+2. Network state file (`~/.arca/networks.json`)
+3. Control plane as regular container (not special-cased)
+4. Restart policies (`--restart always/unless-stopped/on-failure`)
+5. Volume mounts (VirtioFS)
+
+**See**: `Documentation/IMPLEMENTATION_PLAN.md:1949-2305` for complete implementation plan
+
+**Architecture Change**: Control plane (formerly "helper VM") is now a regular container managed by `ContainerManager` with:
+- Label: `com.arca.internal=true` (hidden from docker ps)
+- Restart policy: `always` (auto-starts on daemon startup)
+- Volume: `~/.arca/control-plane/ovn-data` → `/etc/ovn` (OVN database persistence)
+
+This eliminates ~500 lines of duplicate `NetworkHelperVM` lifecycle code.
+
+---
+
 ## Project Overview
 
 **Arca** implements the Docker Engine API backed by Apple's Containerization framework, enabling Docker CLI, Docker Compose, and the Docker ecosystem to work with Apple's VM-per-container architecture on macOS.
@@ -292,12 +320,27 @@ All behaviors must follow these specs for:
 - IDs generated via `generateDockerID()` by duplicating UUID hex to reach 64 chars
 
 **Networking Architecture** (Phase 3 - OVS Backend):
-- **Helper VM**: Lightweight Linux VM running OVN/OVS for Docker-compatible bridge networks
+- **Control Plane Container**: Lightweight Linux VM running OVN/OVS (named `arca-control-plane`)
+- **Unified Management**: Control plane is a regular container with special labels:
+  - `com.arca.internal=true` - Hidden from `docker ps` (unless showing internal containers)
+  - `com.arca.role=control-plane` - Identifies role for internal use
+  - `--restart always` - Auto-restarts on daemon startup and crashes
+  - Volume mount for OVN data: `~/.arca/control-plane/ovn-data` → `/etc/ovn` (persistent across restarts)
 - **TAP-over-vsock**: Container VMs connect to OVS bridges via virtio-vsock packet relay
 - **MQTT Pub/Sub**: MQTT 5.0 broker in Arca daemon distributes network topology updates via vsock
 - **Embedded DNS**: Each container runs embedded-DNS at 127.0.0.11:53 for multi-network name resolution
 - **Security**: Control plane isolated via vsock (CID 2) - not accessible from container networks
 - See `Documentation/NETWORK_ARCHITECTURE.md` and `Documentation/MQTT_PUBSUB_ARCHITECTURE.md` for complete design
+
+**Unified Container Management** (Phase 3.7 - IN PROGRESS):
+- **Everything is a container**: User containers AND control plane use the same lifecycle
+- **No special cases**: Control plane managed via `ContainerManager` like any other container
+- **Code reuse**: Persistence, restart policies, volumes work for all containers
+- **Benefits**:
+  - ~500 lines of `NetworkHelperVM` actor code deleted
+  - Control plane gets restart policies for free
+  - OVN databases persist via volume mount
+  - Simpler mental model: "container with special label"
 
 **Volumes**:
 - Docker named volumes map to Apple container volume paths
@@ -364,9 +407,11 @@ See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentat
 
 ## Implementation Status
 
-**Current State**: Phase 3 Complete - Dual-Backend Networking (OVS + vmnet)
+**Current State**: Phase 3.7 IN PROGRESS - Universal Persistence (CRITICAL BLOCKER)
 
-The codebase contains:
+🚨 **BLOCKER**: Phase 3.7 must be completed before any other work. No persistence = not Docker-compatible.
+
+**What Works Today**:
 - ✅ Full SwiftNIO-based Unix socket server
 - ✅ Router with API version normalization and middleware pipeline
 - ✅ Handler structure for containers, images, system, network endpoints
@@ -390,7 +435,21 @@ The codebase contains:
   - IPAM for IP address allocation
 - ✅ Volume API - Basic volume operations
 - ✅ vminitd fork as submodule with Arca networking extensions
-- 🚧 Build API (Phase 4)
+
+**Critical Missing (Phase 3.7 - IN PROGRESS)**:
+- ❌ **Container persistence**: All state lost on daemon restart
+- ❌ **Network persistence**: Networks vanish on daemon restart
+- ❌ **Restart policies**: No `--restart always/unless-stopped/on-failure`
+- ❌ **Control plane persistence**: Helper VM deleted on every startup
+- ❌ **Volume mounts**: No VirtioFS volume support yet
+
+**Impact of Missing Persistence**:
+- Daemon restart = total amnesia (containers, networks, everything gone)
+- Cannot implement `docker run --restart always`
+- Cannot survive daemon crashes
+- Not Docker-compatible in any real sense
+
+**Next Priority**: Complete Phase 3.7 (Universal Persistence) - see `Documentation/IMPLEMENTATION_PLAN.md:1949-2305`
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
 

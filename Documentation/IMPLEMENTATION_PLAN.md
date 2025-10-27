@@ -1946,6 +1946,365 @@ cd tests/compose/web-redis && docker compose up -d  # Web + Redis works
 
 ---
 
+### Phase 3.7: Universal Persistence & Unified Container Management 🚨 CRITICAL BLOCKER
+
+**Status**: MUST IMPLEMENT BEFORE ANY FURTHER WORK - Architectural foundation for all features
+
+**Problem**: Complete lack of persistence across daemon restarts:
+1. **Containers**: All state in-memory, lost on restart, no restart policies
+2. **Networks**: All metadata in-memory, subnet allocation resets causing collisions
+3. **Control Plane**: Helper VM deleted on every startup, OVN databases destroyed
+4. **Result**: System has total amnesia after daemon restart - as if nothing ever existed
+
+**Root Cause**: No disk persistence for ANY state. Everything is in-memory actors that vanish on restart.
+
+**Impact**:
+- Cannot implement `docker run --restart always`
+- Cannot survive daemon crashes
+- Cannot maintain network topology across restarts
+- Not Docker-compatible in any meaningful way
+- Helper VM lifecycle managed separately (duplicate code, complexity)
+
+**Solution**: Universal persistence layer + unified container management
+
+#### Architecture: Everything Is A Container
+
+**Key Insight**: The helper VM (network control plane) is just a special container. Managing it separately creates unnecessary complexity and code duplication.
+
+**Before** (Current - Complex):
+```
+ContainerManager → User containers (persisted nowhere)
+NetworkHelperVM → Control plane (separate lifecycle, custom code)
+NetworkManager → Networks (in-memory only)
+```
+
+**After** (Unified - Simple):
+```
+ContainerManager → ALL containers (user + control plane)
+  ├── User containers (visible to docker ps)
+  └── Control plane (hidden via label, --restart always)
+NetworkManager → Networks (reconciled from OVN on startup)
+```
+
+**Benefits**:
+- ✅ Code reuse: Persistence works for everything
+- ✅ Simplification: Delete ~500 lines of NetworkHelperVM custom lifecycle
+- ✅ Proper restart policies: Control plane gets `--restart always` for free
+- ✅ Standard Docker patterns: Hidden containers via labels (like Docker's own internals)
+- ✅ Volume support: Falls out naturally for control plane
+
+#### Task 1: Container Persistence (Week 1)
+
+**Core concept**: Each container gets a directory at `~/.arca/containers/{id}/` with `config.json`
+
+- [ ] **Define container config schema**
+  - JSON format matching Docker's config.v2.json structure
+  - Store: ID, name, image, created date, state, exit code, restart policy
+  - Store: Network attachments, volumes, environment, command, labels
+  - Store: Host config (restart policy, network mode, volumes)
+  - Files: Design doc at `Documentation/PERSISTENCE_SCHEMA.md`
+
+- [ ] **Implement ContainerStateStore**
+  - New file: `Sources/ContainerBridge/ContainerStateStore.swift`
+  - Atomic read/write of container config JSON
+  - Methods: `save(containerID, config)`, `load(containerID)`, `list()`, `delete(containerID)`
+  - Create directory structure: `~/.arca/containers/{id}/config.json`
+  - Files: `Sources/ContainerBridge/ContainerStateStore.swift`
+
+- [ ] **Integrate state persistence in ContainerManager**
+  - Call `stateStore.save()` after every state change:
+    - Container created → save config
+    - Container started → update state, save
+    - Container stopped → update state + exit code, save
+    - Container removed → delete config
+  - Files: `Sources/ContainerBridge/ContainerManager.swift` (createContainer, startContainer, stopContainer, removeContainer)
+
+- [ ] **Implement startup reconciliation**
+  - Load all container configs on `ContainerManager.initialize()`
+  - Reconstruct in-memory state (`containers`, `idMapping`, `nativeContainers`)
+  - Don't auto-start yet (that's Task 2 - restart policies)
+  - Handle corrupt configs gracefully (log warning, skip)
+  - Files: `Sources/ContainerBridge/ContainerManager.swift:initialize()`
+
+- [ ] **Test container persistence**
+  - Create container, stop daemon, start daemon
+  - Verify container still exists in `docker ps -a`
+  - Verify container metadata (name, image, created date)
+  - Verify container can be started after daemon restart
+  - Files: `scripts/test-container-persistence.sh`
+
+#### Task 2: Restart Policy Implementation (Week 1-2)
+
+- [ ] **Parse --restart flag in container create**
+  - Parse `RestartPolicy` from `ContainerCreateRequest.HostConfig`
+  - Support: `no`, `always`, `unless-stopped`, `on-failure[:max-retries]`
+  - Store in container config
+  - Files: `Sources/DockerAPI/Handlers/ContainerHandlers.swift:handleCreateContainer()`
+
+- [ ] **Implement restart logic on startup**
+  - During `ContainerManager.initialize()` after loading configs:
+    - `always`: Start immediately if state is "exited"
+    - `unless-stopped`: Start if state is "exited" (not "stopped" by user)
+    - `on-failure`: Start if exitCode != 0 and retry count < max
+    - `no`: Don't start
+  - Update container state after restart attempt
+  - Files: `Sources/ContainerBridge/ContainerManager.swift:initialize()`
+
+- [ ] **Track manual vs automatic stops**
+  - Add `stoppedByUser` boolean to container state
+  - Set to `true` when user calls `docker stop`
+  - Use to distinguish `unless-stopped` behavior
+  - Files: `Sources/ContainerBridge/Types.swift:ContainerInfo`, `ContainerManager.swift:stopContainer()`
+
+- [ ] **Test restart policies**
+  - Test `--restart always`: Container auto-restarts after daemon restart
+  - Test `--restart unless-stopped`: Container doesn't restart if manually stopped
+  - Test `--restart on-failure`: Container restarts only if exitCode != 0
+  - Test `--restart no`: Container never auto-restarts (default)
+  - Files: `scripts/test-restart-policies.sh`
+
+#### Task 3: Volume Support (Week 2)
+
+**Note**: Needed for control plane persistence (OVN databases) and general Docker compatibility
+
+- [ ] **Implement VirtioFS volume mounting**
+  - Parse `Mounts` and `Volumes` from `ContainerCreateRequest`
+  - Support bind mounts: `{hostPath}:{containerPath}[:ro]`
+  - Create `VirtioFSMount` configuration for each mount
+  - Add to container config closure: `config.mounts = [...]`
+  - Files: `Sources/ContainerBridge/ContainerManager.swift:createContainer()`
+
+- [ ] **Handle volume mount options**
+  - Support read-only mounts (`:ro` suffix)
+  - Support read-write mounts (default)
+  - Create host directory if it doesn't exist (for named volumes)
+  - Validate host paths exist (for bind mounts)
+  - Files: `Sources/ContainerBridge/ContainerManager.swift`
+
+- [ ] **Store volume mounts in container config**
+  - Persist volume mount info in config.json
+  - Restore mounts on container restart
+  - Files: `ContainerStateStore.swift` (schema), `ContainerManager.swift` (save/load)
+
+- [ ] **Test volume persistence**
+  - Create container with volume mount
+  - Write data to volume
+  - Stop container, stop daemon, start daemon
+  - Start container, verify data persists
+  - Files: `scripts/test-volume-persistence.sh`
+
+#### Task 4: Network Persistence (Week 2)
+
+- [ ] **Define network state schema**
+  - JSON file at `~/.arca/networks.json`
+  - Store: Network ID, name, driver, subnet, gateway, created date
+  - Store: Labels, options, container attachments
+  - Store: Subnet allocation counter (`nextSubnetByte`)
+  - Files: Design in `Documentation/PERSISTENCE_SCHEMA.md`
+
+- [ ] **Implement NetworkStateStore**
+  - Atomic read/write of network state JSON
+  - Methods: `save()` (save all networks), `load()` (load all networks)
+  - Files: `Sources/ContainerBridge/NetworkStateStore.swift` (new file)
+
+- [ ] **Integrate network persistence in OVSNetworkBackend**
+  - Call `stateStore.save()` after every network operation:
+    - Network created → save
+    - Network deleted → save
+    - Container attached → save
+    - Container detached → save
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift` (all CRUD methods)
+
+- [ ] **Implement network reconciliation on startup**
+  - Load network state from disk (`networks.json`)
+  - Query OVN for existing networks (`ovnClient.listBridges()`)
+  - Reconcile: OVN is source of truth for network config
+  - Match by network ID, merge metadata from JSON
+  - Update `nextSubnetByte` based on existing subnets (avoid collisions)
+  - Handle orphaned networks (in OVN but not JSON → import)
+  - Handle stale state (in JSON but not OVN → clean up)
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift:initialize()`
+
+- [ ] **Test network persistence**
+  - Create network, stop daemon, start daemon
+  - Verify network still exists (`docker network ls`)
+  - Create second network, verify no subnet collision
+  - Verify containers can attach to persisted network
+  - Files: `scripts/test-network-persistence.sh`
+
+#### Task 5: Control Plane as Regular Container (Week 3)
+
+**Goal**: Replace `NetworkHelperVM` with regular container managed by `ContainerManager`
+
+- [ ] **Rename helper VM image**
+  - Rename: `arca-network-helper:latest` → `arca-control-plane:latest`
+  - Update: `helpervm/` directory references
+  - Update: Makefile, scripts, documentation
+  - Files: `helpervm/Dockerfile`, `Makefile`, `scripts/build-helper-vm.sh`
+
+- [ ] **Add hidden container support**
+  - Add label `com.arca.internal=true` to mark internal containers
+  - Filter hidden containers in `listContainers()` (unless `all=true` AND internal flag)
+  - Add label `com.arca.role=control-plane` for identification
+  - Files: `Sources/ContainerBridge/ContainerManager.swift:listContainers()`
+
+- [ ] **Create control plane via ContainerManager**
+  - Remove `NetworkHelperVM` actor entirely
+  - Create control plane in `NetworkManager.initialize()`:
+    ```swift
+    let controlPlaneID = try await containerManager.createContainer(
+        image: "arca-control-plane:latest",
+        name: "arca-control-plane",
+        config: ContainerConfig(
+            labels: [
+                "com.arca.internal": "true",
+                "com.arca.role": "control-plane"
+            ],
+            restartPolicy: RestartPolicy(name: "always"),
+            volumes: [
+                Volume(
+                    hostPath: "~/.arca/control-plane/ovn-data",
+                    containerPath: "/etc/ovn",
+                    readOnly: false
+                )
+            ],
+            networkMode: "vmnet-shared"  // Special network for control plane
+        )
+    )
+    ```
+  - Files: `Sources/ContainerBridge/NetworkManager.swift:initialize()`
+
+- [ ] **Remove NetworkHelperVM actor**
+  - Delete file: `Sources/ContainerBridge/NetworkHelperVM.swift` (~400 lines)
+  - Update: `NetworkManager` to get control plane container via `containerManager.getLinuxContainer("arca-control-plane")`
+  - Update: All vsock dial calls to use container from ContainerManager
+  - Files: Delete `NetworkHelperVM.swift`, update `NetworkManager.swift`, `OVSNetworkBackend.swift`
+
+- [ ] **Update OVN client connection**
+  - Get control plane container: `containerManager.getLinuxContainer("arca-control-plane")`
+  - Connect via: `container.dialVsock(9999)` (same as before)
+  - Handle case where control plane not ready yet (retry with backoff)
+  - Files: `Sources/ContainerBridge/OVNClient.swift`, `NetworkManager.swift`
+
+- [ ] **Prevent users from managing control plane**
+  - Block `docker stop arca-control-plane` (return error or silently restart)
+  - Block `docker rm arca-control-plane` (return error)
+  - Allow `docker logs arca-control-plane` (useful for debugging)
+  - Allow `docker inspect arca-control-plane` (useful for debugging)
+  - Files: `Sources/DockerAPI/Handlers/ContainerHandlers.swift`
+
+- [ ] **Test unified control plane**
+  - Start daemon, verify control plane auto-starts
+  - Stop daemon, start daemon, verify control plane auto-restarts
+  - Verify networks still work after daemon restart
+  - Verify `docker ps` doesn't show control plane
+  - Verify `docker ps -a --all` doesn't show control plane (unless internal flag)
+  - Files: `scripts/test-control-plane-unified.sh`
+
+#### Task 6: Integration & Testing (Week 3-4)
+
+- [ ] **Test complete persistence flow**
+  - Create network, create containers with `--restart always`
+  - Attach containers to network
+  - Stop daemon, start daemon
+  - Verify: Control plane auto-starts
+  - Verify: Networks reconciled from OVN
+  - Verify: Containers auto-restart
+  - Verify: Network attachments restored
+  - Verify: Containers can communicate
+  - Files: `scripts/test-full-persistence.sh`
+
+- [ ] **Test restart policies with network attachments**
+  - Create container with `--restart always --network my-net`
+  - Stop daemon, start daemon
+  - Verify container auto-restarts on correct network
+  - Verify DNS resolution works after restart
+  - Files: Integration test script
+
+- [ ] **Test container/network lifecycle edge cases**
+  - Container running when daemon crashes (graceful recovery)
+  - Network deleted while containers attached (handle orphaned attachments)
+  - Corrupt config.json files (skip with warning)
+  - OVN out of sync with network state (reconcile correctly)
+  - Files: `Tests/ArcaTests/PersistenceEdgeCasesTests.swift`
+
+- [ ] **Performance testing**
+  - Measure startup time with 0, 10, 50, 100 persisted containers
+  - Measure reconciliation time with 0, 10, 50 networks
+  - Ensure startup time < 5s with 50 containers
+  - Files: `scripts/benchmark-persistence.sh`
+
+- [ ] **Update documentation**
+  - Document persistence architecture in `Documentation/ARCHITECTURE.md`
+  - Document config.json schema in `Documentation/PERSISTENCE_SCHEMA.md`
+  - Update CLAUDE.md with persistence requirements
+  - Update LIMITATIONS.md (remove persistence as limitation)
+  - Files: All documentation files
+
+- [ ] **Remove misleading TODO comments**
+  - Remove/clarify TODO in `OVSNetworkBackend.swift:112` (DHCP is implemented)
+  - Remove TODO in `NetworkHelperVM.swift:404` (file will be deleted)
+  - Add comment explaining subnet allocation vs IP allocation
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift`
+
+#### Success Criteria
+
+```bash
+# Persistence works:
+docker network create my-net
+docker run -d --name web --network my-net --restart always nginx
+docker run -d --name app --network my-net --restart unless-stopped alpine sleep 3600
+
+# Kill daemon (simulate crash)
+pkill -9 Arca
+
+# Restart daemon
+make run
+
+# Verify persistence:
+docker network ls | grep my-net                    # Network persists
+docker ps | grep web                               # Container auto-restarted (--restart always)
+docker ps | grep app                               # Container auto-restarted (--restart unless-stopped)
+docker exec web ping -c 1 app                      # Network connectivity restored
+
+# Verify control plane unified:
+docker ps -a                                       # arca-control-plane not visible
+docker logs arca-control-plane                     # Can view logs (debugging)
+docker stop arca-control-plane                     # Rejected or auto-restarts immediately
+
+# Verify restart policies:
+docker stop app                                    # Manually stopped
+# Kill daemon
+pkill -9 Arca
+make run
+docker ps | grep app                               # Should NOT auto-restart (unless-stopped)
+```
+
+#### Implementation Notes
+
+**Do NOT implement incrementally**. This is foundational architecture that must work correctly from day one. Attempting to add persistence piece-by-piece will result in:
+- Partial state reconciliation bugs
+- Race conditions between components
+- Wasted effort building temporary solutions
+
+**Implementation order is critical**:
+1. Container persistence (foundation)
+2. Restart policies (depends on #1)
+3. Volumes (needed for control plane)
+4. Network persistence (depends on control plane being ready)
+5. Unified control plane (depends on all of above)
+
+**Estimated timeline**: 3-4 weeks for complete implementation and testing
+
+**Dependencies**:
+- VirtioFS support (already in Containerization framework)
+- OVN persistence (already in OVN via ovsdb-server)
+- No external dependencies
+
+**Blockers**: None - can start immediately
+
+---
+
 ## Phase 4: Build & Advanced Features (Weeks 9-12)
 
 ### API Endpoints to Implement

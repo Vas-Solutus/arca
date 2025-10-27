@@ -224,10 +224,9 @@ public actor NetworkHelperVM {
         await connectOVNClient(container: newContainer)
 
         // Start health monitoring
-        // TODO: Temporarily disabled for debugging vsock connection
-        // monitorTask = Task {
-        //     await monitorHealth()
-        // }
+        monitorTask = Task {
+            await monitorHealth()
+        }
 
         // Reset crash count on successful start
         crashCount = 0

@@ -14,6 +14,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.4"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.23.0"),
+        .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.4"),
     ],
     targets: [
         // Main executable target
@@ -65,6 +66,7 @@ let package = Package(
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "GRPC", package: "grpc-swift"),
+                .product(name: "SQLite", package: "SQLite.swift"),
             ]
         ),
 
