@@ -394,6 +394,11 @@ public actor NetworkManager {
         return nil
     }
 
+    /// Get network name by ID
+    public func getNetworkName(networkID: String) async -> String? {
+        return await getNetwork(id: networkID)?.name
+    }
+
     // MARK: - Helper Methods
 
     /// Generate a Docker-compatible network ID (64-char hex)

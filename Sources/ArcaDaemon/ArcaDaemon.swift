@@ -835,9 +835,14 @@ public final class ArcaDaemon {
                 do {
                     let disconnectRequest = try request.jsonBody(NetworkDisconnectRequest.self)
 
+                    // Resolve container name/ID to full Docker ID
+                    guard let dockerID = await containerManager.resolveContainerID(disconnectRequest.container) else {
+                        return .standard(HTTPResponse.notFound("container", id: disconnectRequest.container))
+                    }
+
                     let result = await networkHandlers.handleDisconnectNetwork(
                         networkID: id,
-                        containerID: disconnectRequest.container,
+                        containerID: dockerID,
                         force: disconnectRequest.force ?? false
                     )
 

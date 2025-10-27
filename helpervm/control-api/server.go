@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -105,10 +106,15 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		}, nil
 	}
 
-	// Set subnet and gateway in OVN
+	// Set subnet, gateway, and exclude IPs in OVN
+	// exclude_ips prevents OVN from allocating the gateway IP to containers
+	// For /16 networks, reserve .0.1 as gateway
+	// For /24 networks, reserve .1 as gateway
+	// Reserve the first IP (.0.1 or .1) for the gateway
 	if err := runCommand("ovn-nbctl", "set", "logical_switch", req.NetworkId,
 		fmt.Sprintf("other_config:subnet=%s", req.Subnet),
-		fmt.Sprintf("other_config:gateway=%s", req.Gateway)); err != nil {
+		fmt.Sprintf("other_config:gateway=%s", req.Gateway),
+		fmt.Sprintf("other_config:exclude_ips=%s", req.Gateway)); err != nil {
 		// Cleanup
 		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
 		_ = runCommand("ovs-vsctl", "del-br", bridgeName)
@@ -121,28 +127,28 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	// Configure OVN DHCP options for this network
 	log.Printf("Configuring OVN DHCP for network %s (subnet: %s, gateway: %s)", req.NetworkId, req.Subnet, req.Gateway)
 
-	// Create DHCP options for the subnet
-	dhcpOutput, err := runCommandWithOutput("ovn-nbctl", "dhcp-options-create", req.Subnet)
+	// Generate a MAC address for the DHCP server (gateway)
+	serverMAC := fmt.Sprintf("00:00:00:%02x:%02x:%02x", hash[0], hash[1], hash[2])
+
+	// Create DHCP options using 'ovn-nbctl create' which returns the UUID directly
+	// Note: 'dhcp-options-create' does NOT return a UUID (known OVN limitation)
+	// Format: create dhcp_options cidr=SUBNET options="key1"="value1" "key2"="value2" ...
+	dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "create", "dhcp_options",
+		fmt.Sprintf("cidr=%s", req.Subnet),
+		fmt.Sprintf(`options="lease_time"="3600" "router"="%s" "server_id"="%s" "server_mac"="%s" "dns_server"="{%s}"`,
+			req.Gateway, req.Gateway, serverMAC, req.Gateway))
+
 	if err != nil {
-		log.Printf("Warning: Failed to create DHCP options: %v", err)
+		log.Printf("ERROR: Failed to create DHCP options for subnet %s: %v (output: %q)", req.Subnet, err, dhcpUUID)
 		// Continue anyway - DHCP is optional enhancement
 	} else {
-		// Extract UUID from output (first line, trimmed)
-		lines := strings.Split(dhcpOutput, "\n")
-		dhcpUUID := strings.TrimSpace(lines[0])
-		log.Printf("Created DHCP options with UUID: %s (raw output: %q)", dhcpUUID, dhcpOutput)
+		// Trim whitespace from UUID
+		dhcpUUID = strings.TrimSpace(dhcpUUID)
+		log.Printf("Created DHCP options with UUID: %s", dhcpUUID)
 
-		// Set DHCP options: lease time, router (gateway), DNS server (gateway), server ID
-		// Generate a MAC address for the DHCP server (gateway)
-		serverMAC := fmt.Sprintf("00:00:00:%02x:%02x:%02x", hash[0], hash[1], hash[2])
-
-		if err := runCommand("ovn-nbctl", "dhcp-options-set-options", dhcpUUID,
-			"lease_time=3600",
-			fmt.Sprintf("router=%s", req.Gateway),
-			fmt.Sprintf("server_id=%s", req.Gateway),
-			fmt.Sprintf("server_mac=%s", serverMAC),
-			fmt.Sprintf("dns_server={%s}", req.Gateway)); err != nil {
-			log.Printf("Warning: Failed to set DHCP options: %v", err)
+		// Validate UUID is not empty
+		if dhcpUUID == "" {
+			log.Printf("ERROR: DHCP UUID is empty! Command succeeded but returned no output.")
 		} else {
 			log.Printf("DHCP options configured successfully for network %s", req.NetworkId)
 
@@ -223,7 +229,8 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	// For TAP-over-vsock architecture, we don't create OVS/OVN ports here
 	// The TAP relay will create its own OVS internal port when it starts
 	// However, we DO create OVN logical switch ports for DHCP and DNS
-	portName := fmt.Sprintf("lsp-%s", req.ContainerId[:12])
+	// Port name must be unique per container+network combination to support multi-network containers
+	portName := fmt.Sprintf("lsp-%s-%s", req.ContainerId[:12], req.NetworkId[:12])
 
 	// Create OVN logical switch port for DHCP/DNS
 	log.Printf("Creating OVN logical switch port %s on network %s", portName, req.NetworkId)
@@ -237,13 +244,13 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	var allocatedIP string
 
 	if req.IpAddress == "" {
-		// Dynamic DHCP allocation with hostname
-		// Format: "MAC dynamic hostname" - OVN will create DNS record automatically
+		// Dynamic DHCP allocation
+		// Format: "MAC dynamic" - OVN will allocate IP and populate dynamic_addresses
+		// Note: OVN does NOT support "MAC dynamic hostname" syntax - hostname must be set separately
+		portAddress = fmt.Sprintf("%s dynamic", req.MacAddress)
 		if req.Hostname != "" {
-			portAddress = fmt.Sprintf("%s dynamic %s", req.MacAddress, req.Hostname)
 			log.Printf("Configuring port %s for dynamic DHCP with hostname %s (MAC: %s)", portName, req.Hostname, req.MacAddress)
 		} else {
-			portAddress = fmt.Sprintf("%s dynamic", req.MacAddress)
 			log.Printf("Configuring port %s for dynamic DHCP (MAC: %s)", portName, req.MacAddress)
 		}
 
@@ -252,19 +259,81 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 			log.Printf("Warning: Failed to set port addresses: %v", err)
 		}
 
-		// Query the dynamically allocated IP from OVN
-		// OVN stores it in the port's dynamic_addresses field
-		dynamicAddr, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch_port", portName, "dynamic_addresses")
-		if err == nil && dynamicAddr != "" {
-			// Parse dynamic_addresses: "MAC IP"
-			dynamicAddr = strings.Trim(strings.TrimSpace(dynamicAddr), "\"")
-			parts := strings.Fields(dynamicAddr)
-			if len(parts) >= 2 {
-				allocatedIP = parts[1]
-				log.Printf("OVN allocated IP %s for port %s", allocatedIP, portName)
+		// Link DHCP options to this port BEFORE querying for allocated IP
+		// OVN requires DHCP options to be linked before it will allocate an IP
+		dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "other_config:dhcp_options")
+		if err == nil && dhcpUUID != "" {
+			dhcpUUID = strings.Trim(strings.TrimSpace(dhcpUUID), "\"")
+			log.Printf("Linking DHCP options %s to port %s", dhcpUUID, portName)
+			if err := runCommand("ovn-nbctl", "lsp-set-dhcpv4-options", portName, dhcpUUID); err != nil {
+				log.Printf("Warning: Failed to link DHCP options: %v", err)
 			}
 		} else {
-			log.Printf("Warning: Could not retrieve dynamically allocated IP for port %s", portName)
+			log.Printf("Warning: No DHCP options found for network %s", req.NetworkId)
+		}
+
+		// Query the dynamically allocated IP from OVN with retry
+		// OVN stores it in the port's dynamic_addresses field
+		// ovn-northd may need a moment to process the allocation
+		var dynamicAddr string
+		for i := 0; i < 5; i++ {
+			time.Sleep(100 * time.Millisecond) // Wait for ovn-northd to process
+
+			dynamicAddr, err = runCommandWithOutput("ovn-nbctl", "get", "logical_switch_port", portName, "dynamic_addresses")
+			if err == nil && dynamicAddr != "" {
+				// Parse dynamic_addresses: "MAC IP"
+				dynamicAddr = strings.Trim(strings.TrimSpace(dynamicAddr), "\"")
+				parts := strings.Fields(dynamicAddr)
+				if len(parts) >= 2 {
+					allocatedIP = parts[1]
+					log.Printf("OVN allocated IP %s for port %s (attempt %d)", allocatedIP, portName, i+1)
+					break
+				}
+			}
+			if i < 4 {
+				log.Printf("Waiting for OVN to allocate IP (attempt %d/5)", i+1)
+			}
+		}
+
+		if allocatedIP == "" {
+			log.Printf("Warning: Could not retrieve dynamically allocated IP for port %s after 5 attempts", portName)
+
+			// Diagnostic: dump OVN state to understand why allocation failed
+			log.Printf("=== DHCP Allocation Failure Diagnostics ===")
+
+			// Check logical switch configuration
+			lsConfig, err := runCommandWithOutput("ovn-nbctl", "list", "logical_switch", req.NetworkId)
+			if err == nil {
+				log.Printf("Logical switch %s config:\n%s", req.NetworkId, lsConfig)
+			} else {
+				log.Printf("Failed to get logical switch config: %v", err)
+			}
+
+			// Check logical switch port configuration
+			portConfig, err := runCommandWithOutput("ovn-nbctl", "list", "logical_switch_port", portName)
+			if err == nil {
+				log.Printf("Logical switch port %s config:\n%s", portName, portConfig)
+			} else {
+				log.Printf("Failed to get port config: %v", err)
+			}
+
+			// Check DHCP options
+			dhcpList, err := runCommandWithOutput("ovn-nbctl", "list", "dhcp_options")
+			if err == nil {
+				log.Printf("All DHCP options:\n%s", dhcpList)
+			} else {
+				log.Printf("Failed to list DHCP options: %v", err)
+			}
+
+			// Check ovn-northd logs for allocation errors
+			northdLogs, err := runCommandWithOutput("tail", "-50", "/var/log/ovn/ovn-northd.log")
+			if err == nil {
+				log.Printf("ovn-northd recent logs:\n%s", northdLogs)
+			} else {
+				log.Printf("Failed to read ovn-northd logs: %v", err)
+			}
+
+			log.Printf("=== End Diagnostics ===")
 		}
 	} else {
 		// Static IP reservation
@@ -275,36 +344,23 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 		if err := runCommand("ovn-nbctl", "lsp-set-addresses", portName, portAddress); err != nil {
 			log.Printf("Warning: Failed to set port addresses: %v", err)
 		}
+
+		// Note: For static IPs, we don't link DHCP options since the IP is already configured
 	}
 
-	// Link DHCP options to this port
-	dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "other_config:dhcp_options")
-	if err == nil && dhcpUUID != "" {
-		dhcpUUID = strings.Trim(strings.TrimSpace(dhcpUUID), "\"")
-		log.Printf("Linking DHCP options %s to port %s", dhcpUUID, portName)
-		if err := runCommand("ovn-nbctl", "lsp-set-dhcpv4-options", portName, dhcpUUID); err != nil {
-			log.Printf("Warning: Failed to link DHCP options: %v", err)
-		}
-	} else {
-		log.Printf("Warning: No DHCP options found for network %s", req.NetworkId)
-	}
-
-	// Add DNS records
-	// For dynamic DHCP with hostname, OVN creates the primary DNS record automatically
-	// For static IP, we create the primary DNS record manually
-	// In both cases, we add aliases manually if we have an IP
-	if allocatedIP != "" {
-		// Add primary hostname DNS record (only for static IP - dynamic is automatic)
-		if req.IpAddress != "" && req.Hostname != "" {
-			if err := addDNSRecord(req.NetworkId, req.Hostname, allocatedIP); err != nil {
-				log.Printf("Warning: Failed to add DNS record for %s: %v", req.Hostname, err)
-			}
+	// Add DNS records for hostname and aliases using dnsmasq
+	// OVN handles DHCP, dnsmasq handles DNS resolution
+	if allocatedIP != "" && req.Hostname != "" {
+		if err := addDNSMasqRecord(req.NetworkId, req.Hostname, allocatedIP); err != nil {
+			log.Printf("Warning: Failed to add dnsmasq record for %s: %v", req.Hostname, err)
+		} else {
+			log.Printf("Added dnsmasq record: %s -> %s", req.Hostname, allocatedIP)
 		}
 
-		// Add DNS aliases (both static and dynamic cases)
+		// Add DNS aliases
 		for _, alias := range req.Aliases {
-			if err := addDNSRecord(req.NetworkId, alias, allocatedIP); err != nil {
-				log.Printf("Warning: Failed to add DNS alias %s: %v", alias, err)
+			if err := addDNSMasqRecord(req.NetworkId, alias, allocatedIP); err != nil {
+				log.Printf("Warning: Failed to add dnsmasq alias %s: %v", alias, err)
 			}
 		}
 	}
@@ -446,11 +502,15 @@ func addDNSRecord(networkID, hostname, ipAddress string) error {
 		return fmt.Errorf("hostname and IP address are required")
 	}
 
+	log.Printf("addDNSRecord: Starting for network=%s hostname=%s ip=%s", networkID, hostname, ipAddress)
+
 	// OVN DNS records are stored as a UUID reference in the logical switch
 	// We need to create or update the DNS record in the DNS table
 
 	// Check if DNS record already exists for this logical switch
+	log.Printf("addDNSRecord: Querying existing DNS records for network %s", networkID)
 	dnsUUIDs, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", networkID, "dns_records")
+	log.Printf("addDNSRecord: Query result - error=%v dnsUUIDs=%q", err, dnsUUIDs)
 	if err != nil {
 		// No DNS records yet, create a new one
 		log.Printf("Creating new DNS record set for network %s", networkID)
@@ -535,8 +595,161 @@ func removeDNSRecord(networkID, hostname string) error {
 	return nil
 }
 
+// addDNSMasqRecord adds a DNS record to dnsmasq configuration for a specific network
+// Creates/updates a network-specific config file in /etc/dnsmasq.d/
+func addDNSMasqRecord(networkID, hostname, ipAddress string) error {
+	if hostname == "" || ipAddress == "" {
+		return fmt.Errorf("hostname and IP address are required")
+	}
+
+	// Config file per network
+	configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
+
+	// Read existing content to check if entry already exists
+	existingContent := ""
+	if data, err := os.ReadFile(configFile); err == nil {
+		existingContent = string(data)
+	}
+
+	// Check if this exact record already exists
+	hostRecord := fmt.Sprintf("host-record=%s,%s\n", hostname, ipAddress)
+	if strings.Contains(existingContent, hostRecord) {
+		// Record already exists, no need to add again
+		return nil
+	}
+
+	// Append host-record entry
+	f, err := os.OpenFile(configFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open dnsmasq config: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(hostRecord); err != nil {
+		return fmt.Errorf("failed to write dnsmasq config: %v", err)
+	}
+
+	// Reload dnsmasq to pick up new records (SIGHUP)
+	if err := runCommand("killall", "-HUP", "dnsmasq"); err != nil {
+		log.Printf("Warning: Failed to reload dnsmasq: %v (may not be running yet)", err)
+	}
+
+	return nil
+}
+
+// removeDNSMasqRecord removes a DNS record from dnsmasq configuration
+func removeDNSMasqRecord(networkID, hostname string) error {
+	if hostname == "" {
+		return fmt.Errorf("hostname is required")
+	}
+
+	configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
+
+	// Read existing content
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		// File doesn't exist, nothing to remove
+		return nil
+	}
+
+	// Filter out lines matching this hostname
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	prefix := fmt.Sprintf("host-record=%s,", hostname)
+
+	for _, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			newLines = append(newLines, line)
+		}
+	}
+
+	// Write back filtered content
+	newContent := strings.Join(newLines, "\n")
+	if err := os.WriteFile(configFile, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to update dnsmasq config: %v", err)
+	}
+
+	// Reload dnsmasq
+	if err := runCommand("killall", "-HUP", "dnsmasq"); err != nil {
+		log.Printf("Warning: Failed to reload dnsmasq: %v", err)
+	}
+
+	return nil
+}
+
+// ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
+func (s *NetworkServer) ResolveDNS(ctx context.Context, req *pb.ResolveDNSRequest) (*pb.ResolveDNSResponse, error) {
+	log.Printf("ResolveDNS: hostname=%s networks=%v", req.Hostname, req.NetworkIds)
+
+	// Search for hostname in each network's dnsmasq config
+	for _, networkID := range req.NetworkIds {
+		configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
+
+		data, err := os.ReadFile(configFile)
+		if err != nil {
+			continue // Network config doesn't exist, try next
+		}
+
+		// Search for host-record matching this hostname
+		lines := strings.Split(string(data), "\n")
+		prefix := fmt.Sprintf("host-record=%s,", req.Hostname)
+
+		for _, line := range lines {
+			if strings.HasPrefix(line, prefix) {
+				// Extract IP address: host-record=hostname,IP
+				parts := strings.Split(line, ",")
+				if len(parts) >= 2 {
+					ipAddress := strings.TrimSpace(parts[1])
+					log.Printf("ResolveDNS: Found %s -> %s in network %s", req.Hostname, ipAddress, networkID)
+					return &pb.ResolveDNSResponse{
+						Found:     true,
+						IpAddress: ipAddress,
+						NetworkId: networkID,
+					}, nil
+				}
+			}
+		}
+	}
+
+	// Hostname not found in any of the container's networks
+	log.Printf("ResolveDNS: hostname %s not found in networks %v", req.Hostname, req.NetworkIds)
+	return &pb.ResolveDNSResponse{
+		Found: false,
+		Error: fmt.Sprintf("hostname %s not found", req.Hostname),
+	}, nil
+}
+
+// GetContainerNetworks returns the list of networks a container is attached to
+func (s *NetworkServer) GetContainerNetworks(ctx context.Context, req *pb.GetContainerNetworksRequest) (*pb.GetContainerNetworksResponse, error) {
+	log.Printf("GetContainerNetworks: container_id=%s", req.ContainerId)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Search through all networks to find which ones this container is attached to
+	var networkIDs []string
+	for networkID, containers := range s.containerMap {
+		if containers[req.ContainerId] {
+			networkIDs = append(networkIDs, networkID)
+		}
+	}
+
+	log.Printf("GetContainerNetworks: container %s is on networks: %v", req.ContainerId, networkIDs)
+
+	return &pb.GetContainerNetworksResponse{
+		NetworkIds: networkIDs,
+	}, nil
+}
+
 func runCommand(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	// Ensure OVN environment variables are set for ovn-nbctl commands
+	if name == "ovn-nbctl" || name == "ovn-sbctl" {
+		cmd.Env = append(os.Environ(),
+			"OVN_NB_DB=unix:/var/run/ovn/ovnnb_db.sock",
+			"OVN_SB_DB=unix:/var/run/ovn/ovnsb_db.sock",
+		)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("command failed: %s %v: %v (output: %s)", name, args, err, string(output))
@@ -546,6 +759,13 @@ func runCommand(name string, args ...string) error {
 
 func runCommandWithOutput(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
+	// Ensure OVN environment variables are set for ovn-nbctl commands
+	if name == "ovn-nbctl" || name == "ovn-sbctl" {
+		cmd.Env = append(os.Environ(),
+			"OVN_NB_DB=unix:/var/run/ovn/ovnnb_db.sock",
+			"OVN_SB_DB=unix:/var/run/ovn/ovnsb_db.sock",
+		)
+	}
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }

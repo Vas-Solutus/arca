@@ -26,6 +26,12 @@ service NetworkControl {
 
   // GetHealth returns health status of the helper VM
   rpc GetHealth(GetHealthRequest) returns (GetHealthResponse);
+
+  // ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
+  rpc ResolveDNS(ResolveDNSRequest) returns (ResolveDNSResponse);
+
+  // GetContainerNetworks returns the list of networks a container is attached to
+  rpc GetContainerNetworks(GetContainerNetworksRequest) returns (GetContainerNetworksResponse);
 }
 
 // CreateBridgeRequest creates a new network bridge
@@ -141,4 +147,28 @@ message GetHealthResponse {
   string ovs_status = 2;    // OVS daemon status
   string ovn_status = 3;    // OVN controller status
   uint64 uptime_seconds = 4; // Helper VM uptime
+}
+
+// ResolveDNSRequest resolves a hostname across multiple networks
+// Used by vminit's embedded DNS (127.0.0.11) to query the helper VM
+message ResolveDNSRequest {
+  string hostname = 1;           // Hostname to resolve (e.g., "container2")
+  repeated string network_ids = 2; // Networks the requesting container is attached to
+}
+
+message ResolveDNSResponse {
+  bool found = 1;               // True if hostname was resolved
+  string ip_address = 2;        // Resolved IP address
+  string network_id = 3;        // Which network the hostname was found in
+  string error = 4;             // Error message if resolution failed
+}
+
+// GetContainerNetworksRequest queries which networks a container is attached to
+message GetContainerNetworksRequest {
+  string container_id = 1;  // Docker container ID
+}
+
+message GetContainerNetworksResponse {
+  repeated string network_ids = 1;  // List of network IDs this container is attached to
+  string error = 2;                 // Error message if query failed
 }

@@ -291,11 +291,13 @@ All behaviors must follow these specs for:
 - Bidirectional mapping maintained in `idMapping` and `reverseMapping` dictionaries
 - IDs generated via `generateDockerID()` by duplicating UUID hex to reach 64 chars
 
-**Networking Translation**:
-- Docker: bridge networks with virtual interfaces
-- Apple: DNS-based networking
-- Translation: containers on "my-network" become `container-name.my-network.container.internal`
-- See `Documentation/LIMITATIONS.md` for details
+**Networking Architecture** (Phase 3 - OVS Backend):
+- **Helper VM**: Lightweight Linux VM running OVN/OVS for Docker-compatible bridge networks
+- **TAP-over-vsock**: Container VMs connect to OVS bridges via virtio-vsock packet relay
+- **MQTT Pub/Sub**: MQTT 5.0 broker in Arca daemon distributes network topology updates via vsock
+- **Embedded DNS**: Each container runs embedded-DNS at 127.0.0.11:53 for multi-network name resolution
+- **Security**: Control plane isolated via vsock (CID 2) - not accessible from container networks
+- See `Documentation/NETWORK_ARCHITECTURE.md` and `Documentation/MQTT_PUBSUB_ARCHITECTURE.md` for complete design
 
 **Volumes**:
 - Docker named volumes map to Apple container volume paths
@@ -315,44 +317,50 @@ All behaviors must follow these specs for:
 - Used for: image pull progress, exec attach, container attach, log streaming
 - Docker progress format: newline-delimited JSON with progress details
 
-**Networking Architecture (Phase 3 - OVN Native DHCP/DNS)**:
+**Networking Architecture (Phase 3 - OVS + Direct Push DNS)**:
 
-**ARCHITECTURAL PIVOT (In Progress)**: Moving from custom IPAM/dnsmasq to OVN's native DHCP/DNS capabilities.
+**Current State**: OVS backend with custom IPAM, dnsmasq for single-network DNS, and TAP-over-vsock for packet forwarding.
 
-**Why this change**:
-- OVN has built-in DHCP server and DNS support
-- Eliminates 1000+ lines of custom IPAM and dnsmasq configuration code
-- OVN manages IP allocation, DNS records, and DHCP reservations natively
-- Network-scoped DNS works out-of-the-box without custom cross-network propagation
-- Simpler, more maintainable, uses solved problems instead of reinventing
+**Multi-Network DNS Challenge**:
+- dnsmasq in helper VM only works for single-network containers
+- Containers on multiple networks need to resolve names from ALL attached networks
+- Cannot use TCP to query helper VM (security risk - exposes control plane to containers)
+- vsock constraint: Only host can dial containers (containers cannot dial host or each other)
 
-**Current Architecture (OVS + custom IPAM + dnsmasq)**:
-- Helper VM runs OVS bridges + OVN logical switches
-- Custom Go code for IP allocation (PortAllocator)
-- Custom dnsmasq configuration per network
-- Manual DNS record management and cross-network propagation
-- Static IP assignment via gRPC to containers
-- TAP-over-vsock for packet forwarding (unchanged)
+**Solution: Direct Push via tap-forwarder gRPC**:
+- **Reuse existing infrastructure**: tap-forwarder gRPC server already runs on vsock port 5555 for TAP device management
+- **Add one RPC**: UpdateDNSMappings extends existing tap-forwarder service
+- **Embedded-DNS**: Runs in each container at 127.0.0.11:53 with local DNS mappings
+- **Direct push**: Daemon dials containers via Container.dialVsock(5555) and pushes topology updates
+- **Relay**: tap-forwarder forwards updates to embedded-DNS via Unix socket
+- **Security**: vsock isolates control plane, only host→container communication allowed
 
-**Target Architecture (OVN native DHCP/DNS)**:
-- Helper VM runs OVS bridges + OVN logical switches (unchanged)
-- **OVN DHCP server** provides IP addresses via standard DHCP protocol
-- **OVN DNS** provides name resolution (network-scoped automatically)
-- Containers use DHCP client to obtain IP (standard Linux DHCP)
-- DHCP packets flow through TAP-over-vsock like all other traffic
-- Optional DHCP reservations for containers with explicit IPs
-- DNS records added to OVN database via `ovn-nbctl` commands
+**Key Components**:
+1. **tap-forwarder**: Extended gRPC service with UpdateDNSMappings RPC (vsock port 5555)
+2. **Embedded-DNS**: DNS server + control server on Unix socket + local in-memory mappings
+3. **Topology Publisher**: ContainerManager pushes updates on lifecycle changes via TAPForwarderClient
+4. **TAP-over-vsock**: Unchanged - handles packet forwarding for network traffic
 
-**Migration Tasks**:
-1. ✅ Document architectural change
-2. ⏳ Remove custom IPAM code (PortAllocator, IP tracking maps)
-3. ⏳ Remove dnsmasq configuration code
-4. ⏳ Add OVN DHCP configuration for logical switches
-5. ⏳ Add OVN DNS record management
-6. ⏳ Update container configuration to use DHCP instead of static IPs
-7. ⏳ Test DHCP/DNS flow with multi-network containers
+**Data Flow**:
+```
+ContainerManager (detect topology change)
+  → TAPForwarderClient.updateDNSMappings() (Swift gRPC)
+  → Container.dialVsock(5555) (host→container)
+  → tap-forwarder UpdateDNSMappings handler (Go gRPC)
+  → Unix socket /tmp/arca-dns-control.sock (JSON)
+  → embedded-DNS control server (Go)
+  → Update local DNSMappings (atomic)
+  → Resolve container names to IPs
+```
 
-See `Documentation/NETWORK_ARCHITECTURE.md` for complete design details.
+**Benefits**:
+- **Simple**: No broker needed, direct host→container push
+- **Secure**: vsock isolates control plane from container networks
+- **Reuses infrastructure**: tap-forwarder already exists and runs on vsock port 5555
+- **Complete snapshots**: Full topology sent on each update (idempotent, no deltas)
+- **Best-effort**: DNS updates don't block container operations
+
+See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentation/NETWORK_ARCHITECTURE.md` for overall networking architecture.
 
 ## Implementation Status
 

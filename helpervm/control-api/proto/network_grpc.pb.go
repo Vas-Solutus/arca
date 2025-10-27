@@ -19,13 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NetworkControl_CreateBridge_FullMethodName     = "/arca.network.NetworkControl/CreateBridge"
-	NetworkControl_DeleteBridge_FullMethodName     = "/arca.network.NetworkControl/DeleteBridge"
-	NetworkControl_AttachContainer_FullMethodName  = "/arca.network.NetworkControl/AttachContainer"
-	NetworkControl_DetachContainer_FullMethodName  = "/arca.network.NetworkControl/DetachContainer"
-	NetworkControl_ListBridges_FullMethodName      = "/arca.network.NetworkControl/ListBridges"
-	NetworkControl_SetNetworkPolicy_FullMethodName = "/arca.network.NetworkControl/SetNetworkPolicy"
-	NetworkControl_GetHealth_FullMethodName        = "/arca.network.NetworkControl/GetHealth"
+	NetworkControl_CreateBridge_FullMethodName         = "/arca.network.NetworkControl/CreateBridge"
+	NetworkControl_DeleteBridge_FullMethodName         = "/arca.network.NetworkControl/DeleteBridge"
+	NetworkControl_AttachContainer_FullMethodName      = "/arca.network.NetworkControl/AttachContainer"
+	NetworkControl_DetachContainer_FullMethodName      = "/arca.network.NetworkControl/DetachContainer"
+	NetworkControl_ListBridges_FullMethodName          = "/arca.network.NetworkControl/ListBridges"
+	NetworkControl_SetNetworkPolicy_FullMethodName     = "/arca.network.NetworkControl/SetNetworkPolicy"
+	NetworkControl_GetHealth_FullMethodName            = "/arca.network.NetworkControl/GetHealth"
+	NetworkControl_ResolveDNS_FullMethodName           = "/arca.network.NetworkControl/ResolveDNS"
+	NetworkControl_GetContainerNetworks_FullMethodName = "/arca.network.NetworkControl/GetContainerNetworks"
 )
 
 // NetworkControlClient is the client API for NetworkControl service.
@@ -48,6 +50,10 @@ type NetworkControlClient interface {
 	SetNetworkPolicy(ctx context.Context, in *SetNetworkPolicyRequest, opts ...grpc.CallOption) (*SetNetworkPolicyResponse, error)
 	// GetHealth returns health status of the helper VM
 	GetHealth(ctx context.Context, in *GetHealthRequest, opts ...grpc.CallOption) (*GetHealthResponse, error)
+	// ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
+	ResolveDNS(ctx context.Context, in *ResolveDNSRequest, opts ...grpc.CallOption) (*ResolveDNSResponse, error)
+	// GetContainerNetworks returns the list of networks a container is attached to
+	GetContainerNetworks(ctx context.Context, in *GetContainerNetworksRequest, opts ...grpc.CallOption) (*GetContainerNetworksResponse, error)
 }
 
 type networkControlClient struct {
@@ -128,6 +134,26 @@ func (c *networkControlClient) GetHealth(ctx context.Context, in *GetHealthReque
 	return out, nil
 }
 
+func (c *networkControlClient) ResolveDNS(ctx context.Context, in *ResolveDNSRequest, opts ...grpc.CallOption) (*ResolveDNSResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveDNSResponse)
+	err := c.cc.Invoke(ctx, NetworkControl_ResolveDNS_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *networkControlClient) GetContainerNetworks(ctx context.Context, in *GetContainerNetworksRequest, opts ...grpc.CallOption) (*GetContainerNetworksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetContainerNetworksResponse)
+	err := c.cc.Invoke(ctx, NetworkControl_GetContainerNetworks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NetworkControlServer is the server API for NetworkControl service.
 // All implementations must embed UnimplementedNetworkControlServer
 // for forward compatibility.
@@ -148,6 +174,10 @@ type NetworkControlServer interface {
 	SetNetworkPolicy(context.Context, *SetNetworkPolicyRequest) (*SetNetworkPolicyResponse, error)
 	// GetHealth returns health status of the helper VM
 	GetHealth(context.Context, *GetHealthRequest) (*GetHealthResponse, error)
+	// ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
+	ResolveDNS(context.Context, *ResolveDNSRequest) (*ResolveDNSResponse, error)
+	// GetContainerNetworks returns the list of networks a container is attached to
+	GetContainerNetworks(context.Context, *GetContainerNetworksRequest) (*GetContainerNetworksResponse, error)
 	mustEmbedUnimplementedNetworkControlServer()
 }
 
@@ -178,6 +208,12 @@ func (UnimplementedNetworkControlServer) SetNetworkPolicy(context.Context, *SetN
 }
 func (UnimplementedNetworkControlServer) GetHealth(context.Context, *GetHealthRequest) (*GetHealthResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetHealth not implemented")
+}
+func (UnimplementedNetworkControlServer) ResolveDNS(context.Context, *ResolveDNSRequest) (*ResolveDNSResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveDNS not implemented")
+}
+func (UnimplementedNetworkControlServer) GetContainerNetworks(context.Context, *GetContainerNetworksRequest) (*GetContainerNetworksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetContainerNetworks not implemented")
 }
 func (UnimplementedNetworkControlServer) mustEmbedUnimplementedNetworkControlServer() {}
 func (UnimplementedNetworkControlServer) testEmbeddedByValue()                        {}
@@ -326,6 +362,42 @@ func _NetworkControl_GetHealth_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NetworkControl_ResolveDNS_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveDNSRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkControlServer).ResolveDNS(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkControl_ResolveDNS_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkControlServer).ResolveDNS(ctx, req.(*ResolveDNSRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NetworkControl_GetContainerNetworks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetContainerNetworksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NetworkControlServer).GetContainerNetworks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NetworkControl_GetContainerNetworks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NetworkControlServer).GetContainerNetworks(ctx, req.(*GetContainerNetworksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // NetworkControl_ServiceDesc is the grpc.ServiceDesc for NetworkControl service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -360,6 +432,14 @@ var NetworkControl_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetHealth",
 			Handler:    _NetworkControl_GetHealth_Handler,
+		},
+		{
+			MethodName: "ResolveDNS",
+			Handler:    _NetworkControl_ResolveDNS_Handler,
+		},
+		{
+			MethodName: "GetContainerNetworks",
+			Handler:    _NetworkControl_GetContainerNetworks_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

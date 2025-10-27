@@ -321,6 +321,9 @@ public actor ContainerManager {
                     config.process.environmentVariables += env
                 }
 
+                // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
+                config.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
+
                 if let workingDir = workingDir {
                     config.process.workingDirectory = workingDir
                 }
@@ -360,28 +363,8 @@ public actor ContainerManager {
                     ])
                 }
 
-                // Inject arca-tap-forwarder binary via bind mount for networking
-                // Mount the entire ~/.arca/bin directory to /.arca/bin in the container
-                // This makes the binary available at /.arca/bin/arca-tap-forwarder
-                let arcaBinPath = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".arca/bin")
-                    .path
-
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: arcaBinPath, isDirectory: &isDirectory),
-                   isDirectory.boolValue {
-                    config.mounts.append(
-                        .share(
-                            source: arcaBinPath,
-                            destination: "/.arca/bin",
-                            options: ["ro"]
-                        )
-                    )
-                    logger.debug("Bind mounted arca bin directory", metadata: [
-                        "source": "\(arcaBinPath)",
-                        "destination": "/.arca/bin"
-                    ])
-                }
+                // Note: arca-tap-forwarder is embedded in vminit rootfs at /sbin/arca-tap-forwarder
+                // (built via scripts/build-vminit.sh), no bind mount needed
 
                 // Configure TTY mode
                 config.process.terminal = tty
@@ -577,12 +560,16 @@ public actor ContainerManager {
                 stderrWriter = stderrLogWriter
             }
 
+            // Capture values for @Sendable closure
+            let tty = info.tty
+            let containerLogger = logger
+
             // Create the LinuxContainer with proper stdio configuration
             let container = try await manager.create(
                 dockerID,
                 image: config.image,
                 rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-            ) { containerConfig in
+            ) { @Sendable containerConfig in
                 // Override with Docker API parameters
                 if let command = config.command {
                     containerConfig.process.arguments = command
@@ -593,6 +580,9 @@ public actor ContainerManager {
                     containerConfig.process.environmentVariables += env
                 }
 
+                // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
+                containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
+
                 if let workingDir = config.workingDir {
                     containerConfig.process.workingDirectory = workingDir
                 }
@@ -601,13 +591,13 @@ public actor ContainerManager {
                 containerConfig.hostname = config.hostname
 
                 // Configure TTY mode
-                containerConfig.process.terminal = info.tty
+                containerConfig.process.terminal = tty
 
                 // Configure stdout (always needed)
                 containerConfig.process.stdout = stdoutWriter
 
                 // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
-                if !info.tty {
+                if !tty {
                     containerConfig.process.stderr = stderrWriter
                 }
 
@@ -699,17 +689,28 @@ public actor ContainerManager {
                     }
 
                     let containerName = info.name ?? String(dockerID.prefix(12))
-                    _ = try await networkManager.attachContainerToNetwork(
+                    let attachment = try await networkManager.attachContainerToNetwork(
                         containerID: dockerID,
                         container: nativeContainer,
                         networkID: resolvedNetworkID,
                         containerName: containerName,
                         aliases: []
                     )
+
+                    // Record the attachment in ContainerManager
+                    try await self.attachContainerToNetwork(
+                        dockerID: dockerID,
+                        networkID: resolvedNetworkID,
+                        ip: attachment.ip,
+                        mac: attachment.mac,
+                        aliases: attachment.aliases
+                    )
+
                     logger.info("Container auto-attached to network successfully", metadata: [
                         "container": "\(dockerID)",
                         "network": "\(targetNetwork)",
-                        "resolved_id": "\(resolvedNetworkID)"
+                        "resolved_id": "\(resolvedNetworkID)",
+                        "ip": "\(attachment.ip)"
                     ])
                 } catch {
                     // Log the error but don't fail the container start
@@ -725,6 +726,14 @@ public actor ContainerManager {
                     "container": "\(dockerID)"
                 ])
             }
+        }
+
+        // Push DNS topology to this container (for its own resolution)
+        await pushDNSTopologyUpdate(to: dockerID)
+
+        // Push DNS topology to all other containers on the same networks (to add this container)
+        for networkID in info.networkAttachments.keys {
+            await pushDNSTopologyToNetwork(networkID: networkID)
         }
 
         // Spawn background monitoring task to detect when container exits
@@ -818,6 +827,11 @@ public actor ContainerManager {
         logger.info("Stopping container with Containerization API", metadata: ["id": "\(dockerID)"])
         try await nativeContainer.stop()
 
+        // Push DNS topology updates to remove this container from other containers' view
+        for networkID in info.networkAttachments.keys {
+            await pushDNSTopologyToNetwork(networkID: networkID)
+        }
+
         // Update state
         info.state = "exited"
         info.finishedAt = Date()
@@ -886,6 +900,11 @@ public actor ContainerManager {
         if info.state == "exited" {
             logger.debug("Calling stop() on exited container for cleanup", metadata: ["id": "\(dockerID)"])
             try? await nativeContainer.stop()
+        }
+
+        // Push DNS topology updates to remove this container from other containers' view
+        for networkID in info.networkAttachments.keys {
+            await pushDNSTopologyToNetwork(networkID: networkID)
         }
 
         logger.info("Removing container from tracking", metadata: ["id": "\(dockerID)"])
@@ -1040,6 +1059,12 @@ public actor ContainerManager {
             "container": "\(dockerID)",
             "network": "\(networkID)"
         ])
+
+        // Push DNS topology to this container (to add new network's peers)
+        await pushDNSTopologyUpdate(to: dockerID)
+
+        // Push DNS topology to all containers on this network (to add this container)
+        await pushDNSTopologyToNetwork(networkID: networkID)
     }
 
     /// Detach a container from a network
@@ -1069,6 +1094,12 @@ public actor ContainerManager {
             "container": "\(dockerID)",
             "network": "\(networkID)"
         ])
+
+        // Push DNS topology to this container (to remove detached network's peers)
+        await pushDNSTopologyUpdate(to: dockerID)
+
+        // Push DNS topology to all containers on this network (to remove this container)
+        await pushDNSTopologyToNetwork(networkID: networkID)
     }
 
     /// Get network attachments for a container
@@ -1185,6 +1216,191 @@ public actor ContainerManager {
         } else {
             return "\(secs / 86400) days"
         }
+    }
+
+    // MARK: - DNS Topology Publisher
+
+    /// Push DNS topology update to a specific container
+    /// Called when network topology changes (container start/stop/attach/detach)
+    private func pushDNSTopologyUpdate(to dockerID: String) async {
+        // Get container info
+        guard let containerInfo = containers[dockerID] else {
+            logger.warning("Cannot push DNS topology: container not found", metadata: [
+                "container": "\(dockerID)"
+            ])
+            return
+        }
+
+        // Only push to running containers
+        guard containerInfo.state == "running" else {
+            logger.debug("Skipping DNS push: container not running", metadata: [
+                "container": "\(dockerID)",
+                "state": "\(containerInfo.state)"
+            ])
+            return
+        }
+
+        // Get native container
+        guard let nativeContainer = nativeContainers[dockerID] else {
+            logger.warning("Cannot push DNS topology: native container not found", metadata: [
+                "container": "\(dockerID)"
+            ])
+            return
+        }
+
+        // Build topology snapshot for this container's networks
+        let networkAttachments = containerInfo.networkAttachments
+        guard !networkAttachments.isEmpty else {
+            logger.debug("Skipping DNS push: container has no network attachments", metadata: [
+                "container": "\(dockerID)"
+            ])
+            return
+        }
+
+        // Build protobuf mappings
+        var mappings: [String: Arca_Tapforwarder_V1_NetworkPeers] = [:]
+
+        for (networkID, _) in networkAttachments {
+            // Get network name from NetworkManager
+            guard let networkManager = networkManager else {
+                logger.warning("Cannot build topology: NetworkManager not available")
+                continue
+            }
+
+            guard let networkName = await networkManager.getNetworkName(networkID: networkID) else {
+                logger.warning("Cannot build topology: network name not found", metadata: [
+                    "network_id": "\(networkID)"
+                ])
+                continue
+            }
+
+            // Get all containers on this network
+            let containersOnNetwork = await getContainersOnNetwork(networkID: networkID)
+
+            // Build NetworkPeers
+            var peers = Arca_Tapforwarder_V1_NetworkPeers()
+            peers.containers = containersOnNetwork.map { peer in
+                var dnsInfo = Arca_Tapforwarder_V1_ContainerDNSInfo()
+                dnsInfo.name = peer.name
+                dnsInfo.id = peer.dockerID
+                dnsInfo.ipAddress = peer.ipAddress
+                dnsInfo.aliases = peer.aliases
+                return dnsInfo
+            }
+
+            mappings[networkName] = peers
+        }
+
+        // Check if we have any mappings to push
+        guard !mappings.isEmpty else {
+            logger.warning("Skipping DNS push: no network mappings built", metadata: [
+                "container": "\(dockerID)",
+                "networkAttachments": "\(networkAttachments.count)",
+                "hasNetworkManager": "\(networkManager != nil)"
+            ])
+            return
+        }
+
+        logger.debug("Building DNS topology push", metadata: [
+            "container": "\(dockerID)",
+            "networks": "\(mappings.keys.joined(separator: ", "))",
+            "totalPeers": "\(mappings.values.map { $0.containers.count }.reduce(0, +))"
+        ])
+
+        // Dial container and push topology
+        do {
+            let client = try await TAPForwarderClient(
+                container: nativeContainer,
+                logger: logger
+            )
+
+            let response = try await client.updateDNSMappings(networks: mappings)
+
+            // Close client before processing response
+            await client.close()
+
+            if response.success {
+                logger.info("DNS topology pushed successfully", metadata: [
+                    "container": "\(dockerID)",
+                    "networks": "\(mappings.keys.joined(separator: ", "))",
+                    "records": "\(response.recordsUpdated)"
+                ])
+            } else {
+                logger.error("DNS topology push failed", metadata: [
+                    "container": "\(dockerID)",
+                    "error": "\(response.error)"
+                ])
+            }
+        } catch {
+            logger.error("Failed to push DNS topology", metadata: [
+                "container": "\(dockerID)",
+                "error": "\(error)"
+            ])
+        }
+    }
+
+    /// Push DNS topology updates to all containers on a specific network
+    /// Called when a container joins/leaves a network or starts/stops
+    private func pushDNSTopologyToNetwork(networkID: String) async {
+        logger.debug("Pushing DNS topology to all containers on network", metadata: [
+            "network_id": "\(networkID)"
+        ])
+
+        // Get all running containers on this network
+        let containersOnNetwork = containers.values.filter { containerInfo in
+            containerInfo.state == "running" &&
+            containerInfo.networkAttachments.keys.contains(networkID)
+        }
+
+        logger.debug("Found containers on network", metadata: [
+            "network_id": "\(networkID)",
+            "count": "\(containersOnNetwork.count)"
+        ])
+
+        // Push to each container
+        for containerInfo in containersOnNetwork {
+            // Find Docker ID for this container
+            if let dockerID = containers.first(where: { $0.value.nativeID == containerInfo.nativeID })?.key {
+                await pushDNSTopologyUpdate(to: dockerID)
+            }
+        }
+    }
+
+    /// Helper to get all containers on a specific network
+    private func getContainersOnNetwork(networkID: String) async -> [ContainerDNSPeer] {
+        var peers: [ContainerDNSPeer] = []
+
+        for (dockerID, containerInfo) in containers {
+            // Only include running containers
+            guard containerInfo.state == "running" else {
+                continue
+            }
+
+            // Check if container is on this network
+            guard let attachment = containerInfo.networkAttachments[networkID] else {
+                continue
+            }
+
+            // Get container name (use short ID if no name)
+            let containerName = containerInfo.name ?? String(dockerID.prefix(12))
+
+            peers.append(ContainerDNSPeer(
+                name: containerName,
+                dockerID: dockerID,
+                ipAddress: attachment.ip,
+                aliases: attachment.aliases
+            ))
+        }
+
+        return peers
+    }
+
+    /// Container DNS information for building topology snapshots
+    private struct ContainerDNSPeer {
+        let name: String
+        let dockerID: String
+        let ipAddress: String
+        let aliases: [String]
     }
 
     // MARK: - Helper Types

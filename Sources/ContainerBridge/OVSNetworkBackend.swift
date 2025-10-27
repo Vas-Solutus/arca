@@ -33,7 +33,8 @@ public actor OVSNetworkBackend {
     private var portAllocator: PortAllocator  // vsock port allocator for TAP forwarding
 
     // Subnet allocation tracking (simple counter for auto-allocation)
-    // TODO: Remove when OVN DHCP is fully implemented
+    // Used to assign different subnets to different networks (172.18.x.x, 172.19.x.x, etc.)
+    // Note: This is separate from IP allocation within a subnet (which OVN DHCP handles)
     private var nextSubnetByte: UInt8 = 18  // Start at 172.18.0.0/16
 
     // Container attachment details: networkID -> containerID -> (ip, mac, aliases)

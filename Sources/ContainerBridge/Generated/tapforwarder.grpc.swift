@@ -38,6 +38,11 @@ public protocol Arca_Tapforwarder_V1_TAPForwarderClientProtocol: GRPCClient {
     _ request: Arca_Tapforwarder_V1_GetStatusRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse>
+
+  func updateDNSMappings(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse>
 }
 
 extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
@@ -114,6 +119,25 @@ extension Arca_Tapforwarder_V1_TAPForwarderClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
+    )
+  }
+
+  /// Update DNS mappings for network topology changes
+  /// Called by Arca daemon when containers join/leave networks
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to UpdateDNSMappings.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func updateDNSMappings(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.updateDNSMappings.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUpdateDNSMappingsInterceptors() ?? []
     )
   }
 }
@@ -201,6 +225,11 @@ public protocol Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol: GRPCClient
     _ request: Arca_Tapforwarder_V1_GetStatusRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse>
+
+  func makeUpdateDnsmappingsCall(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -260,6 +289,28 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
     )
   }
+
+  public func makeUpdateDnsmappingsCall(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.updateDNSMappings.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUpdateDNSMappingsInterceptors() ?? []
+    )
+  }
+
+  public func makeUpdateDNSMappingsCall(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse> {
+    return self.makeUpdateDnsmappingsCall(
+      request,
+      callOptions: callOptions
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -311,6 +362,18 @@ extension Arca_Tapforwarder_V1_TAPForwarderAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
     )
   }
+
+  public func updateDNSMappings(
+    _ request: Arca_Tapforwarder_V1_UpdateDNSMappingsRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Tapforwarder_V1_UpdateDNSMappingsResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.updateDNSMappings.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUpdateDNSMappingsInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -343,6 +406,9 @@ public protocol Arca_Tapforwarder_V1_TAPForwarderClientInterceptorFactoryProtoco
 
   /// - Returns: Interceptors to use when invoking 'getStatus'.
   func makeGetStatusInterceptors() -> [ClientInterceptor<Arca_Tapforwarder_V1_GetStatusRequest, Arca_Tapforwarder_V1_GetStatusResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'updateDNSMappings'.
+  func makeUpdateDNSMappingsInterceptors() -> [ClientInterceptor<Arca_Tapforwarder_V1_UpdateDNSMappingsRequest, Arca_Tapforwarder_V1_UpdateDNSMappingsResponse>]
 }
 
 public enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
@@ -354,6 +420,7 @@ public enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
       Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.detachNetwork,
       Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.listNetworks,
       Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.getStatus,
+      Arca_Tapforwarder_V1_TAPForwarderClientMetadata.Methods.updateDNSMappings,
     ]
   )
 
@@ -379,6 +446,12 @@ public enum Arca_Tapforwarder_V1_TAPForwarderClientMetadata {
     public static let getStatus = GRPCMethodDescriptor(
       name: "GetStatus",
       path: "/arca.tapforwarder.v1.TAPForwarder/GetStatus",
+      type: GRPCCallType.unary
+    )
+
+    public static let updateDNSMappings = GRPCMethodDescriptor(
+      name: "UpdateDNSMappings",
+      path: "/arca.tapforwarder.v1.TAPForwarder/UpdateDNSMappings",
       type: GRPCCallType.unary
     )
   }

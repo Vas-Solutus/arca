@@ -211,6 +211,38 @@ public actor TAPForwarderClient {
         }
     }
 
+    public func updateDNSMappings(
+        networks: [String: Arca_Tapforwarder_V1_NetworkPeers]
+    ) async throws -> Arca_Tapforwarder_V1_UpdateDNSMappingsResponse {
+        guard let client = client else {
+            throw ClientError.notConnected
+        }
+
+        var request = Arca_Tapforwarder_V1_UpdateDNSMappingsRequest()
+        request.networks = networks
+
+        logger.debug("Sending UpdateDNSMappings RPC", metadata: [
+            "networkCount": "\(networks.count)"
+        ])
+
+        do {
+            let response = try await client.updateDNSMappings(request).response.get()
+
+            if response.success {
+                logger.debug("DNS mappings updated successfully", metadata: [
+                    "records": "\(response.recordsUpdated)"
+                ])
+            } else {
+                logger.error("DNS mappings update failed", metadata: ["error": "\(response.error)"])
+            }
+
+            return response
+        } catch {
+            logger.error("UpdateDNSMappings RPC failed", metadata: ["error": "\(error)"])
+            throw ClientError.rpcFailed(error.localizedDescription)
+        }
+    }
+
     public func close() async {
         if let channel = channel {
             try? await channel.close().get()

@@ -10,20 +10,16 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Proto file locations
 CONTROL_API_PROTO="$PROJECT_ROOT/helpervm/proto/network.proto"
-ROUTER_SERVICE_PROTO="$PROJECT_ROOT/helpervm/router-service/proto/router.proto"
-VLAN_SERVICE_PROTO="$PROJECT_ROOT/vminitd/vminitd/extensions/vlan-service/proto/network.proto"
 
 # Output directories
 SWIFT_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Generated"
 CONTROL_API_GO_DIR="$PROJECT_ROOT/helpervm/control-api/proto"
-ROUTER_SERVICE_GO_DIR="$PROJECT_ROOT/helpervm/router-service/proto"
-VLAN_SERVICE_GO_DIR="$PROJECT_ROOT/vminitd/vminitd/extensions/vlan-service/proto"
 
 # Create output directory
 mkdir -p "$SWIFT_OUTPUT_DIR"
 
 # Clean up old subdirectory structure (files are now in root with prefixed names)
-rm -rf "$SWIFT_OUTPUT_DIR/ControlAPI" "$SWIFT_OUTPUT_DIR/RouterService" "$SWIFT_OUTPUT_DIR/VLANService"
+rm -rf "$SWIFT_OUTPUT_DIR/ControlAPI"
 
 # Check if protoc is installed
 if ! command -v protoc &> /dev/null; then
@@ -66,42 +62,6 @@ else
     echo "  ⚠ Skipping - proto file not found: $CONTROL_API_PROTO"
 fi
 
-# Generate Swift code for Router Service
-echo ""
-echo "→ Generating Swift code for Router Service..."
-if [ -f "$ROUTER_SERVICE_PROTO" ]; then
-    protoc "$ROUTER_SERVICE_PROTO" \
-        --proto_path="$(dirname "$ROUTER_SERVICE_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
-
-    # Rename for consistency
-    mv "$SWIFT_OUTPUT_DIR/router.pb.swift" "$SWIFT_OUTPUT_DIR/router_service.pb.swift"
-    mv "$SWIFT_OUTPUT_DIR/router.grpc.swift" "$SWIFT_OUTPUT_DIR/router_service.grpc.swift"
-
-    echo "  ✓ Generated Swift code: router_service.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - proto file not found: $ROUTER_SERVICE_PROTO"
-fi
-
-# Generate Swift code for VLAN Service
-echo ""
-echo "→ Generating Swift code for VLAN Service..."
-if [ -f "$VLAN_SERVICE_PROTO" ]; then
-    protoc "$VLAN_SERVICE_PROTO" \
-        --proto_path="$(dirname "$VLAN_SERVICE_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
-
-    # Rename to avoid filename conflicts with control_api
-    mv "$SWIFT_OUTPUT_DIR/network.pb.swift" "$SWIFT_OUTPUT_DIR/vlan_service.pb.swift"
-    mv "$SWIFT_OUTPUT_DIR/network.grpc.swift" "$SWIFT_OUTPUT_DIR/vlan_service.grpc.swift"
-
-    echo "  ✓ Generated Swift code: vlan_service.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - proto file not found: $VLAN_SERVICE_PROTO"
-fi
-
 # Generate Go code for Control API
 echo ""
 echo "→ Generating Go code for Control API..."
@@ -117,34 +77,18 @@ else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi
 
-# Generate Go code for Router Service
+# Generate Swift code for TAP Forwarder (containerization/vminitd/extensions/tap-forwarder/proto/tapforwarder.proto)
 echo ""
-echo "→ Generating Go code for Router Service..."
-if [ -f "$ROUTER_SERVICE_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$ROUTER_SERVICE_PROTO" \
-        --proto_path="$(dirname "$ROUTER_SERVICE_PROTO")" \
-        --go_out="$ROUTER_SERVICE_GO_DIR" \
-        --go_opt=paths=source_relative \
-        --go-grpc_out="$ROUTER_SERVICE_GO_DIR" \
-        --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $ROUTER_SERVICE_GO_DIR"
+echo "→ Generating Swift code for TAP Forwarder..."
+TAP_FORWARDER_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/tap-forwarder/proto/tapforwarder.proto"
+if [ -f "$TAP_FORWARDER_PROTO" ]; then
+    protoc "$TAP_FORWARDER_PROTO" \
+        --proto_path="$(dirname "$TAP_FORWARDER_PROTO")" \
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+    echo "  ✓ Generated Swift code: tapforwarder.{pb,grpc}.swift"
 else
-    echo "  ⚠ Skipping - proto file or Go plugins not found"
-fi
-
-# Generate Go code for VLAN Service
-echo ""
-echo "→ Generating Go code for VLAN Service..."
-if [ -f "$VLAN_SERVICE_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$VLAN_SERVICE_PROTO" \
-        --proto_path="$(dirname "$VLAN_SERVICE_PROTO")" \
-        --go_out="$VLAN_SERVICE_GO_DIR" \
-        --go_opt=paths=source_relative \
-        --go-grpc_out="$VLAN_SERVICE_GO_DIR" \
-        --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $VLAN_SERVICE_GO_DIR"
-else
-    echo "  ⚠ Skipping - proto file or Go plugins not found"
+    echo "  ⚠ Skipping - proto file not found: $TAP_FORWARDER_PROTO"
 fi
 
 echo ""

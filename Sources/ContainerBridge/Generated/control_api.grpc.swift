@@ -52,6 +52,16 @@ public protocol Arca_Network_NetworkControlClientProtocol: GRPCClient {
     _ request: Arca_Network_GetHealthRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Network_GetHealthRequest, Arca_Network_GetHealthResponse>
+
+  func resolveDNS(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse>
+
+  func getContainerNetworks(
+    _ request: Arca_Network_GetContainerNetworksRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Network_GetContainerNetworksRequest, Arca_Network_GetContainerNetworksResponse>
 }
 
 extension Arca_Network_NetworkControlClientProtocol {
@@ -184,6 +194,42 @@ extension Arca_Network_NetworkControlClientProtocol {
       interceptors: self.interceptors?.makeGetHealthInterceptors() ?? []
     )
   }
+
+  /// ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to ResolveDNS.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func resolveDNS(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.resolveDNS.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeResolveDNSInterceptors() ?? []
+    )
+  }
+
+  /// GetContainerNetworks returns the list of networks a container is attached to
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to GetContainerNetworks.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func getContainerNetworks(
+    _ request: Arca_Network_GetContainerNetworksRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Network_GetContainerNetworksRequest, Arca_Network_GetContainerNetworksResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.getContainerNetworks.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetContainerNetworksInterceptors() ?? []
+    )
+  }
 }
 
 @available(*, deprecated)
@@ -283,6 +329,16 @@ public protocol Arca_Network_NetworkControlAsyncClientProtocol: GRPCClient {
     _ request: Arca_Network_GetHealthRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Network_GetHealthRequest, Arca_Network_GetHealthResponse>
+
+  func makeResolveDnsCall(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse>
+
+  func makeGetContainerNetworksCall(
+    _ request: Arca_Network_GetContainerNetworksRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Network_GetContainerNetworksRequest, Arca_Network_GetContainerNetworksResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -378,6 +434,40 @@ extension Arca_Network_NetworkControlAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetHealthInterceptors() ?? []
     )
   }
+
+  public func makeResolveDnsCall(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.resolveDNS.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeResolveDNSInterceptors() ?? []
+    )
+  }
+
+  public func makeResolveDNSCall(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse> {
+    return self.makeResolveDnsCall(
+      request,
+      callOptions: callOptions
+    )
+  }
+
+  public func makeGetContainerNetworksCall(
+    _ request: Arca_Network_GetContainerNetworksRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Network_GetContainerNetworksRequest, Arca_Network_GetContainerNetworksResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.getContainerNetworks.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetContainerNetworksInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -465,6 +555,30 @@ extension Arca_Network_NetworkControlAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetHealthInterceptors() ?? []
     )
   }
+
+  public func resolveDNS(
+    _ request: Arca_Network_ResolveDNSRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Network_ResolveDNSResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.resolveDNS.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeResolveDNSInterceptors() ?? []
+    )
+  }
+
+  public func getContainerNetworks(
+    _ request: Arca_Network_GetContainerNetworksRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Network_GetContainerNetworksResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Network_NetworkControlClientMetadata.Methods.getContainerNetworks.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetContainerNetworksInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -506,6 +620,12 @@ public protocol Arca_Network_NetworkControlClientInterceptorFactoryProtocol: Sen
 
   /// - Returns: Interceptors to use when invoking 'getHealth'.
   func makeGetHealthInterceptors() -> [ClientInterceptor<Arca_Network_GetHealthRequest, Arca_Network_GetHealthResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'resolveDNS'.
+  func makeResolveDNSInterceptors() -> [ClientInterceptor<Arca_Network_ResolveDNSRequest, Arca_Network_ResolveDNSResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'getContainerNetworks'.
+  func makeGetContainerNetworksInterceptors() -> [ClientInterceptor<Arca_Network_GetContainerNetworksRequest, Arca_Network_GetContainerNetworksResponse>]
 }
 
 public enum Arca_Network_NetworkControlClientMetadata {
@@ -520,6 +640,8 @@ public enum Arca_Network_NetworkControlClientMetadata {
       Arca_Network_NetworkControlClientMetadata.Methods.listBridges,
       Arca_Network_NetworkControlClientMetadata.Methods.setNetworkPolicy,
       Arca_Network_NetworkControlClientMetadata.Methods.getHealth,
+      Arca_Network_NetworkControlClientMetadata.Methods.resolveDNS,
+      Arca_Network_NetworkControlClientMetadata.Methods.getContainerNetworks,
     ]
   )
 
@@ -563,6 +685,18 @@ public enum Arca_Network_NetworkControlClientMetadata {
     public static let getHealth = GRPCMethodDescriptor(
       name: "GetHealth",
       path: "/arca.network.NetworkControl/GetHealth",
+      type: GRPCCallType.unary
+    )
+
+    public static let resolveDNS = GRPCMethodDescriptor(
+      name: "ResolveDNS",
+      path: "/arca.network.NetworkControl/ResolveDNS",
+      type: GRPCCallType.unary
+    )
+
+    public static let getContainerNetworks = GRPCMethodDescriptor(
+      name: "GetContainerNetworks",
+      path: "/arca.network.NetworkControl/GetContainerNetworks",
       type: GRPCCallType.unary
     )
   }

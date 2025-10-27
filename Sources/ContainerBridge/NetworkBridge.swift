@@ -16,9 +16,6 @@ public actor NetworkBridge {
     // Track network attachments: containerID -> networkID -> attachment
     private var attachments: [String: [String: NetworkAttachment]] = [:]
 
-    // Track running TAP forwarders: containerID -> exec process
-    private var runningForwarders: [String: Containerization.LinuxProcess] = [:]
-
     struct NetworkAttachment {
         let networkID: String
         let device: String          // eth0, eth1, etc.
@@ -60,37 +57,14 @@ public actor NetworkBridge {
     // MARK: - TAP Forwarder Management
 
     /// Ensure arca-tap-forwarder is running in the container
-    /// The binary is made available via bind mount at /.arca/bin/arca-tap-forwarder
+    /// Note: arca-tap-forwarder is automatically started by vminitd on container boot
+    /// This function just verifies connectivity
     private func ensureTAPForwarderRunning(container: LinuxContainer, containerID: String) async throws {
-        // Check if already running
-        if runningForwarders[containerID] != nil {
-            logger.debug("arca-tap-forwarder already launched", metadata: ["containerID": "\(containerID)"])
-            return
-        }
+        // arca-tap-forwarder is started automatically by vminitd (Application.swift)
+        // It listens on vsock port 5555 and is ready to accept connections
+        logger.debug("arca-tap-forwarder auto-started by vminitd", metadata: ["containerID": "\(containerID)"])
 
-        logger.info("Launching arca-tap-forwarder daemon", metadata: ["containerID": "\(containerID)"])
-
-        // Create log writer for forwarder output
-        let logWriter = try ForwarderLogWriter(logger: logger, containerID: containerID)
-
-        // Create process configuration for arca-tap-forwarder
-        // The binary is bind-mounted at /.arca/bin/arca-tap-forwarder by ContainerManager
-        var processConfig = LinuxProcessConfiguration()
-        processConfig.arguments = ["/.arca/bin/arca-tap-forwarder"]
-        processConfig.terminal = false
-        processConfig.stdout = logWriter
-        processConfig.stderr = logWriter
-
-        let execID = "arca-tap-forwarder-\(containerID)"
-        let process = try await container.exec(execID, configuration: processConfig)
-        try await process.start()
-
-        runningForwarders[containerID] = process
-
-        logger.info("arca-tap-forwarder daemon started", metadata: [
-            "containerID": "\(containerID)",
-            "pid": "\(process.pid)"
-        ])
+        // The forwarder is already running - TAPForwarderClient will connect when needed
     }
 
     // MARK: - Network Attachment
@@ -142,13 +116,11 @@ public actor NetworkBridge {
         do {
             let client = try await TAPForwarderClient(container: container, logger: logger)
 
-            // For DHCP (empty IP), use placeholder that will be overridden by DHCP client
-            let effectiveIP = ipAddress.isEmpty ? "0.0.0.1" : ipAddress
-
+            // Empty IP means use DHCP - tap-forwarder will skip static IP configuration
             let response = try await client.attachNetwork(
                 device: device,
                 vsockPort: containerPort,
-                ipAddress: effectiveIP,
+                ipAddress: ipAddress,
                 gateway: gateway,
                 netmask: 24
             )

@@ -38,25 +38,6 @@ if ! swift sdk list 2>/dev/null | grep -q "static-linux"; then
 fi
 echo "  ✓ Swift Static Linux SDK found"
 
-# Build VLAN service (Go binary cross-compiled to Linux)
-echo ""
-echo "→ Building VLAN service (Go → Linux ARM64)..."
-cd "$VMINITD_DIR/vminitd/extensions/vlan-service"
-
-if [ ! -f build.sh ]; then
-    echo "ERROR: vlan-service/build.sh not found"
-    exit 1
-fi
-
-./build.sh
-
-if [ ! -f vlan-service ]; then
-    echo "ERROR: vlan-service binary not built"
-    exit 1
-fi
-
-echo "  ✓ VLAN service built: vlan-service"
-
 # Build TAP forwarder (Go binary cross-compiled to Linux)
 echo ""
 echo "→ Building TAP forwarder (Go → Linux ARM64)..."
@@ -75,6 +56,31 @@ if [ ! -f arca-tap-forwarder ]; then
 fi
 
 echo "  ✓ TAP forwarder built: arca-tap-forwarder"
+
+# Build embedded DNS (Go binary cross-compiled to Linux)
+echo ""
+echo "→ Building embedded DNS (Go → Linux ARM64)..."
+cd "$VMINITD_DIR/vminitd/extensions/embedded-dns"
+
+if [ ! -f build.sh ]; then
+    echo "ERROR: embedded-dns/build.sh not found"
+    exit 1
+fi
+
+# Generate protobuf code first
+if [ ! -f proto/network.pb.go ]; then
+    echo "  Generating protobuf code..."
+    ./generate-proto.sh
+fi
+
+./build.sh
+
+if [ ! -f arca-embedded-dns ]; then
+    echo "ERROR: arca-embedded-dns binary not built"
+    exit 1
+fi
+
+echo "  ✓ Embedded DNS built: arca-embedded-dns"
 
 # Build vminitd (Swift cross-compiled to Linux)
 echo ""
@@ -127,8 +133,8 @@ echo "  Using cctl to create rootfs with Swift runtime..."
 "$CCTL_BINARY" rootfs create \
     --vminitd "$VMINITD_BINARY" \
     --vmexec "$VMEXEC_BINARY" \
-    --add-file "$VMINITD_DIR/vminitd/extensions/vlan-service/vlan-service:/sbin/vlan-service" \
     --add-file "$VMINITD_DIR/vminitd/extensions/tap-forwarder/arca-tap-forwarder:/sbin/arca-tap-forwarder" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/embedded-dns/arca-embedded-dns:/sbin/arca-embedded-dns" \
     --image arca-vminit:latest \
     --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
     "$ROOTFS_TAR"
@@ -249,10 +255,10 @@ echo ""
 echo "OCI image location: $VMINIT_DIR"
 echo ""
 echo "Contents:"
-echo "  /sbin/vminitd         - Init system (PID 1)"
-echo "  /sbin/vmexec          - Exec helper"
-echo "  /sbin/vlan-service    - VLAN configuration service (vsock:50051)"
-echo "  /sbin/arca-tap-forwarder - TAP forwarder (Phase 3.4)"
+echo "  /sbin/vminitd            - Init system (PID 1)"
+echo "  /sbin/vmexec             - Exec helper"
+echo "  /sbin/arca-tap-forwarder - TAP forwarder (auto-started on boot, vsock:5555)"
+echo "  /sbin/arca-embedded-dns  - Embedded DNS resolver (127.0.0.11:53, auto-started on boot)"
 echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
 echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."

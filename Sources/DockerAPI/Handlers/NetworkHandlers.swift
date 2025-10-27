@@ -227,12 +227,22 @@ public struct NetworkHandlers: Sendable {
             // Get container name for DNS
             let containerName = await containerManager.getContainerName(dockerID: containerID) ?? String(containerID.prefix(12))
 
-            _ = try await networkManager.attachContainerToNetwork(
+            // Attach to network via NetworkManager (OVS attachment)
+            let attachment = try await networkManager.attachContainerToNetwork(
                 containerID: containerID,
                 container: container,
                 networkID: resolvedNetworkID,
                 containerName: containerName,
                 aliases: aliases
+            )
+
+            // Record the attachment in ContainerManager (triggers DNS push)
+            try await containerManager.attachContainerToNetwork(
+                dockerID: containerID,
+                networkID: resolvedNetworkID,
+                ip: attachment.ip,
+                mac: attachment.mac,
+                aliases: attachment.aliases
             )
 
             logger.info("Container connected to network successfully", metadata: [

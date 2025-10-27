@@ -128,6 +128,11 @@ RUN mkdir -p \
     /etc/ovn \
     /var/run/ovn
 
+# Set OVN database connection environment variables
+# This tells ovn-nbctl and ovn-sbctl to use Unix sockets instead of TCP
+ENV OVN_NB_DB=unix:/var/run/ovn/ovnnb_db.sock
+ENV OVN_SB_DB=unix:/var/run/ovn/ovnsb_db.sock
+
 # vsock ports (not TCP - using mdlayher/vsock library):
 # Port 9999: OVS/OVN control API
 # Port 50052: Router service for VLAN networking

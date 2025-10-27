@@ -18,6 +18,7 @@ import (
 
 var (
 	vsockPort = flag.Uint("vsock-port", 9999, "vsock port to listen on")
+	tcpPort   = flag.Uint("tcp-port", 9999, "TCP port to listen on for container connections")
 )
 
 func main() {

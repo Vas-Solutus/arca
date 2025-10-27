@@ -1070,6 +1070,225 @@ func (x *GetHealthResponse) GetUptimeSeconds() uint64 {
 	return 0
 }
 
+// ResolveDNSRequest resolves a hostname across multiple networks
+// Used by vminit's embedded DNS (127.0.0.11) to query the helper VM
+type ResolveDNSRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hostname      string                 `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`                       // Hostname to resolve (e.g., "container2")
+	NetworkIds    []string               `protobuf:"bytes,2,rep,name=network_ids,json=networkIds,proto3" json:"network_ids,omitempty"` // Networks the requesting container is attached to
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveDNSRequest) Reset() {
+	*x = ResolveDNSRequest{}
+	mi := &file_network_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveDNSRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveDNSRequest) ProtoMessage() {}
+
+func (x *ResolveDNSRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_network_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveDNSRequest.ProtoReflect.Descriptor instead.
+func (*ResolveDNSRequest) Descriptor() ([]byte, []int) {
+	return file_network_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ResolveDNSRequest) GetHostname() string {
+	if x != nil {
+		return x.Hostname
+	}
+	return ""
+}
+
+func (x *ResolveDNSRequest) GetNetworkIds() []string {
+	if x != nil {
+		return x.NetworkIds
+	}
+	return nil
+}
+
+type ResolveDNSResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Found         bool                   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`                         // True if hostname was resolved
+	IpAddress     string                 `protobuf:"bytes,2,opt,name=ip_address,json=ipAddress,proto3" json:"ip_address,omitempty"` // Resolved IP address
+	NetworkId     string                 `protobuf:"bytes,3,opt,name=network_id,json=networkId,proto3" json:"network_id,omitempty"` // Which network the hostname was found in
+	Error         string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`                          // Error message if resolution failed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveDNSResponse) Reset() {
+	*x = ResolveDNSResponse{}
+	mi := &file_network_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveDNSResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveDNSResponse) ProtoMessage() {}
+
+func (x *ResolveDNSResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_network_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveDNSResponse.ProtoReflect.Descriptor instead.
+func (*ResolveDNSResponse) Descriptor() ([]byte, []int) {
+	return file_network_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ResolveDNSResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *ResolveDNSResponse) GetIpAddress() string {
+	if x != nil {
+		return x.IpAddress
+	}
+	return ""
+}
+
+func (x *ResolveDNSResponse) GetNetworkId() string {
+	if x != nil {
+		return x.NetworkId
+	}
+	return ""
+}
+
+func (x *ResolveDNSResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// GetContainerNetworksRequest queries which networks a container is attached to
+type GetContainerNetworksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ContainerId   string                 `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"` // Docker container ID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetContainerNetworksRequest) Reset() {
+	*x = GetContainerNetworksRequest{}
+	mi := &file_network_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetContainerNetworksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetContainerNetworksRequest) ProtoMessage() {}
+
+func (x *GetContainerNetworksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_network_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetContainerNetworksRequest.ProtoReflect.Descriptor instead.
+func (*GetContainerNetworksRequest) Descriptor() ([]byte, []int) {
+	return file_network_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *GetContainerNetworksRequest) GetContainerId() string {
+	if x != nil {
+		return x.ContainerId
+	}
+	return ""
+}
+
+type GetContainerNetworksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NetworkIds    []string               `protobuf:"bytes,1,rep,name=network_ids,json=networkIds,proto3" json:"network_ids,omitempty"` // List of network IDs this container is attached to
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                             // Error message if query failed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetContainerNetworksResponse) Reset() {
+	*x = GetContainerNetworksResponse{}
+	mi := &file_network_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetContainerNetworksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetContainerNetworksResponse) ProtoMessage() {}
+
+func (x *GetContainerNetworksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_network_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetContainerNetworksResponse.ProtoReflect.Descriptor instead.
+func (*GetContainerNetworksResponse) Descriptor() ([]byte, []int) {
+	return file_network_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetContainerNetworksResponse) GetNetworkIds() []string {
+	if x != nil {
+		return x.NetworkIds
+	}
+	return nil
+}
+
+func (x *GetContainerNetworksResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_network_proto protoreflect.FileDescriptor
 
 const file_network_proto_rawDesc = "" +
@@ -1161,7 +1380,24 @@ const file_network_proto_rawDesc = "" +
 	"ovs_status\x18\x02 \x01(\tR\tovsStatus\x12\x1d\n" +
 	"\n" +
 	"ovn_status\x18\x03 \x01(\tR\tovnStatus\x12%\n" +
-	"\x0euptime_seconds\x18\x04 \x01(\x04R\ruptimeSeconds2\x83\x05\n" +
+	"\x0euptime_seconds\x18\x04 \x01(\x04R\ruptimeSeconds\"P\n" +
+	"\x11ResolveDNSRequest\x12\x1a\n" +
+	"\bhostname\x18\x01 \x01(\tR\bhostname\x12\x1f\n" +
+	"\vnetwork_ids\x18\x02 \x03(\tR\n" +
+	"networkIds\"~\n" +
+	"\x12ResolveDNSResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x12\x1d\n" +
+	"\n" +
+	"ip_address\x18\x02 \x01(\tR\tipAddress\x12\x1d\n" +
+	"\n" +
+	"network_id\x18\x03 \x01(\tR\tnetworkId\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\"@\n" +
+	"\x1bGetContainerNetworksRequest\x12!\n" +
+	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\"U\n" +
+	"\x1cGetContainerNetworksResponse\x12\x1f\n" +
+	"\vnetwork_ids\x18\x01 \x03(\tR\n" +
+	"networkIds\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error2\xc3\x06\n" +
 	"\x0eNetworkControl\x12U\n" +
 	"\fCreateBridge\x12!.arca.network.CreateBridgeRequest\x1a\".arca.network.CreateBridgeResponse\x12U\n" +
 	"\fDeleteBridge\x12!.arca.network.DeleteBridgeRequest\x1a\".arca.network.DeleteBridgeResponse\x12^\n" +
@@ -1169,7 +1405,10 @@ const file_network_proto_rawDesc = "" +
 	"\x0fDetachContainer\x12$.arca.network.DetachContainerRequest\x1a%.arca.network.DetachContainerResponse\x12R\n" +
 	"\vListBridges\x12 .arca.network.ListBridgesRequest\x1a!.arca.network.ListBridgesResponse\x12a\n" +
 	"\x10SetNetworkPolicy\x12%.arca.network.SetNetworkPolicyRequest\x1a&.arca.network.SetNetworkPolicyResponse\x12L\n" +
-	"\tGetHealth\x12\x1e.arca.network.GetHealthRequest\x1a\x1f.arca.network.GetHealthResponseB\x18Z\x16arca-network-api/protob\x06proto3"
+	"\tGetHealth\x12\x1e.arca.network.GetHealthRequest\x1a\x1f.arca.network.GetHealthResponse\x12O\n" +
+	"\n" +
+	"ResolveDNS\x12\x1f.arca.network.ResolveDNSRequest\x1a .arca.network.ResolveDNSResponse\x12m\n" +
+	"\x14GetContainerNetworks\x12).arca.network.GetContainerNetworksRequest\x1a*.arca.network.GetContainerNetworksResponseB\x18Z\x16arca-network-api/protob\x06proto3"
 
 var (
 	file_network_proto_rawDescOnce sync.Once
@@ -1184,26 +1423,30 @@ func file_network_proto_rawDescGZIP() []byte {
 }
 
 var file_network_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_network_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_network_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_network_proto_goTypes = []any{
-	(NetworkPolicyRule_Action)(0),    // 0: arca.network.NetworkPolicyRule.Action
-	(NetworkPolicyRule_Protocol)(0),  // 1: arca.network.NetworkPolicyRule.Protocol
-	(*CreateBridgeRequest)(nil),      // 2: arca.network.CreateBridgeRequest
-	(*CreateBridgeResponse)(nil),     // 3: arca.network.CreateBridgeResponse
-	(*DeleteBridgeRequest)(nil),      // 4: arca.network.DeleteBridgeRequest
-	(*DeleteBridgeResponse)(nil),     // 5: arca.network.DeleteBridgeResponse
-	(*AttachContainerRequest)(nil),   // 6: arca.network.AttachContainerRequest
-	(*AttachContainerResponse)(nil),  // 7: arca.network.AttachContainerResponse
-	(*DetachContainerRequest)(nil),   // 8: arca.network.DetachContainerRequest
-	(*DetachContainerResponse)(nil),  // 9: arca.network.DetachContainerResponse
-	(*ListBridgesRequest)(nil),       // 10: arca.network.ListBridgesRequest
-	(*BridgeInfo)(nil),               // 11: arca.network.BridgeInfo
-	(*ListBridgesResponse)(nil),      // 12: arca.network.ListBridgesResponse
-	(*SetNetworkPolicyRequest)(nil),  // 13: arca.network.SetNetworkPolicyRequest
-	(*NetworkPolicyRule)(nil),        // 14: arca.network.NetworkPolicyRule
-	(*SetNetworkPolicyResponse)(nil), // 15: arca.network.SetNetworkPolicyResponse
-	(*GetHealthRequest)(nil),         // 16: arca.network.GetHealthRequest
-	(*GetHealthResponse)(nil),        // 17: arca.network.GetHealthResponse
+	(NetworkPolicyRule_Action)(0),        // 0: arca.network.NetworkPolicyRule.Action
+	(NetworkPolicyRule_Protocol)(0),      // 1: arca.network.NetworkPolicyRule.Protocol
+	(*CreateBridgeRequest)(nil),          // 2: arca.network.CreateBridgeRequest
+	(*CreateBridgeResponse)(nil),         // 3: arca.network.CreateBridgeResponse
+	(*DeleteBridgeRequest)(nil),          // 4: arca.network.DeleteBridgeRequest
+	(*DeleteBridgeResponse)(nil),         // 5: arca.network.DeleteBridgeResponse
+	(*AttachContainerRequest)(nil),       // 6: arca.network.AttachContainerRequest
+	(*AttachContainerResponse)(nil),      // 7: arca.network.AttachContainerResponse
+	(*DetachContainerRequest)(nil),       // 8: arca.network.DetachContainerRequest
+	(*DetachContainerResponse)(nil),      // 9: arca.network.DetachContainerResponse
+	(*ListBridgesRequest)(nil),           // 10: arca.network.ListBridgesRequest
+	(*BridgeInfo)(nil),                   // 11: arca.network.BridgeInfo
+	(*ListBridgesResponse)(nil),          // 12: arca.network.ListBridgesResponse
+	(*SetNetworkPolicyRequest)(nil),      // 13: arca.network.SetNetworkPolicyRequest
+	(*NetworkPolicyRule)(nil),            // 14: arca.network.NetworkPolicyRule
+	(*SetNetworkPolicyResponse)(nil),     // 15: arca.network.SetNetworkPolicyResponse
+	(*GetHealthRequest)(nil),             // 16: arca.network.GetHealthRequest
+	(*GetHealthResponse)(nil),            // 17: arca.network.GetHealthResponse
+	(*ResolveDNSRequest)(nil),            // 18: arca.network.ResolveDNSRequest
+	(*ResolveDNSResponse)(nil),           // 19: arca.network.ResolveDNSResponse
+	(*GetContainerNetworksRequest)(nil),  // 20: arca.network.GetContainerNetworksRequest
+	(*GetContainerNetworksResponse)(nil), // 21: arca.network.GetContainerNetworksResponse
 }
 var file_network_proto_depIdxs = []int32{
 	11, // 0: arca.network.ListBridgesResponse.bridges:type_name -> arca.network.BridgeInfo
@@ -1217,15 +1460,19 @@ var file_network_proto_depIdxs = []int32{
 	10, // 8: arca.network.NetworkControl.ListBridges:input_type -> arca.network.ListBridgesRequest
 	13, // 9: arca.network.NetworkControl.SetNetworkPolicy:input_type -> arca.network.SetNetworkPolicyRequest
 	16, // 10: arca.network.NetworkControl.GetHealth:input_type -> arca.network.GetHealthRequest
-	3,  // 11: arca.network.NetworkControl.CreateBridge:output_type -> arca.network.CreateBridgeResponse
-	5,  // 12: arca.network.NetworkControl.DeleteBridge:output_type -> arca.network.DeleteBridgeResponse
-	7,  // 13: arca.network.NetworkControl.AttachContainer:output_type -> arca.network.AttachContainerResponse
-	9,  // 14: arca.network.NetworkControl.DetachContainer:output_type -> arca.network.DetachContainerResponse
-	12, // 15: arca.network.NetworkControl.ListBridges:output_type -> arca.network.ListBridgesResponse
-	15, // 16: arca.network.NetworkControl.SetNetworkPolicy:output_type -> arca.network.SetNetworkPolicyResponse
-	17, // 17: arca.network.NetworkControl.GetHealth:output_type -> arca.network.GetHealthResponse
-	11, // [11:18] is the sub-list for method output_type
-	4,  // [4:11] is the sub-list for method input_type
+	18, // 11: arca.network.NetworkControl.ResolveDNS:input_type -> arca.network.ResolveDNSRequest
+	20, // 12: arca.network.NetworkControl.GetContainerNetworks:input_type -> arca.network.GetContainerNetworksRequest
+	3,  // 13: arca.network.NetworkControl.CreateBridge:output_type -> arca.network.CreateBridgeResponse
+	5,  // 14: arca.network.NetworkControl.DeleteBridge:output_type -> arca.network.DeleteBridgeResponse
+	7,  // 15: arca.network.NetworkControl.AttachContainer:output_type -> arca.network.AttachContainerResponse
+	9,  // 16: arca.network.NetworkControl.DetachContainer:output_type -> arca.network.DetachContainerResponse
+	12, // 17: arca.network.NetworkControl.ListBridges:output_type -> arca.network.ListBridgesResponse
+	15, // 18: arca.network.NetworkControl.SetNetworkPolicy:output_type -> arca.network.SetNetworkPolicyResponse
+	17, // 19: arca.network.NetworkControl.GetHealth:output_type -> arca.network.GetHealthResponse
+	19, // 20: arca.network.NetworkControl.ResolveDNS:output_type -> arca.network.ResolveDNSResponse
+	21, // 21: arca.network.NetworkControl.GetContainerNetworks:output_type -> arca.network.GetContainerNetworksResponse
+	13, // [13:22] is the sub-list for method output_type
+	4,  // [4:13] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -1242,7 +1489,7 @@ func file_network_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_network_proto_rawDesc), len(file_network_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   16,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
