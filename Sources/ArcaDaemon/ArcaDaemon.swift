@@ -12,7 +12,6 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var containerManager: ContainerBridge.ContainerManager?
     private var imageManager: ImageManager?
     private var execManager: ExecManager?
-    private var networkHelperVM: NetworkHelperVM?
     private var networkManager: NetworkManager?
     private var sharedNetwork: SharedVmnetNetwork?
 
@@ -242,19 +241,9 @@ public final class ArcaDaemon: @unchecked Sendable {
         try await server.shutdown()
         self.server = nil
 
-        // Stop network helper VM if running
-        if let networkHelperVM = networkHelperVM {
-            logger.info("Stopping network helper VM...")
-            do {
-                try await networkHelperVM.stop()
-                logger.info("Network helper VM stopped")
-            } catch {
-                logger.error("Error stopping network helper VM", metadata: [
-                    "error": "\(error)"
-                ])
-            }
-            self.networkHelperVM = nil
-        }
+        // Control plane is now a regular container with restart policy "always"
+        // ContainerManager handles graceful shutdown via SIGTERM
+        // No special cleanup needed
 
         logger.info("Arca daemon stopped")
     }
