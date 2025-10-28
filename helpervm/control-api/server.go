@@ -23,6 +23,7 @@ type NetworkServer struct {
 	relayManager  *TAPRelayManager
 	containerPort map[string]uint32 // containerID -> helperPort (for TAP relay cleanup)
 	startTime     time.Time
+	nextVLAN      uint32 // Next available VLAN tag (starts at 100)
 }
 
 // BridgeMetadata stores metadata about a network bridge
@@ -41,83 +42,75 @@ func NewNetworkServer() *NetworkServer {
 		relayManager:  NewTAPRelayManager(),
 		containerPort: make(map[string]uint32),
 		startTime:     time.Now(),
+		nextVLAN:      100, // VLAN tags 100-4095 available (1-99 reserved)
 	}
 }
 
-// CreateBridge creates a new OVS bridge and OVN logical switch
+// CreateBridge creates an OVN logical switch with VLAN tag (OVN-native architecture)
+// No manual OVS bridges are created - all traffic flows through br-int with VLAN isolation
 func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRequest) (*pb.CreateBridgeResponse, error) {
 	log.Printf("CreateBridge: networkID=%s, subnet=%s, gateway=%s", req.NetworkId, req.Subnet, req.Gateway)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
-	// Use MD5 hash of network ID to ensure uniqueness with short names
-	// Format: br-{12 hex chars} = 15 chars total
-	hash := md5.Sum([]byte(req.NetworkId))
-	bridgeName := fmt.Sprintf("br-%x", hash[:6]) // 12 hex chars from 6 bytes
+	// Check if logical switch already exists (idempotency)
+	if _, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "name"); err == nil {
+		// Logical switch exists - get existing VLAN tag
+		vlanStr, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "external_ids:vlan_tag")
+		vlanStr = strings.Trim(strings.TrimSpace(vlanStr), "\"")
+		if err != nil || vlanStr == "" {
+			log.Printf("WARNING: Logical switch %s exists but has no VLAN tag", req.NetworkId)
+			vlanStr = "0"
+		}
 
-	// Create OVS bridge with netdev datapath (userspace)
-	if err := runCommand("ovs-vsctl", "add-br", bridgeName, "--", "set", "bridge", bridgeName, "datapath_type=netdev"); err != nil {
+		log.Printf("Logical switch %s already exists with VLAN tag %s (idempotent)", req.NetworkId, vlanStr)
+
 		return &pb.CreateBridgeResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to create OVS bridge with netdev datapath: %v", err),
+			BridgeName: "br-int", // All networks use br-int now
+			Success:    true,
 		}, nil
 	}
 
-	log.Printf("OVS bridge %s created successfully", bridgeName)
-
-	// Bring bridge interface up
-	if err := runCommand("ip", "link", "set", bridgeName, "up"); err != nil {
-		// Cleanup: delete bridge
-		_ = runCommand("ovs-vsctl", "del-br", bridgeName)
+	// Allocate VLAN tag for this network (100-4095)
+	vlanTag := s.nextVLAN
+	if vlanTag > 4095 {
 		return &pb.CreateBridgeResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to bring bridge up: %v", err),
+			Error:   "VLAN tag exhaustion: maximum 3996 networks reached (100-4095)",
 		}, nil
 	}
+	s.nextVLAN++
 
-	// Disable TX checksum offloading on bridge for OVS userspace datapath
-	// This is critical for proper DNS/UDP packet handling in userspace datapath
-	// See: https://docs.openvswitch.org/en/latest/topics/userspace-checksum-offloading/
-	log.Printf("Disabling TX offloading on bridge %s for OVS userspace datapath", bridgeName)
-	if err := runCommand("ethtool", "-K", bridgeName, "tx", "off"); err != nil {
-		log.Printf("Warning: Failed to disable TX offloading: %v", err)
-		// Don't fail - continue anyway
-	}
-
-	// Assign gateway IP to bridge
-	if err := runCommand("ip", "addr", "add", fmt.Sprintf("%s/24", req.Gateway), "dev", bridgeName); err != nil {
-		// Cleanup: delete bridge
-		_ = runCommand("ovs-vsctl", "del-br", bridgeName)
-		return &pb.CreateBridgeResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to assign IP to bridge: %v", err),
-		}, nil
-	}
+	log.Printf("Allocated VLAN tag %d for network %s", vlanTag, req.NetworkId)
 
 	// Create OVN logical switch
 	if err := runCommand("ovn-nbctl", "ls-add", req.NetworkId); err != nil {
-		// Cleanup: delete bridge
-		_ = runCommand("ovs-vsctl", "del-br", bridgeName)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to create OVN logical switch: %v", err),
 		}, nil
 	}
 
+	// Store VLAN tag in logical switch external_ids for TAP relay to read
+	if err := runCommand("ovn-nbctl", "set", "logical_switch", req.NetworkId,
+		fmt.Sprintf("external_ids:vlan_tag=%d", vlanTag)); err != nil {
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to set VLAN tag on logical switch: %v", err),
+		}, nil
+	}
+
 	// Set subnet, gateway, and exclude IPs in OVN
 	// exclude_ips prevents OVN from allocating the gateway IP to containers
-	// For /16 networks, reserve .0.1 as gateway
-	// For /24 networks, reserve .1 as gateway
-	// Reserve the first IP (.0.1 or .1) for the gateway
 	if err := runCommand("ovn-nbctl", "set", "logical_switch", req.NetworkId,
 		fmt.Sprintf("other_config:subnet=%s", req.Subnet),
 		fmt.Sprintf("other_config:gateway=%s", req.Gateway),
 		fmt.Sprintf("other_config:exclude_ips=%s", req.Gateway)); err != nil {
 		// Cleanup
 		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
-		_ = runCommand("ovs-vsctl", "del-br", bridgeName)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to configure OVN logical switch: %v", err),
@@ -125,10 +118,11 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	}
 
 	// Configure OVN DHCP options for this network
-	log.Printf("Configuring OVN DHCP for network %s (subnet: %s, gateway: %s)", req.NetworkId, req.Subnet, req.Gateway)
+	log.Printf("Configuring OVN DHCP for network %s (subnet: %s, gateway: %s, VLAN: %d)", req.NetworkId, req.Subnet, req.Gateway, vlanTag)
 
-	// Generate a MAC address for the DHCP server (gateway)
-	serverMAC := fmt.Sprintf("00:00:00:%02x:%02x:%02x", hash[0], hash[1], hash[2])
+	// Generate a MAC address for the DHCP server (gateway) based on VLAN tag
+	// This ensures uniqueness across networks
+	serverMAC := fmt.Sprintf("00:00:00:00:%02x:%02x", (vlanTag>>8)&0xff, vlanTag&0xff)
 
 	// Create DHCP options using 'ovn-nbctl create' which returns the UUID directly
 	// Note: 'dhcp-options-create' does NOT return a UUID (known OVN limitation)
@@ -160,45 +154,35 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		}
 	}
 
-	// Store metadata
+	// Store metadata (still tracking for compatibility, but bridgeName is always br-int now)
 	s.bridges[req.NetworkId] = &BridgeMetadata{
 		NetworkID:  req.NetworkId,
-		BridgeName: bridgeName,
+		BridgeName: "br-int", // All networks use br-int with VLAN tags
 		Subnet:     req.Subnet,
 		Gateway:    req.Gateway,
 	}
 	s.containerMap[req.NetworkId] = make(map[string]bool)
 
-	log.Printf("Successfully created bridge %s for network %s", bridgeName, req.NetworkId)
+	log.Printf("Successfully created OVN logical switch %s with VLAN tag %d", req.NetworkId, vlanTag)
 
 	return &pb.CreateBridgeResponse{
-		BridgeName: bridgeName,
+		BridgeName: "br-int", // All networks use br-int now
 		Success:    true,
 	}, nil
 }
 
-// DeleteBridge removes an OVS bridge and OVN logical switch
+// DeleteBridge removes an OVN logical switch (no manual bridge to delete)
 func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRequest) (*pb.DeleteBridgeResponse, error) {
 	log.Printf("DeleteBridge: networkID=%s", req.NetworkId)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
-	// Use MD5 hash of network ID to ensure uniqueness
-	hash := md5.Sum([]byte(req.NetworkId))
-	bridgeName := fmt.Sprintf("br-%x", hash[:6])
-
-	// Delete OVN logical switch
+	// Delete OVN logical switch (this removes all ports, DHCP, etc.)
 	if err := runCommand("ovn-nbctl", "ls-del", req.NetworkId); err != nil {
-		log.Printf("Warning: Failed to delete OVN logical switch: %v", err)
-	}
-
-	// Delete OVS bridge
-	if err := runCommand("ovs-vsctl", "del-br", bridgeName); err != nil {
 		return &pb.DeleteBridgeResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Failed to delete OVS bridge: %v", err),
+			Error:   fmt.Sprintf("Failed to delete OVN logical switch: %v", err),
 		}, nil
 	}
 
@@ -206,7 +190,11 @@ func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRe
 	delete(s.bridges, req.NetworkId)
 	delete(s.containerMap, req.NetworkId)
 
-	log.Printf("Successfully deleted bridge %s", bridgeName)
+	// Note: We don't reclaim VLAN tags (nextVLAN counter keeps growing)
+	// This is fine - 3996 VLANs should be enough for any single daemon lifetime
+	// If we need to reclaim, would need to track allocated VLANs in a set
+
+	log.Printf("Successfully deleted OVN logical switch %s", req.NetworkId)
 
 	return &pb.DeleteBridgeResponse{
 		Success: true,
