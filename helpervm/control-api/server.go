@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"log"
 	"os"
@@ -209,10 +208,26 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Bridge name must be <= 15 chars (Linux IFNAMSIZ limit)
-	// Use MD5 hash of network ID to ensure uniqueness
-	hash := md5.Sum([]byte(req.NetworkId))
-	bridgeName := fmt.Sprintf("br-%x", hash[:6])
+	// Get VLAN tag from OVN logical switch
+	vlanStr, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "external_ids:vlan_tag")
+	if err != nil {
+		return &pb.AttachContainerResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to get VLAN tag for network %s: %v", req.NetworkId, err),
+		}, nil
+	}
+	vlanStr = strings.Trim(strings.TrimSpace(vlanStr), "\"")
+
+	// Parse VLAN tag as uint32
+	var vlanTag uint32
+	if _, err := fmt.Sscanf(vlanStr, "%d", &vlanTag); err != nil {
+		return &pb.AttachContainerResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Invalid VLAN tag '%s' for network %s: %v", vlanStr, req.NetworkId, err),
+		}, nil
+	}
+
+	log.Printf("Network %s uses VLAN tag %d", req.NetworkId, vlanTag)
 
 	// For TAP-over-vsock architecture, we don't create OVS/OVN ports here
 	// The TAP relay will create its own OVS internal port when it starts
@@ -363,13 +378,13 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	if req.VsockPort > 0 {
 		// Helper VM listens on host_port + 10000
 		helperPort := req.VsockPort + 10000
-		if err := s.relayManager.StartRelay(helperPort, bridgeName, req.NetworkId, req.ContainerId, req.MacAddress); err != nil {
+		if err := s.relayManager.StartRelay(helperPort, vlanTag, req.NetworkId, req.ContainerId, req.MacAddress); err != nil {
 			log.Printf("Warning: Failed to start TAP relay: %v", err)
 			// Don't fail the entire operation - networking may still work via other means
 		} else {
 			// Track the port for cleanup during detach
 			s.containerPort[req.ContainerId] = helperPort
-			log.Printf("Started TAP relay on helper VM port %d for container %s", helperPort, req.ContainerId)
+			log.Printf("Started TAP relay on helper VM port %d for container %s (VLAN: %d)", helperPort, req.ContainerId, vlanTag)
 		}
 	}
 

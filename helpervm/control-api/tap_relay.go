@@ -30,7 +30,8 @@ func NewTAPRelayManager() *TAPRelayManager {
 
 // StartRelay starts a vsock listener for TAP packet relay
 // This is called when a container is attached to a network
-func (m *TAPRelayManager) StartRelay(port uint32, bridgeName string, networkID string, containerID string, macAddress string) error {
+// All networks use br-int with VLAN tags for isolation
+func (m *TAPRelayManager) StartRelay(port uint32, vlanTag uint32, networkID string, containerID string, macAddress string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -39,7 +40,7 @@ func (m *TAPRelayManager) StartRelay(port uint32, bridgeName string, networkID s
 		return fmt.Errorf("relay already running on port %d", port)
 	}
 
-	log.Printf("Starting TAP relay on vsock port %d for container %s on network %s (bridge: %s)", port, containerID, networkID, bridgeName)
+	log.Printf("Starting TAP relay on vsock port %d for container %s on network %s (VLAN: %d)", port, containerID, networkID, vlanTag)
 
 	// Create vsock listener
 	listener, err := vsock.Listen(port, nil)
@@ -80,7 +81,7 @@ func (m *TAPRelayManager) StartRelay(port uint32, bridgeName string, networkID s
 				log.Printf("Accepted vsock connection on port %d", port)
 
 				// Handle this connection in a separate goroutine
-				go m.handleConnection(conn, bridgeName, networkID, containerID, macAddress, port)
+				go m.handleConnection(conn, vlanTag, networkID, containerID, macAddress, port)
 			}
 		}
 	}()
@@ -104,10 +105,10 @@ func (m *TAPRelayManager) StopRelay(port uint32) error {
 }
 
 // handleConnection handles a single vsock connection for TAP packet relay
-func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, networkID string, containerID string, macAddress string, port uint32) {
+func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networkID string, containerID string, macAddress string, port uint32) {
 	defer conn.Close()
 
-	log.Printf("Handling TAP relay connection for container %s on network %s (bridge: %s, port %d)", containerID, networkID, bridgeName, port)
+	log.Printf("Handling TAP relay connection for container %s on network %s (VLAN: %d, port %d)", containerID, networkID, vlanTag, port)
 
 	// Create OVS internal port for this container+network combination
 	// Format: port-{hash} where hash uniquely identifies container+network
@@ -116,12 +117,12 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 	// Use first 5 chars of container ID + first 5 chars of network ID
 	portName := fmt.Sprintf("port-%s%s", containerID[:5], networkID[:5])
 
-	// Add internal port to OVS bridge
-	if err := addOVSInternalPort(bridgeName, portName); err != nil {
+	// Add internal port to br-int with VLAN tag for network isolation
+	if err := addOVSInternalPort("br-int", portName, vlanTag); err != nil {
 		log.Printf("Failed to add OVS internal port: %v", err)
 		return
 	}
-	defer deleteOVSPort(bridgeName, portName)
+	defer deleteOVSPort("br-int", portName)
 
 	// Bring the port interface up
 	if err := bringInterfaceUp(portName); err != nil {
@@ -138,7 +139,7 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 	}
 	defer tapFile.Close()
 
-	log.Printf("Started packet relay: vsock port %d <-> OVS port %s on bridge %s", port, portName, bridgeName)
+	log.Printf("Started packet relay: vsock port %d <-> OVS port %s on br-int (VLAN: %d)", port, portName, vlanTag)
 
 	// Relay packets bidirectionally
 	done := make(chan struct{}, 2)
@@ -199,17 +200,19 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, bridgeName string, net
 
 // Helper functions
 
-func addOVSInternalPort(bridgeName, portName string) error {
-	// Add internal port to OVS bridge
+func addOVSInternalPort(bridgeName, portName string, vlanTag uint32) error {
+	// Add internal port to br-int with VLAN tag for network isolation
 	// Internal ports appear as network interfaces that can be used for packet I/O
-	log.Printf("Creating OVS internal port: bridge=%s port=%s", bridgeName, portName)
-	cmd := exec.Command("ovs-vsctl", "add-port", bridgeName, portName, "--", "set", "interface", portName, "type=internal")
+	log.Printf("Creating OVS internal port: bridge=%s port=%s vlan=%d", bridgeName, portName, vlanTag)
+	cmd := exec.Command("ovs-vsctl", "add-port", bridgeName, portName,
+		fmt.Sprintf("tag=%d", vlanTag),
+		"--", "set", "interface", portName, "type=internal")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("OVS add-port failed: %v, output: %s", err, string(output))
 		return err
 	}
-	log.Printf("OVS port created successfully: %s", portName)
+	log.Printf("OVS port created successfully: %s (VLAN: %d)", portName, vlanTag)
 
 	// Give OVS a moment to create the interface
 	time.Sleep(100 * time.Millisecond)
