@@ -10,7 +10,7 @@ import ContainerizationOS
 /// Network bridge that manages container network attachments
 public actor NetworkBridge {
     private let logger: Logger
-    private var helperVM: NetworkHelperVM?
+    private var controlPlane: Containerization.LinuxContainer?
     private var portAllocator: PortAllocator
 
     // Track network attachments: containerID -> networkID -> attachment
@@ -20,12 +20,12 @@ public actor NetworkBridge {
         let networkID: String
         let device: String          // eth0, eth1, etc.
         let containerPort: UInt32   // vsock data port
-        let helperPort: UInt32
+        let controlPlanePort: UInt32
         let relayTask: Task<Void, Never>
     }
 
     public enum BridgeError: Error, CustomStringConvertible {
-        case helperVMNotRunning
+        case controlPlaneNotRunning
         case containerNotFound
         case networkNotFound
         case attachmentFailed(String)
@@ -34,7 +34,7 @@ public actor NetworkBridge {
 
         public var description: String {
             switch self {
-            case .helperVMNotRunning: return "Helper VM not running"
+            case .controlPlaneNotRunning: return "Control plane not running"
             case .containerNotFound: return "Container not found"
             case .networkNotFound: return "Network not found"
             case .attachmentFailed(let msg): return "Failed to attach network: \(msg)"
@@ -49,9 +49,9 @@ public actor NetworkBridge {
         self.portAllocator = PortAllocator(basePort: 20000)
     }
 
-    /// Set the helper VM reference
-    public func setHelperVM(_ helperVM: NetworkHelperVM) {
-        self.helperVM = helperVM
+    /// Set the control plane container reference
+    public func setControlPlane(_ controlPlane: Containerization.LinuxContainer) {
+        self.controlPlane = controlPlane
     }
 
     // MARK: - TAP Forwarder Management
@@ -90,8 +90,8 @@ public actor NetworkBridge {
         device: String,
         containerPort: UInt32
     ) async throws {
-        guard let helperVM = helperVM else {
-            throw BridgeError.helperVMNotRunning
+        guard let controlPlaneContainer = controlPlane else {
+            throw BridgeError.controlPlaneNotRunning
         }
 
         logger.info("Attaching container to network", metadata: [
@@ -105,11 +105,11 @@ public actor NetworkBridge {
         try await ensureTAPForwarderRunning(container: container, containerID: containerID)
 
         // 2. Use provided vsock port
-        let helperPort = containerPort + 10000  // Helper uses +10000 offset
+        let controlPlanePort = containerPort + 10000  // Control plane uses +10000 offset
 
         logger.debug("Allocated ports", metadata: [
             "containerPort": "\(containerPort)",
-            "helperPort": "\(helperPort)"
+            "controlPlanePort": "\(controlPlanePort)"
         ])
 
         // 3. Send AttachNetwork RPC to arca-tap-forwarder
@@ -134,23 +134,18 @@ public actor NetworkBridge {
                 "mac": "\(response.macAddress)"
             ])
 
-            // 3. Get helper VM container for relay
-            guard let helperVMContainer = await helperVM.getContainer() else {
-                throw BridgeError.attachmentFailed("Helper VM container not available")
-            }
-
-            // 4. Start data plane relay task
+            // 3. Start data plane relay task
             let relayTask = Task {
                 await self.runRelay(
                     container: container,
                     containerID: containerID,
                     containerPort: containerPort,
-                    helperVMContainer: helperVMContainer,
-                    helperPort: helperPort
+                    controlPlaneContainer: controlPlaneContainer,
+                    controlPlanePort: controlPlanePort
                 )
             }
 
-            // 5. Track this attachment
+            // 4. Track this attachment
             if attachments[containerID] == nil {
                 attachments[containerID] = [:]
             }
@@ -159,7 +154,7 @@ public actor NetworkBridge {
                 networkID: networkID,
                 device: device,
                 containerPort: containerPort,
-                helperPort: helperPort,
+                controlPlanePort: controlPlanePort,
                 relayTask: relayTask
             )
 
@@ -252,20 +247,20 @@ public actor NetworkBridge {
 
     // MARK: - Data Plane Relay
 
-    /// Run packet relay between container and helper VM
+    /// Run packet relay between container and control plane
     /// This is the data plane that forwards Ethernet frames
     private func runRelay(
         container: LinuxContainer,
         containerID: String,
         containerPort: UInt32,
-        helperVMContainer: LinuxContainer,
-        helperPort: UInt32
+        controlPlaneContainer: LinuxContainer,
+        controlPlanePort: UInt32
     ) async {
         let relayLogger = Logger(label: "network-relay-\(containerID)")
 
         relayLogger.info("Starting packet relay", metadata: [
             "containerPort": "\(containerPort)",
-            "helperPort": "\(helperPort)"
+            "controlPlanePort": "\(controlPlanePort)"
         ])
 
         do {
@@ -275,32 +270,32 @@ public actor NetworkBridge {
             relayLogger.info("Container connected")
 
             // Dial helper VM with retry logic (listener needs time to start)
-            relayLogger.debug("Dialing helper VM", metadata: ["port": "\(helperPort)"])
-            let helperConnection = try await dialWithRetry(
-                container: helperVMContainer,
-                port: helperPort,
+            relayLogger.debug("Dialing control plane", metadata: ["port": "\(controlPlanePort)"])
+            let controlPlaneConnection = try await dialWithRetry(
+                container: controlPlaneContainer,
+                port: controlPlanePort,
                 maxAttempts: 10,
                 logger: relayLogger
             )
-            relayLogger.info("Helper VM connected")
+            relayLogger.info("Control plane connected")
 
             // Run bidirectional relay using detached tasks for true independence
             relayLogger.info("Starting bidirectional relay with detached tasks")
 
             // Extract FDs BEFORE creating tasks
             let containerFD = containerConnection.fileDescriptor
-            let helperFD = helperConnection.fileDescriptor
+            let controlPlaneFD = controlPlaneConnection.fileDescriptor
 
             relayLogger.info("File descriptors extracted", metadata: [
                 "containerFD": "\(containerFD)",
-                "helperFD": "\(helperFD)"
+                "controlPlaneFD": "\(controlPlaneFD)"
             ])
 
             // Create both relay tasks as truly independent detached tasks
             let task1 = Task.detached {
                 await self.relayFD(
                     sourceFD: containerFD,
-                    destFD: helperFD,
+                    destFD: controlPlaneFD,
                     direction: "container->helper",
                     logger: relayLogger
                 )
@@ -308,7 +303,7 @@ public actor NetworkBridge {
 
             let task2 = Task.detached {
                 await self.relayFD(
-                    sourceFD: helperFD,
+                    sourceFD: controlPlaneFD,
                     destFD: containerFD,
                     direction: "helper->container",
                     logger: relayLogger

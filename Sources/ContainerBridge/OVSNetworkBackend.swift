@@ -22,7 +22,7 @@ import Containerization
 /// - 4 vsock hops per packet
 public actor OVSNetworkBackend {
     private let stateStore: StateStore
-    private let helperVM: NetworkHelperVM
+    private let ovnClient: OVNClient
     private let networkBridge: NetworkBridge
     private let logger: Logger
 
@@ -43,12 +43,12 @@ public actor OVSNetworkBackend {
 
     public init(
         stateStore: StateStore,
-        helperVM: NetworkHelperVM,
+        ovnClient: OVNClient,
         networkBridge: NetworkBridge,
         logger: Logger
     ) {
         self.stateStore = stateStore
-        self.helperVM = helperVM
+        self.ovnClient = ovnClient
         self.networkBridge = networkBridge
         self.logger = logger
         self.portAllocator = PortAllocator(basePort: 20000)
@@ -60,10 +60,8 @@ public actor OVSNetworkBackend {
     public func initialize() async throws {
         logger.info("Initializing OVS network backend")
 
-        // Verify helper VM is ready
-        guard await helperVM.getOVNClient() != nil else {
-            throw NetworkManagerError.helperVMNotReady
-        }
+        // Verify OVN client is ready (already connected in NetworkManager)
+        logger.debug("OVN client ready for network operations")
 
         // Load persisted networks from StateStore
         do {
@@ -112,13 +110,8 @@ public actor OVSNetworkBackend {
                 ])
 
                 // Recreate bridge in OVN (reconciliation)
-                // After daemon restart, networks exist in database but not in OVN helper VM
+                // After daemon restart, networks exist in database but not in OVN control plane
                 // We need to recreate them in OVN to restore full functionality
-                guard let ovnClient = await helperVM.getOVNClient() else {
-                    logger.error("Failed to get OVN client for network reconciliation")
-                    continue
-                }
-
                 do {
                     _ = try await ovnClient.createBridge(
                         networkID: network.id,
@@ -230,11 +223,7 @@ public actor OVSNetworkBackend {
             }
         }
 
-        // Create OVS bridge in helper VM
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
-        }
-
+        // Create OVS bridge in control plane
         _ = try await ovnClient.createBridge(
             networkID: id,
             subnet: effectiveSubnet,
@@ -330,11 +319,7 @@ public actor OVSNetworkBackend {
             "name": "\(metadata.name)"
         ])
 
-        // Delete OVS bridge from helper VM
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
-        }
-
+        // Delete OVS bridge from control plane
         try await ovnClient.deleteBridge(networkID: id)
 
         // Remove from tracking
@@ -393,12 +378,8 @@ public actor OVSNetworkBackend {
         // Allocate vsock port for TAP forwarding
         let containerPort = try await portAllocator.allocate()
 
-        // Tell helper VM to set up relay listener
+        // Tell control plane to set up relay listener
         // This must happen BEFORE networkBridge tries to connect
-        guard let ovnClient = await helperVM.getOVNClient() else {
-            throw NetworkManagerError.helperVMNotReady
-        }
-
         // Attach to OVN - this will allocate IP via DHCP and return it
         let response = try await ovnClient.attachContainer(
             containerID: containerID,

@@ -12,26 +12,30 @@ public actor NetworkManager {
     private let config: ArcaConfig
     private let logger: Logger
     private let stateStore: StateStore
+    private let containerManager: ContainerManager
 
     // Backends (initialized based on config)
     private var ovsBackend: OVSNetworkBackend?
     private var vmnetBackend: VmnetNetworkBackend?
 
+    // Control plane for OVS backend
+    private var controlPlaneContainer: Containerization.LinuxContainer?
+    private var ovnClient: OVNClient?
+
     // Dependencies for OVS backend
-    private let helperVM: NetworkHelperVM?
     private let networkBridge: NetworkBridge?
 
     /// Initialize NetworkManager with configuration
     public init(
         config: ArcaConfig,
         stateStore: StateStore,
-        helperVM: NetworkHelperVM?,
+        containerManager: ContainerManager,
         networkBridge: NetworkBridge?,
         logger: Logger
     ) {
         self.config = config
         self.stateStore = stateStore
-        self.helperVM = helperVM
+        self.containerManager = containerManager
         self.networkBridge = networkBridge
         self.logger = logger
     }
@@ -44,15 +48,27 @@ public actor NetworkManager {
 
         switch config.networkBackend {
         case .ovs:
-            // Initialize OVS backend (requires helper VM)
-            guard let helperVM = helperVM,
-                  let networkBridge = networkBridge else {
+            // Initialize OVS backend (requires control plane container)
+            guard let networkBridge = networkBridge else {
                 throw NetworkManagerError.helperVMNotReady
             }
 
+            // Create or get control plane container
+            try await ensureControlPlane()
+
+            // Create OVN client
+            guard let container = controlPlaneContainer else {
+                throw NetworkManagerError.helperVMNotReady
+            }
+
+            let client = OVNClient(logger: logger)
+            try await client.connect(container: container, vsockPort: 9999)
+            self.ovnClient = client
+            logger.info("OVN client connected to control plane")
+
             let backend = OVSNetworkBackend(
                 stateStore: stateStore,
-                helperVM: helperVM,
+                ovnClient: client,
                 networkBridge: networkBridge,
                 logger: logger
             )
@@ -70,6 +86,86 @@ public actor NetworkManager {
         }
 
         logger.info("NetworkManager initialized successfully")
+    }
+
+    /// Ensure control plane container exists and is running
+    private func ensureControlPlane() async throws {
+        logger.info("Ensuring control plane container exists and is running")
+
+        // Check if control plane already exists
+        if let existingID = await containerManager.resolveContainer(idOrName: "arca-control-plane") {
+            logger.info("Control plane container already exists", metadata: ["id": "\(existingID)"])
+
+            // Get the container object
+            let container = try? await containerManager.getLinuxContainer(dockerID: existingID)
+            if let container = container {
+                self.controlPlaneContainer = container
+                logger.info("Control plane container retrieved")
+
+                // Check if it's running
+                if let info = try? await containerManager.getContainer(id: existingID) {
+                    if info.state.status == "running" {
+                        logger.info("Control plane container is already running")
+                        return
+                    }
+                }
+
+                // Start it if it's not running
+                logger.info("Starting control plane container")
+                try await containerManager.startContainer(id: existingID)
+                logger.info("Control plane container started")
+                return
+            }
+        }
+
+        // Create control plane container
+        logger.info("Creating control plane container")
+
+        // Create volume directory for OVN data
+        let volumePath = NSString(string: "~/.arca/control-plane/ovn-data").expandingTildeInPath
+        try FileManager.default.createDirectory(atPath: volumePath, withIntermediateDirectories: true)
+
+        let dockerID = try await containerManager.createContainer(
+            image: "arca-control-plane:latest",
+            name: "arca-control-plane",
+            command: nil,  // Use default from image
+            env: nil,
+            workingDir: nil,
+            labels: [
+                "com.arca.internal": "true",
+                "com.arca.role": "control-plane"
+            ],
+            attachStdin: false,
+            attachStdout: false,
+            attachStderr: false,
+            tty: false,
+            openStdin: false,
+            networkMode: nil,  // No network needed for control plane
+            restartPolicy: RestartPolicy(name: "always", maximumRetryCount: 0),
+            binds: ["\(volumePath):/etc/ovn"]
+        )
+
+        logger.info("Control plane container created", metadata: ["id": "\(dockerID)"])
+
+        // Start the container
+        try await containerManager.startContainer(id: dockerID)
+        logger.info("Control plane container started")
+
+        // Get the container object
+        guard let container = try? await containerManager.getLinuxContainer(dockerID: dockerID) else {
+            throw NetworkManagerError.helperVMNotReady
+        }
+        self.controlPlaneContainer = container
+
+        // Wait for services to initialize
+        logger.info("Waiting for control plane services to initialize...")
+        try await Task.sleep(for: .seconds(10))
+
+        // Set control plane on network bridge
+        if let bridge = networkBridge {
+            await bridge.setControlPlane(container)
+            logger.info("Network bridge configured with control plane container")
+        }
     }
 
     // MARK: - Network CRUD Operations

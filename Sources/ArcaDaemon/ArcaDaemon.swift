@@ -129,39 +129,9 @@ public final class ArcaDaemon: @unchecked Sendable {
             logger.warning("Custom vminit not found at \(vminitPath.path), will use default vminit")
         }
 
-        // Initialize networking components based on configured backend
-        var networkHelperVM: NetworkHelperVM? = nil
-
-        switch config.networkBackend {
-        case .ovs:
-            // OVS backend requires helper VM
-            logger.info("Initializing OVS backend with network helper VM...")
-            let helperVM = NetworkHelperVM(
-                imageManager: imageManager,
-                kernelPath: config.kernelPath,
-                logger: logger,
-                sharedNetwork: nil  // OVS doesn't use shared vmnet
-            )
-            self.networkHelperVM = helperVM
-            networkHelperVM = helperVM
-
-            do {
-                try await helperVM.initialize()
-                try await helperVM.start()
-                logger.info("Network helper VM started successfully")
-            } catch {
-                logger.error("Failed to start network helper VM", metadata: [
-                    "error": "\(error)"
-                ])
-                logger.warning("Daemon will continue without network helper VM - OVS networking disabled")
-                networkHelperVM = nil
-            }
-
-        case .vmnet:
-            // vmnet backend doesn't need helper VM
-            logger.info("Using vmnet backend - no helper VM required")
-            self.networkHelperVM = nil
-        }
+        // OVS backend no longer needs separate NetworkHelperVM actor
+        // Control plane is now a regular container managed by ContainerManager
+        // It will be created by NetworkManager.initialize() with restart policy "always"
 
         // Initialize StateStore (shared by ContainerManager and NetworkManager)
         let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
@@ -199,10 +169,8 @@ public final class ArcaDaemon: @unchecked Sendable {
 
         // Initialize NetworkBridge for TAP device management and packet relay
         let networkBridge: NetworkBridge?
-        if config.networkBackend == .ovs, let helperVM = networkHelperVM {
-            let bridge = NetworkBridge(logger: logger)
-            await bridge.setHelperVM(helperVM)
-            networkBridge = bridge
+        if config.networkBackend == .ovs {
+            networkBridge = NetworkBridge(logger: logger)
         } else {
             networkBridge = nil
         }
@@ -212,7 +180,7 @@ public final class ArcaDaemon: @unchecked Sendable {
         let nm = NetworkManager(
             config: config,
             stateStore: stateStore,
-            helperVM: networkHelperVM,
+            containerManager: containerManager,
             networkBridge: networkBridge,
             logger: logger
         )
