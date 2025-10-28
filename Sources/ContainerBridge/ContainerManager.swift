@@ -1423,6 +1423,65 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "exit_code": "\(exitCode)"
         ])
+
+        // Check restart policy and restart if needed
+        await handleRestartPolicy(dockerID: dockerID, exitCode: exitCode, stoppedByUser: false)
+    }
+
+    /// Handle restart policy for a container that has exited
+    private func handleRestartPolicy(dockerID: String, exitCode: Int, stoppedByUser: Bool) async {
+        guard let containerInfo = containers[dockerID] else {
+            return
+        }
+
+        let policy = containerInfo.hostConfig.restartPolicy
+
+        // Determine if container should restart based on policy
+        let shouldRestart: Bool
+        switch policy.name {
+        case "always":
+            shouldRestart = true
+        case "unless-stopped":
+            shouldRestart = !stoppedByUser
+        case "on-failure":
+            shouldRestart = exitCode != 0
+        default:
+            shouldRestart = false
+        }
+
+        if shouldRestart {
+            logger.info("Container will be restarted per restart policy", metadata: [
+                "id": "\(dockerID)",
+                "name": "\(containerInfo.name ?? dockerID)",
+                "policy": "\(policy.name)",
+                "exit_code": "\(exitCode)",
+                "stopped_by_user": "\(stoppedByUser)"
+            ])
+
+            // Add a small delay before restarting to avoid rapid restart loops
+            try? await Task.sleep(for: .seconds(1))
+
+            do {
+                try await startContainer(id: dockerID)
+                logger.info("Container restarted successfully", metadata: [
+                    "id": "\(dockerID)",
+                    "name": "\(containerInfo.name ?? dockerID)"
+                ])
+            } catch {
+                logger.error("Failed to restart container", metadata: [
+                    "id": "\(dockerID)",
+                    "name": "\(containerInfo.name ?? dockerID)",
+                    "error": "\(error)"
+                ])
+            }
+        } else {
+            logger.debug("Container will NOT be restarted", metadata: [
+                "id": "\(dockerID)",
+                "policy": "\(policy.name)",
+                "exit_code": "\(exitCode)",
+                "stopped_by_user": "\(stoppedByUser)"
+            ])
+        }
     }
 
     /// Clean up monitoring task (called when monitoring fails)
