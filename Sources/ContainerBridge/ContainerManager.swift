@@ -398,11 +398,20 @@ public actor ContainerManager {
             "filters": "\(filters)"
         ])
 
+        // Check if user wants to see internal containers
+        // By default, internal containers (com.arca.internal=true) are hidden
+        let showInternal = filters["label"]?.contains("com.arca.internal") ?? false
+
         // List containers from our internal state tracking
         // Background monitoring tasks automatically update state when containers exit
         return containers.values.compactMap { info -> ContainerSummary? in
             // Filter by state if not showing all
             if !all && info.state != "running" {
+                return nil
+            }
+
+            // Filter out internal containers unless explicitly requested
+            if !showInternal && info.labels["com.arca.internal"] == "true" {
                 return nil
             }
 

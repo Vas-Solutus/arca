@@ -20,8 +20,8 @@ public actor NetworkHelperVM {
     private let sharedNetwork: SharedVmnetNetwork?
 
     // Container configuration
-    private let helperImageReference = "arca-network-helper:latest"
-    private let helperContainerID = "arca-network-helper"
+    private let helperImageReference = "arca-control-plane:latest"
+    private let helperContainerID = "arca-control-plane"
     private let vsockPort: UInt32 = 9999  // gRPC API port
 
     public enum NetworkHelperVMError: Error, CustomStringConvertible {
@@ -153,9 +153,9 @@ public actor NetworkHelperVM {
             ) { config in
                 // Configure helper VM
                 config.process.arguments = ["/usr/local/bin/startup.sh"]
-                config.hostname = "arca-network-helper"
+                config.hostname = "arca-control-plane"
 
-                // CRITICAL: Attach shared vmnet interface to the helper VM
+                // CRITICAL: Attach shared vmnet interface to the control plane
                 // This provides Layer 2 connectivity with all containers for VLAN networking
                 // All VMs on this network can see each other's VLAN-tagged packets
                 if let net = network {

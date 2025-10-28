@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-echo "Building Arca Network Helper VM..."
+echo "Building Arca Control Plane VM..."
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 HELPERVM_DIR="$PROJECT_ROOT/helpervm"
 OUTPUT_DIR="$HOME/.arca/helpervm"
-IMAGE_NAME="arca-network-helper"
+IMAGE_NAME="arca-control-plane"
 IMAGE_TAG="latest"
 OCI_LAYOUT_DIR="$OUTPUT_DIR/oci-layout"
 
@@ -119,14 +119,14 @@ print('index.json fixed for Apple Containerization framework')
 fi
 
 echo ""
-echo "✓ Helper VM OCI image built successfully"
+echo "✓ Control Plane OCI image built successfully"
 echo "  Image: $IMAGE_NAME:$IMAGE_TAG"
 echo "  OCI Layout: $OCI_LAYOUT_DIR"
 echo "  Size: $(du -sh "$OCI_LAYOUT_DIR" 2>/dev/null | cut -f1 || echo 'N/A')"
 echo ""
 echo "Next steps:"
 echo "  1. The OCI Image Layout is ready at: $OCI_LAYOUT_DIR"
-echo "  2. When Arca daemon starts, NetworkHelperVM will load this into the ImageStore"
-echo "  3. The helper VM will be available as: $IMAGE_NAME:$IMAGE_TAG"
+echo "  2. When Arca daemon starts, the control plane will be loaded into the ImageStore"
+echo "  3. The control plane will be available as: $IMAGE_NAME:$IMAGE_TAG"
 echo ""
 echo "Build complete!"
