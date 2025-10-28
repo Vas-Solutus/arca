@@ -146,13 +146,14 @@ ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
     --detach --log-file=/var/log/ovn/ovn-controller.log \
     unix:/var/run/openvswitch/db.sock
 
-# Start dnsmasq for DNS resolution
-# OVN handles DHCP (IP allocation), dnsmasq handles DNS (name resolution)
-echo "Starting dnsmasq for DNS resolution..."
-mkdir -p /var/run
-mkdir -p /etc/dnsmasq.d
-dnsmasq --conf-file=/etc/dnsmasq.conf
-echo "✓ dnsmasq started"
+# DISABLED: dnsmasq not needed - DNS resolution handled by embedded-DNS in each container
+# Each container runs embedded-DNS at 127.0.0.11:53 with direct topology push from daemon
+# OVN still handles DHCP (IP allocation)
+# echo "Starting dnsmasq for DNS resolution..."
+# mkdir -p /var/run
+# mkdir -p /etc/dnsmasq.d
+# dnsmasq --conf-file=/etc/dnsmasq.conf
+# echo "✓ dnsmasq started"
 
 # Wait for services to be ready
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for all services to stabilize..."

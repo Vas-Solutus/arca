@@ -119,11 +119,11 @@ public actor StateStore {
 
     /// Synchronous schema initialization for use in init
     private nonisolated func initializeSchemaSynchronously() throws {
-        // Check current schema version
-        let currentVersion = try? db.scalar(schemaVersion.select(version.max)) ?? 0
+        // Check current schema version (returns nil if table doesn't exist)
+        let versionResult = try? db.scalar(schemaVersion.select(version.max))
+        let currentVersion = versionResult ?? 0
 
         if currentVersion == 0 {
-            print("Creating initial schema (v1)")
             try createSchemaV1Synchronously()
         }
 
@@ -225,8 +225,6 @@ public actor StateStore {
 
             // Mark schema as v1
             try db.run(schemaVersion.insert(version <- 1))
-
-            print("Schema v1 created successfully")
         }
     }
 
@@ -274,6 +272,32 @@ public actor StateStore {
             "id": "\(id)",
             "name": "\(name)",
             "status": "\(status)"
+        ])
+    }
+
+    /// Update container status in database
+    public func updateContainerStatus(id: String, status: String, exitCode: Int? = nil, finishedAt: Date? = nil) throws {
+        let container = containers.filter(self.id == id)
+
+        var setters: [SQLite.Setter] = [
+            self.status <- status,
+            self.running <- (status == "running")
+        ]
+
+        if let exitCode = exitCode {
+            setters.append(self.exitCode <- exitCode)
+        }
+
+        if let finishedAt = finishedAt {
+            setters.append(self.finishedAt <- finishedAt.iso8601String)
+        }
+
+        try db.run(container.update(setters))
+
+        logger.debug("Container status updated", metadata: [
+            "id": "\(id)",
+            "status": "\(status)",
+            "exitCode": "\(exitCode?.description ?? "unchanged")"
         ])
     }
 
@@ -350,7 +374,19 @@ public actor StateStore {
 
         // Query containers that are exited and have a restart policy
         for row in try db.prepare(containers.filter(status == "exited")) {
+            // Extract values for logging (avoid Sendable issues)
+            let containerId = row[id]
+            let containerName = row[name]
+            let containerExitCode = row[exitCode]
+            let containerStoppedByUser = row[stoppedByUser]
             let hostConfig = row[hostConfigJSON]
+
+            logger.debug("Checking restart policy for container", metadata: [
+                "id": "\(containerId)",
+                "name": "\(containerName)",
+                "exitCode": "\(containerExitCode)",
+                "stoppedByUser": "\(containerStoppedByUser)"
+            ])
 
             // Parse restart policy from JSON
             if let data = hostConfig.data(using: .utf8),
@@ -358,26 +394,57 @@ public actor StateStore {
                let restartPolicy = json["restartPolicy"] as? [String: Any],
                let policyName = restartPolicy["name"] as? String {
 
+                logger.debug("Found restart policy", metadata: [
+                    "id": "\(containerId)",
+                    "policy": "\(policyName)"
+                ])
+
                 let shouldRestart: Bool
                 switch policyName {
                 case "always":
                     shouldRestart = true
+                    logger.debug("Policy 'always': will restart")
                 case "unless-stopped":
-                    shouldRestart = !row[stoppedByUser]
+                    shouldRestart = !containerStoppedByUser
+                    logger.debug("Policy 'unless-stopped'", metadata: [
+                        "stoppedByUser": "\(containerStoppedByUser)",
+                        "shouldRestart": "\(shouldRestart)"
+                    ])
                 case "on-failure":
-                    shouldRestart = row[exitCode] != 0
+                    shouldRestart = containerExitCode != 0
+                    logger.debug("Policy 'on-failure'", metadata: [
+                        "exitCode": "\(containerExitCode)",
+                        "shouldRestart": "\(shouldRestart)"
+                    ])
                 default:
                     shouldRestart = false
+                    logger.debug("Unknown policy: will not restart", metadata: ["policy": "\(policyName)"])
                 }
 
                 if shouldRestart {
+                    logger.info("Container will be restarted", metadata: [
+                        "id": "\(containerId)",
+                        "name": "\(containerName)",
+                        "policy": "\(policyName)",
+                        "exitCode": "\(containerExitCode)"
+                    ])
                     result.append((
-                        id: row[id],
-                        name: row[name],
+                        id: containerId,
+                        name: containerName,
                         policy: policyName,
-                        exitCode: row[exitCode]
+                        exitCode: containerExitCode
                     ))
+                } else {
+                    logger.debug("Container will NOT be restarted", metadata: [
+                        "id": "\(containerId)",
+                        "policy": "\(policyName)"
+                    ])
                 }
+            } else {
+                logger.debug("No restart policy found in hostConfig", metadata: [
+                    "id": "\(containerId)",
+                    "hostConfig": "\(hostConfig)"
+                ])
             }
         }
 

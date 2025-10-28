@@ -91,12 +91,49 @@ extension Daemon {
 
             // Create and start daemon
             let daemon = ArcaDaemon(socketPath: socketPath, logger: logger)
+            let shutdownLogger = logger  // Capture for signal handlers
 
             // Ignore SIGPIPE (broken pipe when client disconnects)
             signal(SIGPIPE, SIG_IGN)
 
-            // Note: Signal handling for graceful shutdown (SIGINT/SIGTERM) will be added later
-            // For now, use Ctrl+C to stop the daemon
+            // Block SIGTERM and SIGINT so we can handle them with DispatchSource
+            signal(SIGTERM, SIG_IGN)
+            signal(SIGINT, SIG_IGN)
+
+            // Set up graceful shutdown on SIGTERM/SIGINT using DispatchSourceSignal
+            let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+            let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+
+            termSource.setEventHandler { @Sendable in
+                shutdownLogger.info("Received SIGTERM, initiating graceful shutdown...")
+                Task { @Sendable in
+                    do {
+                        try await daemon.shutdown()
+                        shutdownLogger.info("Graceful shutdown complete")
+                        Darwin.exit(0)
+                    } catch {
+                        shutdownLogger.error("Error during shutdown", metadata: ["error": "\(error)"])
+                        Darwin.exit(1)
+                    }
+                }
+            }
+
+            intSource.setEventHandler { @Sendable in
+                shutdownLogger.info("Received SIGINT (Ctrl+C), initiating graceful shutdown...")
+                Task { @Sendable in
+                    do {
+                        try await daemon.shutdown()
+                        shutdownLogger.info("Graceful shutdown complete")
+                        Darwin.exit(0)
+                    } catch {
+                        shutdownLogger.error("Error during shutdown", metadata: ["error": "\(error)"])
+                        Darwin.exit(1)
+                    }
+                }
+            }
+
+            termSource.resume()
+            intSource.resume()
 
             do {
                 try await daemon.start()

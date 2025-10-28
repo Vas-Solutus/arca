@@ -129,7 +129,7 @@ public actor DockerProgressFormatter {
 
     /// Format completion message for a specific item
     private func formatItemCompletion(itemIndex: Int) -> String {
-        var json: [String: Any] = [
+        let json: [String: Any] = [
             "id": getIDForItem(itemIndex),
             "status": "Download complete",
             "progressDetail": [String: Any]()  // Empty progressDetail clears the progress bar
@@ -164,7 +164,7 @@ public actor DockerProgressFormatter {
         // Mark the bulk download item as complete (second layer digest)
         let completionID = layerDigests.count > 1 ? shortDigest(layerDigests[1]) : shortDigest(manifestDigest)
 
-        var json: [String: Any] = [
+        let json: [String: Any] = [
             "id": completionID,
             "status": "Download complete",
             "progressDetail": [String: Any]()  // Empty progressDetail clears the progress bar

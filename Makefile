@@ -126,14 +126,25 @@ install-grpc-plugin:
 	fi
 
 # Run tests
-# Helper VM tests will start the Arca daemon (which has virtualization entitlement)
+# Ensures daemon is built and signed before running tests
 # Usage: make test [FILTER=TestName]
-test:
-	@echo "Running tests..."
+test: codesign
+	@echo "Cleaning up test database..."
+	@rm -f ~/.arca/state.db
+	@echo "Building tests..."
+	@swift build --build-tests
+	@echo "Re-signing Arca binary (swift build --build-tests may have rebuilt it)..."
+	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/Arca
+	@echo "Signing ArcaTestHelper binary..."
+	@codesign --force --sign - --entitlements $(ENTITLEMENTS) $(BUILD_DIR)/ArcaTestHelper
+	@echo "Signing test binaries..."
+	@codesign --force --sign - --entitlements $(ENTITLEMENTS) .build/debug/ArcaPackageTests.xctest/Contents/MacOS/ArcaPackageTests 2>/dev/null || true
+	@echo "✓ All binaries signed"
+	@echo "Running tests with signed binaries..."
 	@if [ -n "$(FILTER)" ]; then \
-		swift test --filter $(FILTER); \
+		swift test --skip-build --filter $(FILTER); \
 	else \
-		swift test; \
+		swift test --skip-build; \
 	fi
 
 # Run helper VM integration tests (requires signing)

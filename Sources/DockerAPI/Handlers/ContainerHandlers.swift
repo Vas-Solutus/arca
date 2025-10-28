@@ -21,6 +21,15 @@ public struct ContainerHandlers: Sendable {
         return error.localizedDescription
     }
 
+    /// Check if a container is the control plane
+    private func isControlPlane(id: String) async -> Bool {
+        guard let container = try? await containerManager.getContainer(id: id) else {
+            return false
+        }
+        return container.config.labels["com.arca.internal"] == "true" &&
+               container.config.labels["com.arca.role"] == "control-plane"
+    }
+
     /// Handle GET /containers/json
     /// Lists all containers
     ///
@@ -179,6 +188,16 @@ public struct ContainerHandlers: Sendable {
             "timeout": "\(timeout ?? 10)"
         ])
 
+        // Protect control plane from being stopped by users
+        if await isControlPlane(id: id) {
+            logger.warning("Attempted to stop control plane container", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.operationNotPermitted(
+                "Cannot stop the control plane container 'arca-control-plane'. " +
+                "This container is managed by the Arca daemon and uses restart policy 'always'. " +
+                "It will automatically restart if stopped."
+            ))
+        }
+
         do {
             try await containerManager.stopContainer(id: id, timeout: timeout)
 
@@ -218,6 +237,16 @@ public struct ContainerHandlers: Sendable {
             "force": "\(force)",
             "volumes": "\(removeVolumes)"
         ])
+
+        // Protect control plane from being removed by users
+        if await isControlPlane(id: id) {
+            logger.warning("Attempted to remove control plane container", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.operationNotPermitted(
+                "Cannot remove the control plane container 'arca-control-plane'. " +
+                "This container is managed by the Arca daemon and is required for networking. " +
+                "Removing it would break all network functionality."
+            ))
+        }
 
         do {
             try await containerManager.removeContainer(id: id, force: force, removeVolumes: removeVolumes)
@@ -800,6 +829,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case notFound(String)
     case invalidRequest(String)
     case imageNotFound(String)
+    case operationNotPermitted(String)
 
     public var description: String {
         switch self {
@@ -819,6 +849,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "No such container: \(id)"
         case .invalidRequest(let msg):
             return "Invalid request: \(msg)"
+        case .operationNotPermitted(let msg):
+            return "\(msg)"
         }
     }
 }

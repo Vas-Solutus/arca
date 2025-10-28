@@ -39,27 +39,21 @@ public struct NetworkHandlers: Sendable {
             "filters": "\(filters)"
         ])
 
-        do {
-            let allNetworks = await networkManager.listNetworks()
+        // networkManager.listNetworks() doesn't throw - it returns an array directly
+        // No failure case for listing (empty array on no networks)
+        let allNetworks = await networkManager.listNetworks()
 
-            // Apply filters
-            let filteredMetadata = applyFilters(allNetworks, filters: filters)
+        // Apply filters
+        let filteredMetadata = applyFilters(allNetworks, filters: filters)
 
-            // Convert to Docker API format
-            var networks: [Network] = []
-            for metadata in filteredMetadata {
-                networks.append(await convertToDockerNetwork(metadata))
-            }
-
-            logger.info("Listed networks", metadata: ["count": "\(networks.count)"])
-            return .success(networks)
-        } catch let error as NetworkManagerError {
-            logger.error("Failed to list networks", metadata: ["error": "\(error)"])
-            return .failure(NetworkError.listFailed(error.description))
-        } catch {
-            logger.error("Unexpected error listing networks", metadata: ["error": "\(error)"])
-            return .failure(NetworkError.listFailed(errorDescription(error)))
+        // Convert to Docker API format
+        var networks: [Network] = []
+        for metadata in filteredMetadata {
+            networks.append(await convertToDockerNetwork(metadata))
         }
+
+        logger.info("Listed networks", metadata: ["count": "\(networks.count)"])
+        return .success(networks)
     }
 
     /// Handle GET /networks/{id}
@@ -67,39 +61,21 @@ public struct NetworkHandlers: Sendable {
     public func handleInspectNetwork(id: String) async -> Result<Network, NetworkError> {
         logger.debug("Handling inspect network request", metadata: ["id": "\(id)"])
 
-        do {
-            // Try resolving as name or ID
-            let resolvedID = await networkManager.resolveNetworkID(id) ?? id
+        // Try resolving as name or ID
+        let resolvedID = await networkManager.resolveNetworkID(id) ?? id
 
-            guard let metadata = await networkManager.getNetwork(id: resolvedID) else {
-                return .failure(NetworkError.notFound(id))
-            }
-            let network = await convertToDockerNetwork(metadata)
-
-            logger.info("Inspected network", metadata: [
-                "id": "\(network.id)",
-                "name": "\(network.name)"
-            ])
-            return .success(network)
-        } catch let error as NetworkManagerError {
-            logger.error("Failed to inspect network", metadata: [
-                "id": "\(id)",
-                "error": "\(error)"
-            ])
-
-            switch error {
-            case .networkNotFound:
-                return .failure(NetworkError.notFound(id))
-            default:
-                return .failure(NetworkError.inspectFailed(error.description))
-            }
-        } catch {
-            logger.error("Unexpected error inspecting network", metadata: [
-                "id": "\(id)",
-                "error": "\(error)"
-            ])
-            return .failure(NetworkError.inspectFailed(errorDescription(error)))
+        // networkManager methods don't throw - they return optionals
+        // Failure case handled via guard statement
+        guard let metadata = await networkManager.getNetwork(id: resolvedID) else {
+            return .failure(NetworkError.notFound(id))
         }
+        let network = await convertToDockerNetwork(metadata)
+
+        logger.info("Inspected network", metadata: [
+            "id": "\(network.id)",
+            "name": "\(network.name)"
+        ])
+        return .success(network)
     }
 
     /// Handle POST /networks/create
@@ -210,7 +186,7 @@ public struct NetworkHandlers: Sendable {
         ])
 
         // Extract IPv4 address and aliases from endpoint config
-        let ipv4Address = endpointConfig?.ipamConfig?.ipv4Address
+        let _ = endpointConfig?.ipamConfig?.ipv4Address  // TODO: Support user-specified IP addresses
         let aliases = endpointConfig?.aliases ?? []
 
         do {
