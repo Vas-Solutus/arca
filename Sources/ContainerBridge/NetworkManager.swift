@@ -11,6 +11,7 @@ import Containerization
 public actor NetworkManager {
     private let config: ArcaConfig
     private let logger: Logger
+    private let stateStore: StateStore
 
     // Backends (initialized based on config)
     private var ovsBackend: OVSNetworkBackend?
@@ -23,11 +24,13 @@ public actor NetworkManager {
     /// Initialize NetworkManager with configuration
     public init(
         config: ArcaConfig,
+        stateStore: StateStore,
         helperVM: NetworkHelperVM?,
         networkBridge: NetworkBridge?,
         logger: Logger
     ) {
         self.config = config
+        self.stateStore = stateStore
         self.helperVM = helperVM
         self.networkBridge = networkBridge
         self.logger = logger
@@ -48,6 +51,7 @@ public actor NetworkManager {
             }
 
             let backend = OVSNetworkBackend(
+                stateStore: stateStore,
                 helperVM: helperVM,
                 networkBridge: networkBridge,
                 logger: logger
@@ -360,7 +364,7 @@ public actor NetworkManager {
             networks.append(contentsOf: await backend.getContainerNetworks(containerID: containerID))
         }
 
-        if let backend = vmnetBackend {
+        if vmnetBackend != nil {
             // vmnet backend doesn't track container networks separately
             // (containers are attached at creation time)
         }

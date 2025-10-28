@@ -42,7 +42,7 @@ public actor ContainerManager {
     private var sharedNetwork: SharedVmnetNetwork?
 
     // State persistence
-    private var stateStore: StateStore?
+    private let stateStore: StateStore
 
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
@@ -51,6 +51,23 @@ public actor ContainerManager {
         let env: [String]?
         let workingDir: String?
         let hostname: String
+        let mounts: [Containerization.Mount]
+    }
+
+    /// Complete configuration for creating a native Container object
+    /// Used for both initial creation and recreation from persisted state
+    private struct NativeContainerConfig {
+        let dockerID: String
+        let image: Containerization.Image
+        let command: [String]?
+        let env: [String]?
+        let workingDir: String?
+        let hostname: String
+        let tty: Bool
+        let stdoutWriter: Writer
+        let stderrWriter: Writer
+        let stdinReader: ChannelReader?
+        let mounts: [Containerization.Mount]
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -73,9 +90,16 @@ public actor ContainerManager {
         }
     }
 
-    public init(imageManager: ImageManager, kernelPath: String, logger: Logger, sharedNetwork: SharedVmnetNetwork? = nil) {
+    public init(
+        imageManager: ImageManager,
+        kernelPath: String,
+        stateStore: StateStore,
+        logger: Logger,
+        sharedNetwork: SharedVmnetNetwork? = nil
+    ) {
         self.imageManager = imageManager
         self.kernelPath = kernelPath
+        self.stateStore = stateStore
         self.logger = logger
         self.logManager = ContainerLogManager(logger: logger)
         self.sharedNetwork = sharedNetwork
@@ -91,16 +115,6 @@ public actor ContainerManager {
         logger.info("Initializing ContainerManager", metadata: [
             "kernel_path": "\(kernelPath)"
         ])
-
-        // Initialize state store
-        let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
-        do {
-            self.stateStore = try StateStore(path: stateDBPath, logger: logger)
-            logger.info("StateStore initialized", metadata: ["path": "\(stateDBPath)"])
-        } catch {
-            logger.error("Failed to initialize StateStore", metadata: ["error": "\(error)"])
-            throw error
-        }
 
         // Verify kernel file exists
         guard FileManager.default.fileExists(atPath: kernelPath) else {
@@ -135,11 +149,6 @@ public actor ContainerManager {
 
     /// Load persisted containers from StateStore and reconcile with actual state
     private func loadPersistedState() async throws {
-        guard let stateStore = stateStore else {
-            logger.warning("StateStore not initialized, skipping state recovery")
-            return
-        }
-
         logger.info("Loading persisted container state...")
 
         // Load all containers from database
@@ -189,28 +198,63 @@ public actor ContainerManager {
             }
 
             // Reconstruct ContainerInfo
+            // After daemon restart, containers that were "running" are now exited (VMs are gone)
+            let actualState: String
+            let actualExitCode: Int
+            let actualFinishedAt: Date?
+
+            if containerData.status == "running" {
+                // CRASH RECOVERY: Container was killed when daemon stopped
+                // Exit code 137 = SIGKILL (128 + 9)
+                // When daemon dies (crash, kill -9, power loss), kernel kills all child VMs
+                actualState = "exited"
+                actualExitCode = 137
+                actualFinishedAt = Date()
+
+                logger.warning("Crash recovery: Container was killed when daemon stopped", metadata: [
+                    "id": "\(containerData.id)",
+                    "name": "\(containerData.name)",
+                    "oldStatus": "running",
+                    "newStatus": "exited",
+                    "exitCode": "137"
+                ])
+
+                // Update database: mark as exited with exit code 137
+                try await stateStore.updateContainerStatus(
+                    id: containerData.id,
+                    status: "exited",
+                    exitCode: 137,
+                    finishedAt: Date()
+                )
+            } else {
+                // Preserve other states (created, exited, etc.)
+                actualState = containerData.status
+                actualExitCode = containerData.exitCode
+                actualFinishedAt = containerData.finishedAt
+            }
+
             let containerInfo = ContainerInfo(
                 nativeID: containerData.id, // We'll need to handle native ID mapping
                 name: containerData.name,
                 image: containerData.image,
                 imageID: containerData.imageID,
                 created: containerData.createdAt,
-                state: containerData.status,
-                command: config.cmd ?? [],
+                state: actualState,
+                command: config.cmd,
                 path: config.entrypoint?.first ?? "",
-                args: Array((config.cmd ?? []).dropFirst()),
-                env: config.env ?? [],
-                workingDir: config.workingDir ?? "",
-                labels: config.labels ?? [:],
+                args: Array(config.cmd.dropFirst()),
+                env: config.env,
+                workingDir: config.workingDir,
+                labels: config.labels,
                 ports: [],
                 hostConfig: hostConfig,
                 config: config,
                 networkSettings: NetworkSettings(networks: [:]),
                 pid: containerData.pid,
-                exitCode: containerData.exitCode,
+                exitCode: actualExitCode,
                 startedAt: containerData.startedAt,
-                finishedAt: containerData.finishedAt,
-                tty: config.tty ?? false,
+                finishedAt: actualFinishedAt,
+                tty: config.tty,
                 needsCreate: false,
                 networkAttachments: networkAttachments
             )
@@ -239,19 +283,20 @@ public actor ContainerManager {
 
     /// Apply restart policies to containers on startup
     private func applyRestartPolicies() async throws {
-        guard let stateStore = stateStore else {
-            return
-        }
-
         logger.info("Applying restart policies...")
 
         let containersToRestart = try await stateStore.getContainersToRestart()
+
+        logger.info("Found containers to restart from database", metadata: [
+            "count": "\(containersToRestart.count)"
+        ])
 
         for container in containersToRestart {
             logger.info("Auto-restarting container", metadata: [
                 "id": "\(container.id)",
                 "name": "\(container.name)",
-                "policy": "\(container.policy)"
+                "policy": "\(container.policy)",
+                "exitCode": "\(container.exitCode)"
             ])
 
             do {
@@ -269,6 +314,67 @@ public actor ContainerManager {
 
         logger.info("Restart policy application complete", metadata: [
             "restarted": "\(containersToRestart.count)"
+        ])
+    }
+
+    // MARK: - Graceful Shutdown
+
+    /// Gracefully shutdown ContainerManager
+    /// Waits for monitoring tasks to complete (with timeout) before returning
+    public func shutdown() async {
+        logger.info("ContainerManager graceful shutdown started")
+
+        // Wait for all monitoring tasks to complete (with timeout)
+        let shutdownTimeout: Duration = .seconds(5)
+        let taskCount = monitoringTasks.count
+
+        logger.info("Waiting for monitoring tasks to complete", metadata: [
+            "task_count": "\(taskCount)",
+            "timeout_seconds": "5"
+        ])
+
+        // Create a task group to wait for all monitoring tasks
+        await withTaskGroup(of: Void.self) { group in
+            // Add all monitoring tasks to the group
+            for (dockerID, task) in monitoringTasks {
+                group.addTask {
+                    // Wait for the task or timeout
+                    do {
+                        try await withThrowingTaskGroup(of: Void.self) { timeoutGroup in
+                            // Add the monitoring task
+                            timeoutGroup.addTask {
+                                await task.value
+                            }
+
+                            // Add timeout task
+                            timeoutGroup.addTask {
+                                try await Task.sleep(for: shutdownTimeout)
+                                throw CancellationError()
+                            }
+
+                            // Wait for first to complete
+                            try await timeoutGroup.next()
+                            timeoutGroup.cancelAll()
+                        }
+
+                        self.logger.debug("Monitoring task completed during shutdown", metadata: [
+                            "container": "\(dockerID)"
+                        ])
+                    } catch {
+                        // Timeout or cancellation - that's ok
+                        self.logger.debug("Monitoring task timed out during shutdown", metadata: [
+                            "container": "\(dockerID)"
+                        ])
+                    }
+                }
+            }
+
+            // Wait for all tasks in the group
+            await group.waitForAll()
+        }
+
+        logger.info("ContainerManager graceful shutdown complete", metadata: [
+            "tasks_awaited": "\(taskCount)"
         ])
     }
 
@@ -372,6 +478,135 @@ public actor ContainerManager {
         )
     }
 
+    // MARK: - Container Creation Helpers
+
+    /// Create a native LinuxContainer from configuration
+    /// This is the core container creation logic, used by:
+    /// 1. createContainer() - initial container creation from API request
+    /// 2. startContainer() - recreating containers from persisted state
+    /// 3. Deferred containers - creating attached containers on first start
+    private func createNativeContainer(
+        config: NativeContainerConfig
+    ) async throws -> Containerization.LinuxContainer {
+        guard var manager = nativeManager else {
+            logger.error("ContainerManager not initialized")
+            throw ContainerManagerError.notInitialized
+        }
+
+        // Capture values for @Sendable closure
+        let dockerID = config.dockerID
+        let network = self.sharedNetwork
+        let configLogger = self.logger
+        let tty = config.tty
+        let stdoutWriter = config.stdoutWriter
+        let stderrWriter = config.stderrWriter
+        let stdinReader = config.stdinReader
+
+        logger.info("Creating LinuxContainer with Containerization API", metadata: [
+            "docker_id": "\(dockerID)",
+            "hostname": "\(config.hostname)"
+        ])
+
+        let container = try await manager.create(
+            dockerID,
+            image: config.image,
+            rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
+        ) { @Sendable containerConfig in
+            // Configure the container process (OCI-compliant)
+            // Note: containerConfig.process is already initialized from image config
+
+            // Override with Docker API parameters if provided
+            if let command = config.command {
+                containerConfig.process.arguments = command
+            }
+
+            if let env = config.env {
+                // Merge with existing env from image, Docker CLI behavior
+                containerConfig.process.environmentVariables += env
+            }
+
+            // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
+            containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
+
+            if let workingDir = config.workingDir {
+                containerConfig.process.workingDirectory = workingDir
+            }
+
+            // Set hostname (OCI spec field)
+            containerConfig.hostname = config.hostname
+
+            // Network interface configuration depends on backend:
+            // - vmnet backend: Attach shared vmnet interface at creation time
+            // - OVS backend: No interface at creation - TAP devices added dynamically via arca-tap-forwarder
+            if let net = network {
+                // vmnet backend: Create interface from shared network
+                if let sharedInterface = try? net.createInterface(dockerID) {
+                    containerConfig.interfaces = [sharedInterface]
+                    configLogger.debug("Container using shared vmnet", metadata: [
+                        "container_id": "\(dockerID)",
+                        "ip": "\(sharedInterface.address)"
+                    ])
+                } else {
+                    // Fallback to NAT if allocation fails
+                    let natInterface = NATInterface(
+                        address: "192.168.64.10/24",
+                        gateway: "192.168.64.1",
+                        macAddress: nil
+                    )
+                    containerConfig.interfaces = [natInterface]
+                    configLogger.warning("Failed to allocate shared vmnet IP, using NAT fallback", metadata: [
+                        "container_id": "\(dockerID)"
+                    ])
+                }
+            } else {
+                // OVS backend: No interface at creation time
+                // TAP devices will be created dynamically by arca-tap-forwarder after container starts
+                containerConfig.interfaces = []
+                configLogger.debug("Using OVS backend - no interface at creation", metadata: [
+                    "container_id": "\(dockerID)"
+                ])
+            }
+
+            // Configure TTY mode
+            containerConfig.process.terminal = tty
+
+            // Configure stdout (always needed)
+            containerConfig.process.stdout = stdoutWriter
+
+            // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
+            if !tty {
+                containerConfig.process.stderr = stderrWriter
+            }
+
+            // Configure stdin if provided (for attached containers)
+            if let stdin = stdinReader {
+                containerConfig.process.stdin = stdin
+            }
+
+            // Configure volume mounts (VirtioFS directory shares)
+            // Append to existing mounts (don't replace default system mounts like /proc, /sys, etc.)
+            if !config.mounts.isEmpty {
+                containerConfig.mounts.append(contentsOf: config.mounts)
+                configLogger.info("Configured volume mounts", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "mount_count": "\(config.mounts.count)",
+                    "total_mounts": "\(containerConfig.mounts.count)"
+                ])
+            }
+        }
+
+        // Call .create() to set up the VM
+        logger.info("Setting up container VM and runtime environment", metadata: [
+            "docker_id": "\(dockerID)"
+        ])
+        try await container.create()
+        logger.info("Container VM created successfully", metadata: [
+            "docker_id": "\(dockerID)"
+        ])
+
+        return container
+    }
+
     /// Create a new container
     public func createContainer(
         image: String,
@@ -385,13 +620,16 @@ public actor ContainerManager {
         attachStderr: Bool = false,
         tty: Bool = false,
         openStdin: Bool = false,
-        networkMode: String? = nil
+        networkMode: String? = nil,
+        restartPolicy: RestartPolicy? = nil,
+        binds: [String]? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
             "name": "\(name ?? "auto")",
             "attach": "\(attachStdin || attachStdout || attachStderr)",
-            "tty": "\(tty)"
+            "tty": "\(tty)",
+            "mounts": "\(binds?.count ?? 0)"
         ])
 
         // Generate Docker-compatible ID
@@ -419,6 +657,15 @@ public actor ContainerManager {
         let (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
         logWriters[dockerID] = (stdoutWriter, stderrWriter)
 
+        // Parse bind mounts
+        let mounts = try parseBindMounts(binds)
+        if !mounts.isEmpty {
+            logger.info("Container has volume mounts", metadata: [
+                "docker_id": "\(dockerID)",
+                "mount_count": "\(mounts.count)"
+            ])
+        }
+
         // For attached containers (docker run -it), defer container creation until start
         // This allows us to configure stdio with attach handles when they're provided
         let isAttached = (attachStdin || attachStdout || attachStderr) && openStdin
@@ -440,7 +687,8 @@ public actor ContainerManager {
                 command: command,
                 env: env,
                 workingDir: workingDir,
-                hostname: containerName
+                hostname: containerName,
+                mounts: mounts  // Store mounts for deferred creation
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -448,101 +696,25 @@ public actor ContainerManager {
             nativeID = dockerID
             linuxContainer = nil
         } else {
-            // Non-deferred containers: Create LinuxContainer immediately
-            logger.info("Creating container with Containerization API", metadata: [
-                "docker_id": "\(dockerID)",
-                "hostname": "\(containerName)"
-            ])
-
-            // Capture values for the configuration closure to avoid actor isolation issues
-            let network = self.sharedNetwork
-            let configLogger = self.logger
-
-            let container = try await manager.create(
-                dockerID,
-                image: containerImage,
-                rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-            ) { @Sendable config in
-                // Configure the container process (OCI-compliant)
-                // Note: config.process is already initialized from image config via init(from:)
-
-                // Override with Docker API parameters if provided
-                if let command = command {
-                    config.process.arguments = command
-                }
-
-                if let env = env {
-                    // Merge with existing env from image, Docker CLI behavior
-                    config.process.environmentVariables += env
-                }
-
-                // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
-                config.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
-
-                if let workingDir = workingDir {
-                    config.process.workingDirectory = workingDir
-                }
-
-                // Set hostname (OCI spec field)
-                config.hostname = containerName
-
-                // Network interface configuration depends on backend:
-                // - vmnet backend: Attach shared vmnet interface at creation time
-                // - OVS backend: No interface at creation - TAP devices added dynamically via arca-tap-forwarder
-                if let net = network {
-                    // vmnet backend: Create interface from shared network
-                    if let sharedInterface = try? net.createInterface(dockerID) {
-                        config.interfaces = [sharedInterface]
-                        configLogger.debug("Container using shared vmnet", metadata: [
-                            "container_id": "\(dockerID)",
-                            "ip": "\(sharedInterface.address)"
-                        ])
-                    } else {
-                        // Fallback to NAT if allocation fails
-                        let natInterface = NATInterface(
-                            address: "192.168.64.10/24",
-                            gateway: "192.168.64.1",
-                            macAddress: nil
-                        )
-                        config.interfaces = [natInterface]
-                        configLogger.warning("Failed to allocate shared vmnet IP, using NAT fallback", metadata: [
-                            "container_id": "\(dockerID)"
-                        ])
-                    }
-                } else {
-                    // OVS backend: No interface at creation time
-                    // TAP devices will be created dynamically by arca-tap-forwarder after container starts
-                    config.interfaces = []
-                    configLogger.debug("Using OVS backend - no interface at creation", metadata: [
-                        "container_id": "\(dockerID)"
-                    ])
-                }
-
-                // Note: arca-tap-forwarder is embedded in vminit rootfs at /sbin/arca-tap-forwarder
-                // (built via scripts/build-vminit.sh), no bind mount needed
-
-                // Configure TTY mode
-                config.process.terminal = tty
-
-                // Configure stdout to write to log files (always needed)
-                config.process.stdout = stdoutWriter
-
-                // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
-                if !tty {
-                    config.process.stderr = stderrWriter
-                }
-            }
+            // Non-deferred containers: Create LinuxContainer immediately using helper
+            let container = try await createNativeContainer(
+                config: NativeContainerConfig(
+                    dockerID: dockerID,
+                    image: containerImage,
+                    command: command,
+                    env: env,
+                    workingDir: workingDir,
+                    hostname: containerName,
+                    tty: tty,
+                    stdoutWriter: stdoutWriter,
+                    stderrWriter: stderrWriter,
+                    stdinReader: nil,  // Not attached
+                    mounts: mounts
+                )
+            )
 
             nativeID = container.id
             linuxContainer = container
-
-            // Call .create() to set up the VM
-            logger.info("Setting up container VM and runtime environment", metadata: [
-                "docker_id": "\(dockerID)",
-                "native_id": "\(nativeID)"
-            ])
-            try await container.create()
-            logger.info("Container VM created successfully", metadata: ["docker_id": "\(dockerID)"])
         }
 
         // Store the native container object for later operations (if created)
@@ -569,7 +741,11 @@ public actor ContainerManager {
             workingDir: workingDir ?? "/",
             labels: labels ?? [:],
             ports: [],
-            hostConfig: HostConfig(networkMode: networkMode ?? "default"),
+            hostConfig: HostConfig(
+                binds: binds ?? [],
+                networkMode: networkMode ?? "default",
+                restartPolicy: restartPolicy ?? RestartPolicy(name: "no", maximumRetryCount: 0)
+            ),
             config: ContainerConfiguration(
                 hostname: containerName,
                 env: env ?? [],
@@ -589,6 +765,9 @@ public actor ContainerManager {
         )
 
         containers[dockerID] = containerInfo
+
+        // Persist container state
+        try await persistContainerState(dockerID: dockerID, info: containerInfo)
 
         logger.info("Container created successfully", metadata: [
             "docker_id": "\(dockerID)",
@@ -715,57 +894,22 @@ public actor ContainerManager {
                 stderrWriter = stderrLogWriter
             }
 
-            // Capture values for @Sendable closure
-            let tty = info.tty
-            let containerLogger = logger
-
-            // Create the LinuxContainer with proper stdio configuration
-            let container = try await manager.create(
-                dockerID,
-                image: config.image,
-                rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
-            ) { @Sendable containerConfig in
-                // Override with Docker API parameters
-                if let command = config.command {
-                    containerConfig.process.arguments = command
-                }
-
-                if let env = config.env {
-                    // Merge with existing env from image
-                    containerConfig.process.environmentVariables += env
-                }
-
-                // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
-                containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
-
-                if let workingDir = config.workingDir {
-                    containerConfig.process.workingDirectory = workingDir
-                }
-
-                // Set hostname
-                containerConfig.hostname = config.hostname
-
-                // Configure TTY mode
-                containerConfig.process.terminal = tty
-
-                // Configure stdout (always needed)
-                containerConfig.process.stdout = stdoutWriter
-
-                // Configure stderr (only when NOT using TTY - TTY merges stderr into stdout)
-                if !tty {
-                    containerConfig.process.stderr = stderrWriter
-                }
-
-                // Configure stdin if attached
-                if let attach = attachInfo {
-                    containerConfig.process.stdin = attach.handles.stdin
-                }
-            }
-
-            // Call .create() to set up the VM
-            logger.info("Setting up container VM and runtime environment", metadata: ["id": "\(dockerID)"])
-            try await container.create()
-            logger.info("Container VM created successfully", metadata: ["id": "\(dockerID)"])
+            // Create the LinuxContainer using helper
+            let container = try await createNativeContainer(
+                config: NativeContainerConfig(
+                    dockerID: dockerID,
+                    image: config.image,
+                    command: config.command,
+                    env: config.env,
+                    workingDir: config.workingDir,
+                    hostname: config.hostname,
+                    tty: info.tty,
+                    stdoutWriter: stdoutWriter,
+                    stderrWriter: stderrWriter,
+                    stdinReader: attachInfo?.handles.stdin,  // Include stdin if attached
+                    mounts: config.mounts
+                )
+            )
 
             // Store the container
             nativeContainers[dockerID] = container
@@ -774,23 +918,96 @@ public actor ContainerManager {
             // Update needsCreate flag
             info.needsCreate = false
         } else {
-            // Container already created - get it
-            guard let container = nativeContainers[dockerID] else {
-                logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
-                throw ContainerManagerError.containerNotFound(id)
-            }
-            nativeContainer = container
-            attachInfo = nil
+            // Container should already be created - check if it exists in framework
+            if let container = nativeContainers[dockerID] {
+                // Container exists in framework - use it
+                nativeContainer = container
+                attachInfo = nil
 
-            // Start the container using Containerization API
-            // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
-            // After a container exits and we call stop(), it goes back to .stopped state
-            // To restart, we must call create() again to transition .stopped -> .created
-            if info.state == "exited" {
-                logger.info("Container is exited, calling create() before start()", metadata: [
+                // Start the container using Containerization API
+                // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
+                // After a container exits and we call stop(), it goes back to .stopped state
+                // To restart, we must call create() again to transition .stopped -> .created
+                if info.state == "exited" {
+                    logger.info("Container is exited, calling create() before start()", metadata: [
+                        "id": "\(dockerID)"
+                    ])
+                    try await nativeContainer.create()
+                }
+            } else {
+                // Container NOT in framework - must recreate from persisted state
+                // This happens after daemon restart: metadata persists but Container objects don't
+                logger.info("Recreating container from persisted state", metadata: [
+                    "id": "\(dockerID)",
+                    "state": "\(info.state)"
+                ])
+
+                // Clean up orphaned container storage from previous daemon run
+                // The Containerization framework leaves storage directories when the daemon exits
+                // We need to remove these before recreating (Docker doesn't preserve writable layer for stopped containers)
+                logger.debug("Cleaning up orphaned container storage", metadata: [
                     "id": "\(dockerID)"
                 ])
-                try await nativeContainer.create()
+                do {
+                    try await manager.delete(dockerID)
+                    logger.debug("Cleaned up orphaned storage via manager.delete()", metadata: [
+                        "id": "\(dockerID)"
+                    ])
+                } catch {
+                    // Expected to fail if no orphaned storage exists - this is normal
+                    logger.debug("No orphaned storage found (this is normal)", metadata: [
+                        "id": "\(dockerID)"
+                    ])
+                }
+
+                // Get the image from persisted config
+                logger.debug("Retrieving image for recreation", metadata: [
+                    "image": "\(info.image)",
+                    "docker_id": "\(dockerID)"
+                ])
+                let containerImage = try await imageManager.getImage(nameOrId: info.image)
+
+                // Get log writers (create if they don't exist yet)
+                let (stdoutLogWriter, stderrLogWriter): (FileLogWriter, FileLogWriter)
+                if let existing = logWriters[dockerID] {
+                    (stdoutLogWriter, stderrLogWriter) = existing
+                } else {
+                    let writers = try logManager.createLogWriters(dockerID: dockerID)
+                    logWriters[dockerID] = writers
+                    (stdoutLogWriter, stderrLogWriter) = writers
+                }
+
+                // Parse volume mounts from persisted binds
+                let recreatedMounts = try parseBindMounts(info.hostConfig.binds)
+
+                // Recreate the LinuxContainer with the persisted configuration
+                let container = try await createNativeContainer(
+                    config: NativeContainerConfig(
+                        dockerID: dockerID,
+                        image: containerImage,
+                        command: info.command,
+                        env: info.env,
+                        workingDir: info.workingDir,
+                        hostname: info.config.hostname,
+                        tty: info.tty,
+                        stdoutWriter: stdoutLogWriter,
+                        stderrWriter: stderrLogWriter,
+                        stdinReader: nil,  // No stdin for recreated containers
+                        mounts: recreatedMounts
+                    )
+                )
+
+                // Store the recreated container
+                nativeContainers[dockerID] = container
+                nativeContainer = container
+                attachInfo = nil
+
+                logger.info("Container recreated successfully from persisted state", metadata: [
+                    "id": "\(dockerID)"
+                ])
+
+                // Container is now in .created state (createNativeContainer calls .create())
+                // Ready to be started
             }
         }
 
@@ -805,6 +1022,9 @@ public actor ContainerManager {
         info.startedAt = Date()
         info.pid = 1  // Containers run as PID 1 in their VM
         containers[dockerID] = info
+
+        // Persist state change
+        try await persistContainerState(dockerID: dockerID, info: info)
 
         logger.info("Container started successfully", metadata: [
             "id": "\(dockerID)",
@@ -994,6 +1214,9 @@ public actor ContainerManager {
         info.pid = 0
         containers[dockerID] = info
 
+        // Persist state change (mark as stopped by user)
+        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: true)
+
         logger.info("Container stopped successfully", metadata: [
             "id": "\(dockerID)",
             "state": "exited"
@@ -1021,40 +1244,55 @@ public actor ContainerManager {
             throw ContainerManagerError.containerRunning(id)
         }
 
-        // Get the native container object
-        guard let nativeContainer = nativeContainers[dockerID] else {
-            logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
-            throw ContainerManagerError.containerNotFound(id)
-        }
+        // Check if the native container object exists
+        // After daemon restart, this will be nil even though metadata persists
+        if let nativeContainer = nativeContainers[dockerID] {
+            // Container exists in framework - stop it before removal
+            logger.debug("Native container exists, stopping before removal", metadata: ["id": "\(dockerID)"])
 
-        // CRITICAL: Stop the container FIRST before waiting for monitoring task
-        // This avoids deadlock where monitoring task is waiting for container to exit
-        // and we're waiting for monitoring task to finish
-        if info.state == "running" || info.state == "created" {
-            if force || info.state == "created" {
-                logger.info("Stopping container before removal", metadata: [
-                    "id": "\(dockerID)",
-                    "state": "\(info.state)"
-                ])
-                try? await nativeContainer.stop()
-            } else if !force && info.state == "running" {
-                // Already checked above, but being explicit
-                throw ContainerManagerError.containerRunning(id)
+            // CRITICAL: Stop the container FIRST before waiting for monitoring task
+            // This avoids deadlock where monitoring task is waiting for container to exit
+            // and we're waiting for monitoring task to finish
+            if info.state == "running" || info.state == "created" {
+                if force || info.state == "created" {
+                    logger.info("Stopping container before removal", metadata: [
+                        "id": "\(dockerID)",
+                        "state": "\(info.state)"
+                    ])
+                    try? await nativeContainer.stop()
+                } else if !force && info.state == "running" {
+                    // Already checked above, but being explicit
+                    throw ContainerManagerError.containerRunning(id)
+                }
             }
-        }
 
-        // Cancel monitoring task if running and wait for it to complete
-        // Safe to wait now since we've already stopped the container above
-        if let task = monitoringTasks.removeValue(forKey: dockerID) {
-            task.cancel()
-            // Wait for the task to fully complete to avoid file descriptor races
-            _ = await task.result
-        }
+            // Cancel monitoring task if running and wait for it to complete
+            // Safe to wait now since we've already stopped the container above
+            if let task = monitoringTasks.removeValue(forKey: dockerID) {
+                task.cancel()
+                // Wait for the task to fully complete to avoid file descriptor races
+                _ = await task.result
+            }
 
-        // For exited containers, still call stop() to ensure cleanup
-        if info.state == "exited" {
-            logger.debug("Calling stop() on exited container for cleanup", metadata: ["id": "\(dockerID)"])
-            try? await nativeContainer.stop()
+            // For exited containers, still call stop() to ensure cleanup
+            if info.state == "exited" {
+                logger.debug("Calling stop() on exited container for cleanup", metadata: ["id": "\(dockerID)"])
+                try? await nativeContainer.stop()
+            }
+        } else {
+            // Container NOT in framework - only exists in database (persisted state)
+            // This happens after daemon restart when container was never recreated
+            logger.info("Removing database-only container (not in framework)", metadata: [
+                "id": "\(dockerID)",
+                "state": "\(info.state)"
+            ])
+
+            // No need to stop native container since it doesn't exist
+            // Just clean up any monitoring tasks
+            if let task = monitoringTasks.removeValue(forKey: dockerID) {
+                task.cancel()
+                _ = await task.result
+            }
         }
 
         // Push DNS topology updates to remove this container from other containers' view
@@ -1071,6 +1309,9 @@ public actor ContainerManager {
         }
         idMapping.removeValue(forKey: dockerID)
         containers.removeValue(forKey: dockerID)
+
+        // Delete from persistent storage
+        try await stateStore.deleteContainer(id: dockerID)
 
         // Close and remove log files
         if let (stdoutWriter, stderrWriter) = logWriters.removeValue(forKey: dockerID) {
@@ -1130,6 +1371,9 @@ public actor ContainerManager {
         info.pid = 0
         containers[dockerID] = info
 
+        // Persist container state (not stopped by user - this was a natural exit from wait)
+        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
+
         logger.info("Container exited", metadata: [
             "id": "\(dockerID)",
             "exit_code": "\(exitStatus.exitCode)"
@@ -1141,7 +1385,7 @@ public actor ContainerManager {
     // MARK: - Background Monitoring Helpers
 
     /// Update container state after it exits (called by background monitoring task)
-    private func updateContainerStateAfterExit(dockerID: String, exitCode: Int) {
+    private func updateContainerStateAfterExit(dockerID: String, exitCode: Int) async {
         guard var containerInfo = containers[dockerID] else {
             logger.warning("Container not found when updating exit state", metadata: ["id": "\(dockerID)"])
             return
@@ -1152,6 +1396,16 @@ public actor ContainerManager {
         containerInfo.finishedAt = Date()
         containerInfo.pid = 0
         containers[dockerID] = containerInfo
+
+        // Persist container state (not stopped by user - this was a natural exit)
+        do {
+            try await persistContainerState(dockerID: dockerID, info: containerInfo, stoppedByUser: false)
+        } catch {
+            logger.error("Failed to persist container exit state", metadata: [
+                "id": "\(dockerID)",
+                "error": "\(error)"
+            ])
+        }
 
         // Clean up monitoring task
         monitoringTasks.removeValue(forKey: dockerID)
@@ -1207,6 +1461,15 @@ public actor ContainerManager {
         containerInfo.networkAttachments[networkID] = attachment
         containers[dockerID] = containerInfo
 
+        // Persist network attachment
+        try await stateStore.saveNetworkAttachment(
+            containerID: dockerID,
+            networkID: networkID,
+            ipAddress: ip,
+            macAddress: mac,
+            aliases: aliases
+        )
+
         // With TAP-over-vsock architecture, no container recreation needed
         // TAP devices are created dynamically via NetworkBridge.attachContainerToNetwork
 
@@ -1240,6 +1503,12 @@ public actor ContainerManager {
         // Remove network attachment
         containerInfo.networkAttachments.removeValue(forKey: networkID)
         containers[dockerID] = containerInfo
+
+        // Persist network detachment
+        try await stateStore.deleteNetworkAttachment(
+            containerID: dockerID,
+            networkID: networkID
+        )
 
         // If container is running, we would need to hot-unplug the network interface
         // For now, network changes require container restart
@@ -1297,6 +1566,82 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(dockerID)
         }
         return nativeContainers[dockerID]
+    }
+
+    // MARK: - Volume/Mount Helpers
+
+    /// Parse Docker bind mount strings into Containerization.Mount objects
+    /// Format: "/host/path:/container/path[:ro]"
+    private func parseBindMounts(_ binds: [String]?) throws -> [Containerization.Mount] {
+        guard let binds = binds else {
+            return []
+        }
+
+        var mounts: [Containerization.Mount] = []
+
+        for bind in binds {
+            let parts = bind.split(separator: ":")
+            guard parts.count >= 2 else {
+                logger.warning("Invalid bind mount format, skipping", metadata: ["bind": "\(bind)"])
+                continue
+            }
+
+            let hostPath = String(parts[0])
+            let containerPath = String(parts[1])
+            let isReadOnly = parts.count >= 3 && parts[2] == "ro"
+
+            // Expand tilde in host path
+            let expandedHostPath = NSString(string: hostPath).expandingTildeInPath
+
+            // Validate host path exists (create directory if it doesn't exist for rw mounts)
+            let fileManager = FileManager.default
+            var isDirectory: ObjCBool = false
+            let exists = fileManager.fileExists(atPath: expandedHostPath, isDirectory: &isDirectory)
+
+            if !exists && !isReadOnly {
+                // For read-write mounts, create the directory if it doesn't exist
+                logger.info("Creating host directory for volume mount", metadata: [
+                    "path": "\(expandedHostPath)"
+                ])
+                try fileManager.createDirectory(
+                    atPath: expandedHostPath,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+            } else if !exists && isReadOnly {
+                logger.error("Read-only bind mount source does not exist", metadata: [
+                    "path": "\(expandedHostPath)"
+                ])
+                throw ContainerManagerError.volumeSourceNotFound(expandedHostPath)
+            }
+
+            // Create mount options
+            var options: [String] = []
+            if isReadOnly {
+                options.append("ro")
+            }
+
+            // Create the Mount using the host path as source
+            // The Containerization framework will:
+            // 1. Use the host path to create the VirtioFS shared directory
+            // 2. Hash the path to generate the device tag
+            // 3. Transform to AttachedFilesystem with the hashed tag as source (for vminitd)
+            let mount = Containerization.Mount.share(
+                source: expandedHostPath,
+                destination: containerPath,
+                options: options
+            )
+
+            mounts.append(mount)
+
+            logger.debug("Parsed bind mount", metadata: [
+                "source": "\(expandedHostPath)",
+                "destination": "\(containerPath)",
+                "readOnly": "\(isReadOnly)"
+            ])
+        }
+
+        return mounts
     }
 
     // MARK: - ID Mapping
@@ -1371,6 +1716,58 @@ public actor ContainerManager {
         } else {
             return "\(secs / 86400) days"
         }
+    }
+
+    /// Persist container state to SQLite database
+    /// This helper method serializes ContainerInfo and saves it to StateStore
+    private func persistContainerState(
+        dockerID: String,
+        info: ContainerInfo,
+        stoppedByUser: Bool = false
+    ) async throws {
+        // Encode configuration as JSON
+        let configData = try JSONEncoder().encode(info.config)
+        let configJSON = String(data: configData, encoding: .utf8) ?? "{}"
+
+        let hostConfigData = try JSONEncoder().encode(info.hostConfig)
+        let hostConfigJSON = String(data: hostConfigData, encoding: .utf8) ?? "{}"
+
+        // Save container to database
+        try await stateStore.saveContainer(
+            id: dockerID,
+            name: info.name ?? "unknown",
+            image: info.image,
+            imageID: info.imageID,
+            createdAt: info.created,
+            status: info.state,
+            running: info.state == "running",
+            paused: info.state == "paused",
+            restarting: info.state == "restarting",
+            pid: info.pid,
+            exitCode: info.exitCode,
+            startedAt: info.startedAt,
+            finishedAt: info.finishedAt,
+            stoppedByUser: stoppedByUser,
+            configJSON: configJSON,
+            hostConfigJSON: hostConfigJSON
+        )
+
+        // Save network attachments
+        for (networkID, attachment) in info.networkAttachments {
+            try await stateStore.saveNetworkAttachment(
+                containerID: dockerID,
+                networkID: networkID,
+                ipAddress: attachment.ip,
+                macAddress: attachment.mac,
+                aliases: attachment.aliases
+            )
+        }
+
+        logger.debug("Persisted container state", metadata: [
+            "container": "\(dockerID)",
+            "state": "\(info.state)",
+            "networkCount": "\(info.networkAttachments.count)"
+        ])
     }
 
     // MARK: - DNS Topology Publisher
@@ -1615,6 +2012,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case containerRunning(String)
     case imageNotFound(String)
     case invalidConfiguration(String)
+    case volumeSourceNotFound(String)
 
     public var description: String {
         switch self {
@@ -1634,6 +2032,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
             return "Invalid configuration: \(msg)"
+        case .volumeSourceNotFound(let path):
+            return "Volume source path does not exist: \(path)"
         }
     }
 }

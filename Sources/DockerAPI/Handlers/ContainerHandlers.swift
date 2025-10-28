@@ -107,6 +107,14 @@ public struct ContainerHandlers: Sendable {
         }
 
         do {
+            // Convert RestartPolicyCreate to RestartPolicy
+            let restartPolicy: RestartPolicy? = request.hostConfig?.restartPolicy.map { policy in
+                RestartPolicy(
+                    name: policy.name,
+                    maximumRetryCount: policy.maximumRetryCount ?? 0
+                )
+            }
+
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
@@ -119,7 +127,9 @@ public struct ContainerHandlers: Sendable {
                 attachStderr: request.attachStderr ?? false,
                 tty: request.tty ?? false,
                 openStdin: request.openStdin ?? false,
-                networkMode: request.hostConfig?.networkMode
+                networkMode: request.hostConfig?.networkMode,
+                restartPolicy: restartPolicy,
+                binds: request.hostConfig?.binds
             )
 
             logger.info("Container created", metadata: [

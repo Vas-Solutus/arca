@@ -5,7 +5,7 @@ import DockerAPI
 import ContainerBridge
 
 /// The main Arca daemon that implements the Docker Engine API server
-public final class ArcaDaemon {
+public final class ArcaDaemon: @unchecked Sendable {
     private let socketPath: String
     private let logger: Logger
     private var server: ArcaServer?
@@ -163,10 +163,22 @@ public final class ArcaDaemon {
             self.networkHelperVM = nil
         }
 
+        // Initialize StateStore (shared by ContainerManager and NetworkManager)
+        let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
+        let stateStore: StateStore
+        do {
+            stateStore = try StateStore(path: stateDBPath, logger: logger)
+            logger.info("StateStore initialized", metadata: ["path": "\(stateDBPath)"])
+        } catch {
+            logger.error("Failed to initialize StateStore", metadata: ["error": "\(error)"])
+            throw error
+        }
+
         // Initialize ContainerManager with kernel path from config
         let containerManager = ContainerManager(
             imageManager: imageManager,
             kernelPath: config.kernelPath,
+            stateStore: stateStore,
             logger: logger,
             sharedNetwork: nil  // No longer using shared vmnet for networking
         )
@@ -199,6 +211,7 @@ public final class ArcaDaemon {
         logger.info("Initializing network manager with \(config.networkBackend.rawValue) backend...")
         let nm = NetworkManager(
             config: config,
+            stateStore: stateStore,
             helperVM: networkHelperVM,
             networkBridge: networkBridge,
             logger: logger
@@ -250,6 +263,12 @@ public final class ArcaDaemon {
         guard let server = server else {
             logger.warning("Server not running")
             return
+        }
+
+        // Gracefully shutdown ContainerManager (wait for monitoring tasks)
+        if let containerManager = containerManager {
+            logger.info("Gracefully shutting down ContainerManager...")
+            await containerManager.shutdown()
         }
 
         try await server.shutdown()

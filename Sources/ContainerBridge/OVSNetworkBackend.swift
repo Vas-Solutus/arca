@@ -21,6 +21,7 @@ import Containerization
 /// - ~4-7ms latency (acceptable for development)
 /// - 4 vsock hops per packet
 public actor OVSNetworkBackend {
+    private let stateStore: StateStore
     private let helperVM: NetworkHelperVM
     private let networkBridge: NetworkBridge
     private let logger: Logger
@@ -41,10 +42,12 @@ public actor OVSNetworkBackend {
     private var containerAttachments: [String: [String: NetworkAttachment]] = [:]
 
     public init(
+        stateStore: StateStore,
         helperVM: NetworkHelperVM,
         networkBridge: NetworkBridge,
         logger: Logger
     ) {
+        self.stateStore = stateStore
         self.helperVM = helperVM
         self.networkBridge = networkBridge
         self.logger = logger
@@ -60,6 +63,95 @@ public actor OVSNetworkBackend {
         // Verify helper VM is ready
         guard await helperVM.getOVNClient() != nil else {
             throw NetworkManagerError.helperVMNotReady
+        }
+
+        // Load persisted networks from StateStore
+        do {
+            let persistedNetworks = try await stateStore.loadAllNetworks()
+            logger.info("Loaded persisted networks", metadata: ["count": "\(persistedNetworks.count)"])
+
+            for network in persistedNetworks {
+                // Decode options and labels from JSON
+                let options: [String: String]
+                if let optionsJSON = network.optionsJSON,
+                   let optionsData = optionsJSON.data(using: .utf8) {
+                    options = (try? JSONDecoder().decode([String: String].self, from: optionsData)) ?? [:]
+                } else {
+                    options = [:]
+                }
+
+                let labels: [String: String]
+                if let labelsJSON = network.labelsJSON,
+                   let labelsData = labelsJSON.data(using: .utf8) {
+                    labels = (try? JSONDecoder().decode([String: String].self, from: labelsData)) ?? [:]
+                } else {
+                    labels = [:]
+                }
+
+                // Reconstruct metadata
+                let metadata = NetworkMetadata(
+                    id: network.id,
+                    name: network.name,
+                    driver: network.driver,
+                    subnet: network.subnet,
+                    gateway: network.gateway,
+                    containers: [],  // Will be populated from attachments
+                    created: network.createdAt,
+                    options: options,
+                    labels: labels,
+                    isDefault: network.isDefault
+                )
+
+                networks[network.id] = metadata
+                networksByName[network.name] = network.id
+
+                logger.debug("Restored network from database", metadata: [
+                    "id": "\(network.id)",
+                    "name": "\(network.name)",
+                    "subnet": "\(network.subnet)"
+                ])
+
+                // Recreate bridge in OVN (reconciliation)
+                // After daemon restart, networks exist in database but not in OVN helper VM
+                // We need to recreate them in OVN to restore full functionality
+                guard let ovnClient = await helperVM.getOVNClient() else {
+                    logger.error("Failed to get OVN client for network reconciliation")
+                    continue
+                }
+
+                do {
+                    _ = try await ovnClient.createBridge(
+                        networkID: network.id,
+                        subnet: network.subnet,
+                        gateway: network.gateway
+                    )
+                    logger.info("Recreated network bridge in OVN during reconciliation", metadata: [
+                        "id": "\(network.id)",
+                        "name": "\(network.name)"
+                    ])
+                } catch {
+                    logger.error("Failed to recreate network bridge in OVN", metadata: [
+                        "id": "\(network.id)",
+                        "name": "\(network.name)",
+                        "error": "\(error)"
+                    ])
+                    // Continue - network will be in database but not functional
+                }
+
+                // Update subnet allocation tracking
+                if let subnetByte = extractSubnetByte(from: network.subnet) {
+                    if subnetByte >= nextSubnetByte {
+                        nextSubnetByte = subnetByte + 1
+                    }
+                }
+            }
+
+            // Update StateStore with current subnet allocation counter
+            try await stateStore.updateNextSubnetByte(Int(nextSubnetByte))
+
+        } catch {
+            logger.error("Failed to load persisted networks", metadata: ["error": "\(error)"])
+            // Continue - will create default network below
         }
 
         // Create default "bridge" network if it doesn't exist
@@ -78,7 +170,19 @@ public actor OVSNetworkBackend {
             logger.info("Created default bridge network", metadata: ["id": "\(metadata.id)"])
         }
 
-        logger.info("OVS network backend initialized successfully")
+        logger.info("OVS network backend initialized successfully", metadata: [
+            "networks": "\(networks.count)"
+        ])
+    }
+
+    /// Extract the third octet from a subnet CIDR (e.g., "172.18.0.0/16" -> 18)
+    private func extractSubnetByte(from subnet: String) -> UInt8? {
+        let components = subnet.split(separator: "/")[0].split(separator: ".")
+        guard components.count >= 3,
+              let byte = UInt8(components[2]) else {
+            return nil
+        }
+        return byte
     }
 
     // MARK: - Network Creation
@@ -109,12 +213,20 @@ public actor OVSNetworkBackend {
             effectiveGateway = gateway ?? calculateGateway(subnet: subnet)
         } else {
             // Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16
-            // Simple counter-based allocation (TODO: OVN will handle this via DHCP)
+            // Simple counter-based allocation
             effectiveSubnet = "172.\(nextSubnetByte).0.0/16"
             effectiveGateway = "172.\(nextSubnetByte).0.1"
             nextSubnetByte += 1
             if nextSubnetByte > 31 {
                 nextSubnetByte = 18  // Wrap around
+            }
+
+            // Persist updated subnet allocation counter
+            do {
+                try await stateStore.updateNextSubnetByte(Int(nextSubnetByte))
+            } catch {
+                logger.error("Failed to persist subnet allocation counter", metadata: ["error": "\(error)"])
+                // Continue - in-memory state is still valid
             }
         }
 
@@ -151,6 +263,34 @@ public actor OVSNetworkBackend {
 
         networks[id] = metadata
         networksByName[name] = id
+
+        // Persist network to StateStore
+        do {
+            let optionsJSON = options.isEmpty ? nil : try? String(data: JSONEncoder().encode(options), encoding: .utf8)
+            let labelsJSON = labels.isEmpty ? nil : try? String(data: JSONEncoder().encode(labels), encoding: .utf8)
+
+            try await stateStore.saveNetwork(
+                id: id,
+                name: name,
+                driver: "bridge",
+                scope: "local",
+                createdAt: metadata.created,
+                subnet: effectiveSubnet,
+                gateway: effectiveGateway,
+                ipRange: ipRange,
+                optionsJSON: optionsJSON,
+                labelsJSON: labelsJSON,
+                isDefault: isDefault
+            )
+
+            logger.debug("Network persisted to database", metadata: ["id": "\(id)"])
+        } catch {
+            logger.error("Failed to persist network to database", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+            // Continue - in-memory state is still valid
+        }
 
         return metadata
     }
@@ -200,6 +340,18 @@ public actor OVSNetworkBackend {
         // Remove from tracking
         networks.removeValue(forKey: id)
         networksByName.removeValue(forKey: metadata.name)
+
+        // Delete from StateStore
+        do {
+            try await stateStore.deleteNetwork(id: id)
+            logger.debug("Network deleted from database", metadata: ["id": "\(id)"])
+        } catch {
+            logger.error("Failed to delete network from database", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+            // Continue - in-memory state is already updated
+        }
 
         logger.info("OVS bridge network deleted", metadata: ["network_id": "\(id)"])
     }
@@ -294,6 +446,28 @@ public actor OVSNetworkBackend {
         )
         containerAttachments[networkID]![containerID] = attachment
 
+        // Persist attachment to StateStore
+        do {
+            try await stateStore.saveNetworkAttachment(
+                containerID: containerID,
+                networkID: networkID,
+                ipAddress: ipAddress,
+                macAddress: macAddress,
+                aliases: aliases
+            )
+            logger.debug("Network attachment persisted to database", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
+        } catch {
+            logger.error("Failed to persist network attachment to database", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "error": "\(error)"
+            ])
+            // Continue - in-memory state is still valid
+        }
+
         logger.info("Container attached to OVS network", metadata: [
             "container_id": "\(containerID)",
             "network_id": "\(networkID)",
@@ -346,6 +520,22 @@ public actor OVSNetworkBackend {
 
         // Remove attachment details
         containerAttachments[networkID]?.removeValue(forKey: containerID)
+
+        // Delete attachment from StateStore
+        do {
+            try await stateStore.deleteNetworkAttachment(containerID: containerID, networkID: networkID)
+            logger.debug("Network attachment deleted from database", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
+        } catch {
+            logger.error("Failed to delete network attachment from database", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "error": "\(error)"
+            ])
+            // Continue - in-memory state is already updated
+        }
 
         logger.info("Container detached from OVS network", metadata: [
             "container_id": "\(containerID)",
