@@ -146,6 +146,27 @@ ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
     --detach --log-file=/var/log/ovn/ovn-controller.log \
     unix:/var/run/openvswitch/db.sock
 
+# Wait for ovn-controller to initialize
+sleep 2
+
+# Register this control plane as an OVN chassis
+# This enables OVN port binding and prepares for future multi-host overlay networking
+# For single-host: use 127.0.0.1 (no actual Geneve tunneling)
+# For multi-host: will use real host IP for Geneve tunnels between chassis
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Registering OVN chassis..."
+CHASSIS_NAME="arca-control-plane"
+ENCAP_TYPE="geneve"
+ENCAP_IP="127.0.0.1"
+
+# Use --may-exist to make idempotent (won't fail if chassis already registered)
+if ovn-sbctl --may-exist chassis-add "$CHASSIS_NAME" "$ENCAP_TYPE" "$ENCAP_IP" 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Chassis '$CHASSIS_NAME' registered successfully"
+    ovn-sbctl chassis-list | grep "$CHASSIS_NAME" || echo "Note: Chassis registered but not yet visible in list"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Chassis registration may have failed"
+    ovn-sbctl chassis-list
+fi
+
 # DISABLED: dnsmasq not needed - DNS resolution handled by embedded-DNS in each container
 # Each container runs embedded-DNS at 127.0.0.11:53 with direct topology push from daemon
 # OVN still handles DHCP (IP allocation)
