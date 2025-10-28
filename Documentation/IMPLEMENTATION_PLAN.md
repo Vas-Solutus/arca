@@ -2453,6 +2453,243 @@ docker ps | grep app                               # Should NOT auto-restart (un
 
 ---
 
+### Phase 3.8: Proper OVN Architecture Refactor ⏳ NEXT
+
+**Goal**: Refactor from hybrid manual OVS bridges to proper OVN-managed architecture for better persistence, idempotency, and future multi-host support.
+
+**Status**: PLANNED - Starting after Phase 3.7 Task 6 completion
+
+**Problem**: Current hybrid architecture has state synchronization bugs:
+- Manual OVS bridge creation (not managed by OVN)
+- 3-way state tracking (OVN DB + Go memory + SQLite)
+- Non-idempotent operations (CreateBridge fails if bridge exists)
+- Reconciliation complexity (must sync all 3 sources)
+- OVS bridges don't persist across container restarts (new network namespace)
+
+**Current Architecture** (Hybrid):
+```
+Multiple OVS bridges (manual) → TAP-over-vsock → OVN logical switches
+        ↓
+   Bridge tracking in Go memory (not persisted)
+        ↓
+   CreateBridge fails on restart (bridge exists in OVN but not Linux)
+```
+
+**Target Architecture** (Proper OVN):
+```
+Single br-int (OVN-managed) → VLAN tags → TAP-over-vsock → OVN logical switches
+        ↓
+   ovn-controller auto-manages br-int
+        ↓
+   OVN databases persist (auto-reconcile on startup)
+        ↓
+   Chassis registration enables future multi-host
+```
+
+**Benefits**:
+- ✅ OVN auto-creates br-int (no manual bridge management)
+- ✅ 2-way state (OVN DB + SQLite metadata) instead of 3-way
+- ✅ Idempotent by design (OVN handles existence checks)
+- ✅ Simpler reconciliation (query OVN as source of truth)
+- ✅ Foundation for multi-host overlay networking
+- ✅ ~150 lines of code reduction
+
+**Trade-offs**:
+- ⚠️ Still need TAP-over-vsock (VM-per-container constraint)
+- ⚠️ VLAN tags add slight complexity vs separate bridges
+- ⚠️ 2-3 weeks implementation time
+
+#### Task 1: Research & Prototyping (3-4 days)
+
+- [ ] **Research OVN integration patterns**
+  - Study OVN localnet ports for external connectivity
+  - Study VLAN tagging on br-int for network isolation
+  - Review OVN chassis registration requirements
+  - Document findings in `Documentation/OVN_INTEGRATION_PATTERNS.md`
+
+- [ ] **Prototype VLAN tagging with TAP relay**
+  - Create OVN logical switch with VLAN tag
+  - Attach TAP device to br-int with `ovs-vsctl add-port br-int tap0 tag=100`
+  - Test packet isolation between VLANs
+  - Verify DHCP works with VLAN-tagged ports
+  - Files: `helpervm/control-api/poc/` (prototype code)
+
+- [ ] **Design chassis registration strategy**
+  - Decide: Single chassis per control plane or per-host
+  - Design: How to handle chassis name (hostname? UUID?)
+  - Design: Geneve tunnel endpoints for future multi-host
+  - Files: `Documentation/OVN_ARCHITECTURE.md`
+
+#### Task 2: Control Plane Changes (1 week)
+
+- [ ] **Implement chassis registration**
+  - Add chassis registration in startup.sh
+  - Command: `ovn-sbctl chassis-add <name> geneve <encap-ip>`
+  - Use control plane container ID as chassis name
+  - Set encap-ip to localhost for now (multi-host later)
+  - Files: `helpervm/scripts/startup.sh`
+
+- [ ] **Refactor CreateBridge to OVN-only**
+  - Remove manual `ovs-vsctl add-br` commands
+  - Create only OVN logical switch: `ovn-nbctl ls-add <network-id>`
+  - Assign VLAN tag to network (store in `external_ids:vlan_tag`)
+  - VLAN allocation: simple counter (100, 101, 102...)
+  - Remove bridge name hashing (no longer needed)
+  - Files: `helpervm/control-api/server.go:CreateBridge()`
+  - Lines changed: ~80 (simplified from 132)
+
+- [ ] **Remove manual bridge tracking**
+  - Delete `NetworkServer.bridges` map
+  - Delete `BridgeMetadata` struct
+  - Replace with OVN queries: `ovn-nbctl list logical_switch`
+  - Update ListBridges to query OVN directly
+  - Files: `helpervm/control-api/server.go`
+  - Lines deleted: ~30
+
+- [ ] **Add VLAN tag support to TAP relay**
+  - Read VLAN tag from OVN logical switch `external_ids:vlan_tag`
+  - Attach TAP to br-int with VLAN: `ovs-vsctl add-port br-int tap0 tag=<vlan>`
+  - Remove bridge name parameter (always use br-int)
+  - Files: `helpervm/control-api/tap_relay.go:StartRelay()`
+  - Lines changed: ~30
+
+- [ ] **Implement OVN port binding for containers**
+  - Create OVN logical switch port: `ovn-nbctl lsp-add <network> <port-name>`
+  - Set port type to localnet or leave empty (research needed)
+  - Bind port to chassis: `ovn-sbctl lsp-bind <port-name> <chassis-name>`
+  - Files: `helpervm/control-api/server.go:AttachContainer()`
+  - Lines changed: ~40
+
+#### Task 3: Daemon Changes (3-4 days)
+
+- [ ] **Update Swift reconciliation logic**
+  - Replace manual createBridge calls with OVN state queries
+  - Query all networks: `ovnClient.listBridges()` (returns OVN logical switches)
+  - Compare OVN networks with SQLite networks
+  - Reconciliation strategy:
+    - In SQLite only → Create in OVN (new network)
+    - In OVN only → Adopt to SQLite or log orphan
+    - In both → Verify match, update in-memory state
+  - Files: `Sources/ContainerBridge/OVSNetworkBackend.swift:initialize()`
+  - Lines changed: ~80
+
+- [ ] **Simplify OVNClient wrapper**
+  - Remove bridgeName from CreateBridge response (no longer used)
+  - Update gRPC calls to match new Go API
+  - Add GetVLANTag() helper if needed
+  - Files: `Sources/ContainerBridge/OVNClient.swift`
+  - Lines changed: ~20
+
+#### Task 4: Testing & Validation (3-4 days)
+
+- [ ] **Test network persistence with proper OVN**
+  - Create network → verify OVN logical switch created
+  - Stop control plane → verify OVN DB persists
+  - Start control plane → verify br-int auto-created by ovn-controller
+  - Verify network still functional (containers can communicate)
+  - Files: `Tests/ArcaTests/OVNPersistenceTests.swift`
+
+- [ ] **Test VLAN isolation**
+  - Create two networks (VLAN 100, VLAN 101)
+  - Create containers on each network
+  - Verify containers on same network can communicate
+  - Verify containers on different networks CANNOT communicate
+  - Files: `Tests/ArcaTests/VLANIsolationTests.swift`
+
+- [ ] **Test reconciliation scenarios**
+  - Scenario 1: Both exist, matching → no-op
+  - Scenario 2: SQLite only → create in OVN
+  - Scenario 3: OVN only → adopt or warn
+  - Scenario 4: Conflicting state → reconcile intelligently
+  - Files: `Tests/ArcaTests/OVNReconciliationTests.swift`
+
+- [ ] **Test complete persistence flow**
+  - Create network, create containers with `--restart always`
+  - Stop daemon, start daemon
+  - Verify: br-int auto-created by ovn-controller
+  - Verify: Networks reconciled from OVN
+  - Verify: Containers auto-restart on correct networks
+  - Verify: VLAN isolation preserved
+  - Files: `scripts/test-ovn-persistence.sh`
+
+#### Task 5: Multi-Host Preparation (FUTURE - Not in this phase)
+
+**Note**: These tasks prepare the foundation but don't implement full multi-host yet.
+
+- [ ] **Document multi-host architecture**
+  - Geneve tunnel configuration between chassis
+  - OVN northbound database sharing strategy (clustered DB)
+  - Gateway router for cross-host traffic
+  - Files: `Documentation/MULTI_HOST_ARCHITECTURE.md`
+
+- [ ] **Add encap-ip configuration**
+  - Allow control plane to specify real IP for Geneve tunnels
+  - For now: use 127.0.0.1 (single-host only)
+  - Future: use host IP for multi-host
+  - Files: `helpervm/scripts/startup.sh`
+
+#### Success Criteria
+
+```bash
+# Before (hybrid architecture):
+docker network create my-net
+docker ps --filter label=com.arca.internal=true
+# Shows control plane with manual bridge br-abc123
+
+pkill -9 Arca && make run
+docker network ls | grep my-net
+# ERROR: Network broken (CreateBridge fails, bridge exists in OVN)
+
+# After (proper OVN):
+docker network create my-net
+# OVN logical switch created with VLAN tag 100
+
+pkill -9 Arca && make run
+# ovn-controller auto-creates br-int
+# OVN databases auto-reconcile
+
+docker network ls | grep my-net
+# SUCCESS: Network works (OVN is source of truth)
+
+docker run -d --name web --network my-net nginx
+docker run -d --name db --network my-net postgres
+docker exec web ping -c 1 db
+# SUCCESS: Containers communicate via br-int with VLAN 100
+
+docker network create other-net
+docker run -d --name app --network other-net alpine
+docker exec web ping -c 1 app
+# FAILURE: VLAN isolation prevents cross-network communication
+```
+
+#### Estimated Timeline
+
+- Research & prototyping: 3-4 days
+- Control plane refactor: 1 week
+- Daemon changes: 3-4 days
+- Testing & validation: 3-4 days
+- **Total: 2-3 weeks**
+
+#### Code Metrics
+
+- Lines added: ~250
+- Lines changed: ~330
+- Lines deleted: ~400
+- **Net reduction: ~150 lines**
+
+#### Dependencies
+
+- OVN already installed in control plane ✅
+- ovn-controller already running ✅
+- Chassis registration requires OVN 20.03+ ✅ (we use 25.09)
+- VLAN support in OVS ✅ (standard feature)
+
+#### Blockers
+
+- None - can start immediately after Phase 3.7 Task 6
+
+---
+
 ## Phase 4: Build & Advanced Features (Weeks 9-12)
 
 ### API Endpoints to Implement
