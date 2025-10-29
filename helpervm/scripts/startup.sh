@@ -140,41 +140,35 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     fi
 done
 
+# Configure OVS external-ids for OVN integration
+# ovn-controller uses system-id to identify which chassis it manages
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Configuring OVS system-id for OVN..."
+CHASSIS_NAME="arca-control-plane"
+ovs-vsctl set Open_vSwitch . external-ids:system-id="$CHASSIS_NAME"
+ovs-vsctl set Open_vSwitch . external-ids:ovn-encap-type="geneve"
+ovs-vsctl set Open_vSwitch . external-ids:ovn-encap-ip="127.0.0.1"
+ovs-vsctl set Open_vSwitch . external-ids:ovn-remote="unix:/var/run/ovn/ovnsb_db.sock"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ OVS configured for OVN integration"
+
 # Start OVN controller
+# ovn-controller will automatically register the chassis using the system-id
 echo "Starting OVN controller..."
 ovn-controller --pidfile=/var/run/ovn/ovn-controller.pid \
     --detach --log-file=/var/log/ovn/ovn-controller.log \
     unix:/var/run/openvswitch/db.sock
 
-# Wait for ovn-controller to initialize
+# Wait for ovn-controller to initialize and auto-register chassis
 sleep 2
 
-# Register this control plane as an OVN chassis
-# This enables OVN port binding and prepares for future multi-host overlay networking
-# For single-host: use 127.0.0.1 (no actual Geneve tunneling)
-# For multi-host: will use real host IP for Geneve tunnels between chassis
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Registering OVN chassis..."
-CHASSIS_NAME="arca-control-plane"
-ENCAP_TYPE="geneve"
-ENCAP_IP="127.0.0.1"
-
-# Use --may-exist to make idempotent (won't fail if chassis already registered)
-if ovn-sbctl --may-exist chassis-add "$CHASSIS_NAME" "$ENCAP_TYPE" "$ENCAP_IP" 2>&1; then
+# Verify chassis was auto-registered by ovn-controller
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Verifying OVN chassis registration..."
+if ovn-sbctl show | grep -q "Chassis $CHASSIS_NAME"; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Chassis '$CHASSIS_NAME' registered successfully"
-    ovn-sbctl chassis-list | grep "$CHASSIS_NAME" || echo "Note: Chassis registered but not yet visible in list"
 else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Chassis registration may have failed"
-    ovn-sbctl chassis-list
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Chassis not found in Southbound DB"
+    echo "Chassis list:"
+    ovn-sbctl show
 fi
-
-# DISABLED: dnsmasq not needed - DNS resolution handled by embedded-DNS in each container
-# Each container runs embedded-DNS at 127.0.0.11:53 with direct topology push from daemon
-# OVN still handles DHCP (IP allocation)
-# echo "Starting dnsmasq for DNS resolution..."
-# mkdir -p /var/run
-# mkdir -p /etc/dnsmasq.d
-# dnsmasq --conf-file=/etc/dnsmasq.conf
-# echo "✓ dnsmasq started"
 
 # Wait for services to be ready
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for all services to stabilize..."
@@ -237,14 +231,9 @@ echo "✓ All services started successfully"
 echo "✓ Total startup time: ${TOTAL_STARTUP}s"
 echo "========================================================"
 
-# Start router service in background
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Router Service on vsock port 50052..."
-/usr/local/bin/router-service --vsock-port=50052 &
-ROUTER_PID=$!
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Router service started (PID: $ROUTER_PID)"
-
-# Brief pause to let router service initialize
-sleep 1
+# REMOVED: Router service not needed with OVN architecture
+# OVN handles all switching/routing via logical switches with VLAN tags on br-int
+# Router service was leftover from vmnet VLAN experiment
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Arca Network Control API on vsock port 9999..."
 

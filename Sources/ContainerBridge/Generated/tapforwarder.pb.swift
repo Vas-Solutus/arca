@@ -45,6 +45,10 @@ public struct Arca_Tapforwarder_V1_AttachNetworkRequest: Sendable {
   /// If not specified, defaults to /24
   public var netmask: UInt32 = 0
 
+  /// MAC address to assign to the interface (e.g., "02:42:ac:11:00:02")
+  /// If not specified, a random MAC will be generated
+  public var macAddress: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -304,7 +308,7 @@ fileprivate let _protobuf_package = "arca.tapforwarder.v1"
 
 extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AttachNetworkRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}vsock_port\0\u{3}ip_address\0\u{1}gateway\0\u{1}netmask\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}device\0\u{3}vsock_port\0\u{3}ip_address\0\u{1}gateway\0\u{1}netmask\0\u{3}mac_address\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -317,6 +321,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
       case 3: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.gateway) }()
       case 5: try { try decoder.decodeSingularUInt32Field(value: &self.netmask) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.macAddress) }()
       default: break
       }
     }
@@ -338,6 +343,9 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
     if self.netmask != 0 {
       try visitor.visitSingularUInt32Field(value: self.netmask, fieldNumber: 5)
     }
+    if !self.macAddress.isEmpty {
+      try visitor.visitSingularStringField(value: self.macAddress, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -347,6 +355,7 @@ extension Arca_Tapforwarder_V1_AttachNetworkRequest: SwiftProtobuf.Message, Swif
     if lhs.ipAddress != rhs.ipAddress {return false}
     if lhs.gateway != rhs.gateway {return false}
     if lhs.netmask != rhs.netmask {return false}
+    if lhs.macAddress != rhs.macAddress {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

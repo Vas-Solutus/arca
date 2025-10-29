@@ -153,6 +153,90 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		}
 	}
 
+	// Create OVN logical router for this network
+	// This provides the gateway functionality (responds to pings, ARP, etc.)
+	routerName := fmt.Sprintf("router-%s", req.NetworkId)
+	log.Printf("Creating logical router %s for network %s", routerName, req.NetworkId)
+
+	if err := runCommand("ovn-nbctl", "lr-add", routerName); err != nil {
+		log.Printf("ERROR: Failed to create logical router: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to create logical router: %v", err),
+		}, nil
+	}
+
+	// Create router port with gateway IP/MAC
+	// Format: lrp-{networkID} with gateway IP (e.g., 172.17.0.1/24)
+	routerPortName := fmt.Sprintf("lrp-%s", req.NetworkId)
+	routerMAC := fmt.Sprintf("00:00:00:00:%02x:%02x", (vlanTag>>8)&0xff, vlanTag&0xff)
+
+	if err := runCommand("ovn-nbctl", "lrp-add", routerName, routerPortName,
+		routerMAC, req.Gateway+"/"+strings.Split(req.Subnet, "/")[1]); err != nil {
+		log.Printf("ERROR: Failed to create router port: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to create router port: %v", err),
+		}, nil
+	}
+
+	// Create switch port to connect to router
+	// Format: lsp-{networkID}-router
+	switchPortName := fmt.Sprintf("lsp-%s-router", req.NetworkId)
+
+	if err := runCommand("ovn-nbctl", "lsp-add", req.NetworkId, switchPortName); err != nil {
+		log.Printf("ERROR: Failed to create switch port for router: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to create switch port: %v", err),
+		}, nil
+	}
+
+	// Set switch port type to router and connect to router port
+	if err := runCommand("ovn-nbctl", "lsp-set-type", switchPortName, "router"); err != nil {
+		log.Printf("ERROR: Failed to set switch port type: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to set switch port type: %v", err),
+		}, nil
+	}
+
+	if err := runCommand("ovn-nbctl", "lsp-set-addresses", switchPortName, "router"); err != nil {
+		log.Printf("ERROR: Failed to set switch port addresses: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to set switch port addresses: %v", err),
+		}, nil
+	}
+
+	if err := runCommand("ovn-nbctl", "lsp-set-options", switchPortName,
+		fmt.Sprintf("router-port=%s", routerPortName)); err != nil {
+		log.Printf("ERROR: Failed to connect switch port to router: %v", err)
+		// Cleanup
+		_ = runCommand("ovn-nbctl", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		return &pb.CreateBridgeResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to connect switch to router: %v", err),
+		}, nil
+	}
+
+	log.Printf("Successfully created and connected logical router %s", routerName)
+
 	// Store metadata (still tracking for compatibility, but bridgeName is always br-int now)
 	s.bridges[req.NetworkId] = &BridgeMetadata{
 		NetworkID:  req.NetworkId,
@@ -176,6 +260,13 @@ func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRe
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Delete OVN logical router (if exists)
+	routerName := fmt.Sprintf("router-%s", req.NetworkId)
+	if err := runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName); err != nil {
+		log.Printf("Warning: Failed to delete logical router %s: %v", routerName, err)
+		// Continue anyway - switch deletion will cascade
+	}
 
 	// Delete OVN logical switch (this removes all ports, DHCP, etc.)
 	if err := runCommand("ovn-nbctl", "ls-del", req.NetworkId); err != nil {
@@ -233,7 +324,9 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	// The TAP relay will create its own OVS internal port when it starts
 	// However, we DO create OVN logical switch ports for DHCP and DNS
 	// Port name must be unique per container+network combination to support multi-network containers
-	portName := fmt.Sprintf("lsp-%s-%s", req.ContainerId[:12], req.NetworkId[:12])
+	// CRITICAL: Linux interface names have a 15-character limit (IFNAMSIZ=16 including null terminator)
+	// OVS internal ports become Linux interfaces, so we must keep names <= 15 chars
+	portName := fmt.Sprintf("p-%s%s", req.ContainerId[:6], req.NetworkId[:6])
 
 	// Create OVN logical switch port for DHCP/DNS
 	log.Printf("Creating OVN logical switch port %s on network %s", portName, req.NetworkId)
@@ -260,6 +353,12 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 		// Set port addresses - this triggers OVN to allocate an IP
 		if err := runCommand("ovn-nbctl", "lsp-set-addresses", portName, portAddress); err != nil {
 			log.Printf("Warning: Failed to set port addresses: %v", err)
+		}
+
+		// Set port security to allow packets from this MAC
+		// Without port security, OVN drops all packets from the port
+		if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, portAddress); err != nil {
+			log.Printf("Warning: Failed to set port security: %v", err)
 		}
 
 		// Link DHCP options to this port BEFORE querying for allocated IP
@@ -290,6 +389,16 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 				if len(parts) >= 2 {
 					allocatedIP = parts[1]
 					log.Printf("OVN allocated IP %s for port %s (attempt %d)", allocatedIP, portName, i+1)
+
+					// CRITICAL: Update port_security with the actual allocated IP
+					// OVN doesn't support "dynamic" keyword in port_security - it needs the real IP
+					actualPortSecurity := fmt.Sprintf("%s %s", parts[0], parts[1])
+					if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, actualPortSecurity); err != nil {
+						log.Printf("Warning: Failed to update port security with allocated IP: %v", err)
+					} else {
+						log.Printf("Updated port security to: %s", actualPortSecurity)
+					}
+
 					break
 				}
 			}
@@ -348,25 +457,18 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 			log.Printf("Warning: Failed to set port addresses: %v", err)
 		}
 
+		// Set port security to allow packets from this MAC/IP
+		// Without port security, OVN drops all packets from the port
+		if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, portAddress); err != nil {
+			log.Printf("Warning: Failed to set port security: %v", err)
+		}
+
 		// Note: For static IPs, we don't link DHCP options since the IP is already configured
 	}
 
-	// Add DNS records for hostname and aliases using dnsmasq
-	// OVN handles DHCP, dnsmasq handles DNS resolution
-	if allocatedIP != "" && req.Hostname != "" {
-		if err := addDNSMasqRecord(req.NetworkId, req.Hostname, allocatedIP); err != nil {
-			log.Printf("Warning: Failed to add dnsmasq record for %s: %v", req.Hostname, err)
-		} else {
-			log.Printf("Added dnsmasq record: %s -> %s", req.Hostname, allocatedIP)
-		}
-
-		// Add DNS aliases
-		for _, alias := range req.Aliases {
-			if err := addDNSMasqRecord(req.NetworkId, alias, allocatedIP); err != nil {
-				log.Printf("Warning: Failed to add dnsmasq alias %s: %v", alias, err)
-			}
-		}
-	}
+	// DNS resolution is handled by embedded-DNS in each container
+	// OVN handles DHCP (IP allocation only)
+	// DNS topology is pushed from Arca daemon directly to containers via tap-forwarder
 
 	// Track container attachment
 	if s.containerMap[req.NetworkId] == nil {
@@ -378,7 +480,7 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	if req.VsockPort > 0 {
 		// Helper VM listens on host_port + 10000
 		helperPort := req.VsockPort + 10000
-		if err := s.relayManager.StartRelay(helperPort, vlanTag, req.NetworkId, req.ContainerId, req.MacAddress); err != nil {
+		if err := s.relayManager.StartRelay(helperPort, vlanTag, req.NetworkId, req.ContainerId, req.MacAddress, portName); err != nil {
 			log.Printf("Warning: Failed to start TAP relay: %v", err)
 			// Don't fail the entire operation - networking may still work via other means
 		} else {
@@ -598,129 +700,6 @@ func removeDNSRecord(networkID, hostname string) error {
 	return nil
 }
 
-// addDNSMasqRecord adds a DNS record to dnsmasq configuration for a specific network
-// Creates/updates a network-specific config file in /etc/dnsmasq.d/
-func addDNSMasqRecord(networkID, hostname, ipAddress string) error {
-	if hostname == "" || ipAddress == "" {
-		return fmt.Errorf("hostname and IP address are required")
-	}
-
-	// Config file per network
-	configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
-
-	// Read existing content to check if entry already exists
-	existingContent := ""
-	if data, err := os.ReadFile(configFile); err == nil {
-		existingContent = string(data)
-	}
-
-	// Check if this exact record already exists
-	hostRecord := fmt.Sprintf("host-record=%s,%s\n", hostname, ipAddress)
-	if strings.Contains(existingContent, hostRecord) {
-		// Record already exists, no need to add again
-		return nil
-	}
-
-	// Append host-record entry
-	f, err := os.OpenFile(configFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open dnsmasq config: %v", err)
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(hostRecord); err != nil {
-		return fmt.Errorf("failed to write dnsmasq config: %v", err)
-	}
-
-	// Reload dnsmasq to pick up new records (SIGHUP)
-	if err := runCommand("killall", "-HUP", "dnsmasq"); err != nil {
-		log.Printf("Warning: Failed to reload dnsmasq: %v (may not be running yet)", err)
-	}
-
-	return nil
-}
-
-// removeDNSMasqRecord removes a DNS record from dnsmasq configuration
-func removeDNSMasqRecord(networkID, hostname string) error {
-	if hostname == "" {
-		return fmt.Errorf("hostname is required")
-	}
-
-	configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
-
-	// Read existing content
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		// File doesn't exist, nothing to remove
-		return nil
-	}
-
-	// Filter out lines matching this hostname
-	lines := strings.Split(string(data), "\n")
-	var newLines []string
-	prefix := fmt.Sprintf("host-record=%s,", hostname)
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, prefix) {
-			newLines = append(newLines, line)
-		}
-	}
-
-	// Write back filtered content
-	newContent := strings.Join(newLines, "\n")
-	if err := os.WriteFile(configFile, []byte(newContent), 0644); err != nil {
-		return fmt.Errorf("failed to update dnsmasq config: %v", err)
-	}
-
-	// Reload dnsmasq
-	if err := runCommand("killall", "-HUP", "dnsmasq"); err != nil {
-		log.Printf("Warning: Failed to reload dnsmasq: %v", err)
-	}
-
-	return nil
-}
-
-// ResolveDNS resolves a hostname across multiple networks (for embedded DNS in vminit)
-func (s *NetworkServer) ResolveDNS(ctx context.Context, req *pb.ResolveDNSRequest) (*pb.ResolveDNSResponse, error) {
-	log.Printf("ResolveDNS: hostname=%s networks=%v", req.Hostname, req.NetworkIds)
-
-	// Search for hostname in each network's dnsmasq config
-	for _, networkID := range req.NetworkIds {
-		configFile := fmt.Sprintf("/etc/dnsmasq.d/%s.conf", networkID)
-
-		data, err := os.ReadFile(configFile)
-		if err != nil {
-			continue // Network config doesn't exist, try next
-		}
-
-		// Search for host-record matching this hostname
-		lines := strings.Split(string(data), "\n")
-		prefix := fmt.Sprintf("host-record=%s,", req.Hostname)
-
-		for _, line := range lines {
-			if strings.HasPrefix(line, prefix) {
-				// Extract IP address: host-record=hostname,IP
-				parts := strings.Split(line, ",")
-				if len(parts) >= 2 {
-					ipAddress := strings.TrimSpace(parts[1])
-					log.Printf("ResolveDNS: Found %s -> %s in network %s", req.Hostname, ipAddress, networkID)
-					return &pb.ResolveDNSResponse{
-						Found:     true,
-						IpAddress: ipAddress,
-						NetworkId: networkID,
-					}, nil
-				}
-			}
-		}
-	}
-
-	// Hostname not found in any of the container's networks
-	log.Printf("ResolveDNS: hostname %s not found in networks %v", req.Hostname, req.NetworkIds)
-	return &pb.ResolveDNSResponse{
-		Found: false,
-		Error: fmt.Sprintf("hostname %s not found", req.Hostname),
-	}, nil
-}
 
 // GetContainerNetworks returns the list of networks a container is attached to
 func (s *NetworkServer) GetContainerNetworks(ctx context.Context, req *pb.GetContainerNetworksRequest) (*pb.GetContainerNetworksResponse, error) {

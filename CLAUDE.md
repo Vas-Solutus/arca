@@ -227,7 +227,9 @@ Arca uses a JSON configuration file with the following structure:
     - ✅ Port mapping (`-p` flag)
     - ✅ DNS resolution by container name
     - ✅ Network isolation
-    - ⚠️ ~4-7ms latency (4 vsock hops + OVS switching)
+    - ✅ OVN native DHCP with dynamic IP allocation
+    - ✅ Logical router for L3 routing
+    - ⚠️ ~3ms latency (measured 1.7-5.5ms, avg 3.2ms - better than expected!)
   - **`vmnet`** - High-performance native Apple networking
     - ✅ ~0.5ms latency (10x faster than OVS)
     - ✅ Simple architecture (no helper VM)

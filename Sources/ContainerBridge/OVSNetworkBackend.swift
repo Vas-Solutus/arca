@@ -402,6 +402,7 @@ public actor OVSNetworkBackend {
             ipAddress: ipAddress,
             gateway: metadata.gateway,
             device: deviceName,
+            macAddress: macAddress, // Pass generated MAC to ensure it matches OVN port_security
             containerPort: containerPort
         )
 

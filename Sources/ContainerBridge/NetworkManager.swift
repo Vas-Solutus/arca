@@ -62,9 +62,47 @@ public actor NetworkManager {
             }
 
             let client = OVNClient(logger: logger)
-            try await client.connect(container: container, vsockPort: 9999)
-            self.ovnClient = client
-            logger.info("OVN client connected to control plane")
+
+            // Retry connection with exponential backoff
+            // Control plane needs time to initialize OVS/OVN services before accepting connections
+            let maxAttempts = 10
+            var attempt = 0
+            var lastError: Error?
+
+            while attempt < maxAttempts {
+                attempt += 1
+
+                do {
+                    logger.info("Attempting to connect to control plane", metadata: [
+                        "attempt": "\(attempt)/\(maxAttempts)"
+                    ])
+                    try await client.connect(container: container, vsockPort: 9999)
+                    self.ovnClient = client
+                    logger.info("OVN client connected to control plane", metadata: [
+                        "attempts": "\(attempt)"
+                    ])
+                    break
+                } catch {
+                    lastError = error
+                    logger.warning("Connection attempt failed", metadata: [
+                        "attempt": "\(attempt)/\(maxAttempts)",
+                        "error": "\(error)"
+                    ])
+
+                    if attempt < maxAttempts {
+                        // Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 16s, 16s, 16s
+                        let backoffSeconds = min(0.5 * Double(1 << (attempt - 1)), 16.0)
+                        logger.debug("Retrying in \(backoffSeconds)s...")
+                        try await Task.sleep(for: .seconds(backoffSeconds))
+                    }
+                }
+            }
+
+            // If all attempts failed, throw the last error
+            if self.ovnClient == nil {
+                logger.error("Failed to connect to control plane after \(maxAttempts) attempts")
+                throw lastError ?? NetworkManagerError.helperVMNotReady
+            }
 
             let backend = OVSNetworkBackend(
                 stateStore: stateStore,
@@ -156,10 +194,6 @@ public actor NetworkManager {
             throw NetworkManagerError.helperVMNotReady
         }
         self.controlPlaneContainer = container
-
-        // Wait for services to initialize
-        logger.info("Waiting for control plane services to initialize...")
-        try await Task.sleep(for: .seconds(10))
 
         // Set control plane on network bridge
         if let bridge = networkBridge {

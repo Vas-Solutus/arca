@@ -88,6 +88,7 @@ public actor NetworkBridge {
         ipAddress: String,
         gateway: String,
         device: String,
+        macAddress: String,
         containerPort: UInt32
     ) async throws {
         guard let controlPlaneContainer = controlPlane else {
@@ -122,7 +123,8 @@ public actor NetworkBridge {
                 vsockPort: containerPort,
                 ipAddress: ipAddress,
                 gateway: gateway,
-                netmask: 24
+                netmask: 24,
+                macAddress: macAddress // Pass MAC to ensure it matches OVN port_security
             )
 
             guard response.success else {

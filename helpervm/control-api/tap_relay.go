@@ -31,7 +31,7 @@ func NewTAPRelayManager() *TAPRelayManager {
 // StartRelay starts a vsock listener for TAP packet relay
 // This is called when a container is attached to a network
 // All networks use br-int with VLAN tags for isolation
-func (m *TAPRelayManager) StartRelay(port uint32, vlanTag uint32, networkID string, containerID string, macAddress string) error {
+func (m *TAPRelayManager) StartRelay(port uint32, vlanTag uint32, networkID string, containerID string, macAddress string, ovsPortName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -81,7 +81,7 @@ func (m *TAPRelayManager) StartRelay(port uint32, vlanTag uint32, networkID stri
 				log.Printf("Accepted vsock connection on port %d", port)
 
 				// Handle this connection in a separate goroutine
-				go m.handleConnection(conn, vlanTag, networkID, containerID, macAddress, port)
+				go m.handleConnection(conn, vlanTag, networkID, containerID, macAddress, port, ovsPortName)
 			}
 		}
 	}()
@@ -105,17 +105,14 @@ func (m *TAPRelayManager) StopRelay(port uint32) error {
 }
 
 // handleConnection handles a single vsock connection for TAP packet relay
-func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networkID string, containerID string, macAddress string, port uint32) {
+func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networkID string, containerID string, macAddress string, port uint32, ovsPortName string) {
 	defer conn.Close()
 
 	log.Printf("Handling TAP relay connection for container %s on network %s (VLAN: %d, port %d)", containerID, networkID, vlanTag, port)
 
-	// Create OVS internal port for this container+network combination
-	// Format: port-{hash} where hash uniquely identifies container+network
-	// Linux interface names are limited to 15 characters (IFNAMSIZ-1)
-	// "port-" is 5 chars, so we can use 10 chars of hash
-	// Use first 5 chars of container ID + first 5 chars of network ID
-	portName := fmt.Sprintf("port-%s%s", containerID[:5], networkID[:5])
+	// Use the OVN logical port name for the OVS port
+	// This allows ovn-controller to bind the port automatically
+	portName := ovsPortName
 
 	// Add internal port to br-int with VLAN tag for network isolation
 	if err := addOVSInternalPort("br-int", portName, vlanTag); err != nil {
@@ -123,6 +120,14 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networ
 		return
 	}
 	defer deleteOVSPort("br-int", portName)
+
+	// Set external-ids:iface-id for OVN integration
+	// This tells ovn-controller which logical port this OVS port corresponds to
+	if err := runCommand("ovs-vsctl", "set", "Interface", portName, fmt.Sprintf("external-ids:iface-id=%s", portName)); err != nil {
+		log.Printf("Warning: Failed to set iface-id on port %s: %v (OVN binding may not work)", portName, err)
+	} else {
+		log.Printf("Set external-ids:iface-id=%s for OVN integration", portName)
+	}
 
 	// Bring the port interface up
 	if err := bringInterfaceUp(portName); err != nil {

@@ -113,7 +113,8 @@ public actor TAPForwarderClient {
         vsockPort: UInt32,
         ipAddress: String,
         gateway: String,
-        netmask: UInt32 = 24
+        netmask: UInt32 = 24,
+        macAddress: String
     ) async throws -> Arca_Tapforwarder_V1_AttachNetworkResponse {
         guard let client = client else {
             throw ClientError.notConnected
@@ -125,6 +126,7 @@ public actor TAPForwarderClient {
         request.ipAddress = ipAddress
         request.gateway = gateway
         request.netmask = netmask
+        request.macAddress = macAddress // Set MAC address to ensure it matches OVN port_security
 
         logger.info("Sending AttachNetwork RPC", metadata: [
             "device": "\(device)",

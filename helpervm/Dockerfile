@@ -82,7 +82,6 @@ FROM alpine:3.22
 # Install only runtime dependencies
 RUN apk add --no-cache \
     bash \
-    dnsmasq \
     ethtool \
     iproute2 \
     iptables \
@@ -115,9 +114,6 @@ RUN chmod +x /usr/local/bin/router-service
 COPY scripts/startup.sh /usr/local/bin/startup.sh
 COPY scripts/ovs-init.sh /usr/local/bin/ovs-init.sh
 RUN chmod +x /usr/local/bin/startup.sh /usr/local/bin/ovs-init.sh
-
-# Copy dnsmasq configuration
-COPY config/dnsmasq.conf /etc/dnsmasq.conf
 
 # Create directories for OVS/OVN
 RUN mkdir -p \
