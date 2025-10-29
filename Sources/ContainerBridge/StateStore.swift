@@ -13,6 +13,7 @@ public actor StateStore {
     private nonisolated(unsafe) let containers = Table("containers")
     private nonisolated(unsafe) let networks = Table("networks")
     private nonisolated(unsafe) let networkAttachments = Table("network_attachments")
+    private nonisolated(unsafe) let volumes = Table("volumes")
     private nonisolated(unsafe) let subnetAllocation = Table("subnet_allocation")
     private nonisolated(unsafe) let schemaVersion = Table("schema_version")
 
@@ -56,6 +57,14 @@ public actor StateStore {
     private nonisolated(unsafe) let aliasesJSON = Expression<String?>("aliases_json")
     private nonisolated(unsafe) let attachedAt = Expression<String>("attached_at")
 
+    // Volume columns (nonisolated - immutable and thread-safe)
+    private nonisolated(unsafe) let volumeName = Expression<String>("name")
+    private nonisolated(unsafe) let volumeDriver = Expression<String>("driver")
+    private nonisolated(unsafe) let volumeMountpoint = Expression<String>("mountpoint")
+    private nonisolated(unsafe) let volumeCreatedAt = Expression<String>("created_at")
+    private nonisolated(unsafe) let volumeLabelsJSON = Expression<String?>("labels_json")
+    private nonisolated(unsafe) let volumeOptionsJSON = Expression<String?>("options_json")
+
     // Subnet allocation columns (nonisolated - immutable and thread-safe)
     private nonisolated(unsafe) let allocationID = Expression<Int>("id")
     private nonisolated(unsafe) let nextSubnetByte = Expression<Int>("next_subnet_byte")
@@ -68,6 +77,7 @@ public actor StateStore {
         case databaseInitFailed(String)
         case containerNotFound(String)
         case networkNotFound(String)
+        case volumeNotFound(String)
         case invalidJSON(String)
         case transactionFailed(String)
 
@@ -79,6 +89,8 @@ public actor StateStore {
                 return "Container not found: \(id)"
             case .networkNotFound(let id):
                 return "Network not found: \(id)"
+            case .volumeNotFound(let name):
+                return "Volume not found: \(name)"
             case .invalidJSON(let reason):
                 return "Invalid JSON: \(reason)"
             case .transactionFailed(let reason):
@@ -207,6 +219,20 @@ public actor StateStore {
             // Network attachment indexes
             try db.run(networkAttachments.createIndex(containerID, ifNotExists: true))
             try db.run(networkAttachments.createIndex(attachedNetworkID, ifNotExists: true))
+
+            // Volumes table
+            try db.run(volumes.create(ifNotExists: true) { t in
+                t.column(volumeName, primaryKey: true)
+                t.column(volumeDriver, defaultValue: "local")
+                t.column(volumeMountpoint)
+                t.column(volumeCreatedAt, defaultValue: Date().iso8601String)
+                t.column(volumeLabelsJSON)
+                t.column(volumeOptionsJSON)
+            })
+
+            // Volume indexes
+            try db.run(volumes.createIndex(volumeName, ifNotExists: true))
+            try db.run(volumes.createIndex(volumeDriver, ifNotExists: true))
 
             // Subnet allocation table (singleton)
             try db.run(subnetAllocation.create(ifNotExists: true) { t in
@@ -634,6 +660,75 @@ public actor StateStore {
         try db.run(allocation.update(nextSubnetByte <- value))
 
         logger.debug("Subnet allocation updated", metadata: ["nextSubnetByte": "\(value)"])
+    }
+
+    // MARK: - Volume Operations
+
+    /// Save a volume to the database
+    public func saveVolume(
+        name: String,
+        driver: String,
+        mountpoint: String,
+        createdAt: Date,
+        labelsJSON: String?,
+        optionsJSON: String?
+    ) throws {
+        try db.run(volumes.insert(or: .replace,
+            self.volumeName <- name,
+            self.volumeDriver <- driver,
+            self.volumeMountpoint <- mountpoint,
+            self.volumeCreatedAt <- createdAt.iso8601String,
+            self.volumeLabelsJSON <- labelsJSON,
+            self.volumeOptionsJSON <- optionsJSON
+        ))
+
+        logger.debug("Volume saved", metadata: [
+            "name": "\(name)",
+            "driver": "\(driver)"
+        ])
+    }
+
+    /// Load all volumes from the database
+    public func loadAllVolumes() throws -> [(
+        name: String,
+        driver: String,
+        mountpoint: String,
+        createdAt: Date,
+        labelsJSON: String?,
+        optionsJSON: String?
+    )] {
+        var result: [(
+            name: String, driver: String, mountpoint: String,
+            createdAt: Date, labelsJSON: String?, optionsJSON: String?
+        )] = []
+
+        for row in try db.prepare(volumes) {
+            let createdDate = Date(iso8601String: row[volumeCreatedAt]) ?? Date()
+
+            result.append((
+                name: row[volumeName],
+                driver: row[volumeDriver],
+                mountpoint: row[volumeMountpoint],
+                createdAt: createdDate,
+                labelsJSON: row[volumeLabelsJSON],
+                optionsJSON: row[volumeOptionsJSON]
+            ))
+        }
+
+        logger.debug("Loaded volumes from database", metadata: ["count": "\(result.count)"])
+        return result
+    }
+
+    /// Delete a volume from the database
+    public func deleteVolume(name: String) throws {
+        let volume = volumes.filter(volumeName == name)
+        let deleted = try db.run(volume.delete())
+
+        if deleted == 0 {
+            throw StateStoreError.volumeNotFound(name)
+        }
+
+        logger.debug("Volume deleted from database", metadata: ["name": "\(name)"])
     }
 
     // MARK: - Transaction Support

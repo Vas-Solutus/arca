@@ -1521,95 +1521,122 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Verify all compose.yml files work correctly
   - Files: `scripts/test-compose.sh`
 
-### Phase 3.7: Volumes (Week 11)
+### Phase 3.7: Named Volumes ✅ CORE API COMPLETE
 
-**Note**: Volumes are simpler than networks and build on existing Apple Containerization volume support.
+**Status**: IN PROGRESS - Core API complete (2025-10-29), container integration pending
 
-#### Volume API Models
+**Completed**:
+- ✅ Bind mounts (`-v /host:/container`) work via VirtioFS (implemented in Phase 3.7 Universal Persistence)
+- ✅ Volume API endpoints (`/volumes/*`) fully implemented and tested
+- ✅ VolumeManager actor with SQLite persistence
+- ✅ All volume CRUD operations working
+- ✅ Tested with Docker CLI - all commands work
 
-- [ ] **Create Docker Volume API request/response models**
-  - VolumeCreateRequest (Name, Driver, DriverOpts, Labels)
-  - Volume (Name, Driver, Mountpoint, Labels, Scope, CreatedAt)
-  - VolumeListResponse (Volumes, Warnings)
-  - VolumePruneResponse (VolumesDeleted, SpaceReclaimed)
-  - Files: `Sources/DockerAPI/Models/Volume.swift`
+**Remaining**:
+- ❌ Named volume resolution in `docker run -v myvolume:/data` (requires ContainerManager integration)
+- ❌ Anonymous volume creation (`docker run -v /data`)
+- ❌ Volume usage tracking (preventing deletion of in-use volumes)
 
-#### VolumeManager Actor
+**Note**: This section describes the NAMED VOLUME system (VolumeManager, volume API endpoints, etc.), which is completely separate from bind mount support. The core volume API is complete; container integration is the remaining work.
 
-- [ ] **Implement VolumeManager actor**
-  - Track named volumes: [name: VolumeMetadata]
-  - Store volumes in `~/.arca/volumes/`
-  - Support "local" driver only (store on host filesystem)
-  - Integrate with Apple's Containerization volume support
-  - Files: `Sources/ContainerBridge/VolumeManager.swift`
+#### Volume API Models ✅ COMPLETE
 
-- [ ] **Implement volume creation**
-  - Create directory under `~/.arca/volumes/{name}/`
-  - Store volume metadata (name, driver, labels, created date)
-  - Return Volume response
-  - Files: `Sources/ContainerBridge/VolumeManager.swift` (createVolume method)
+- [x] **Create Docker Volume API request/response models**
+  - ✅ VolumeCreateRequest (Name, Driver, DriverOpts, Labels)
+  - ✅ Volume (Name, Driver, Mountpoint, Labels, Scope, CreatedAt, Status, Options)
+  - ✅ VolumeListResponse (Volumes, Warnings)
+  - ✅ VolumePruneResponse (VolumesDeleted, SpaceReclaimed)
+  - ✅ Reused AnyCodable from Container.swift for flexible status field
+  - ✅ Files: `Sources/DockerAPI/Models/Volume.swift` (112 lines)
 
-- [ ] **Implement volume listing and inspection**
-  - listVolumes(filters:) - Support filters: name, label, dangling
-  - inspectVolume(name:) - Return full volume details
-  - Calculate volume size (du -sh)
-  - Files: `Sources/ContainerBridge/VolumeManager.swift`
+#### StateStore Integration ✅ COMPLETE
 
-- [ ] **Implement volume deletion**
-  - Verify no containers are using volume
-  - Delete volume directory
-  - Remove metadata
-  - Error handling: 409 if in use, 404 if not found
-  - Files: `Sources/ContainerBridge/VolumeManager.swift` (deleteVolume method)
+- [x] **Add volume persistence to StateStore**
+  - ✅ SQLite table: volumes (name, driver, mountpoint, created_at, labels_json, options_json)
+  - ✅ Indexes on name and driver for efficient lookups
+  - ✅ Methods: saveVolume(), loadAllVolumes(), deleteVolume()
+  - ✅ Atomic transactions for all operations
+  - ✅ Files: `Sources/ContainerBridge/StateStore.swift` (+80 lines)
 
-- [ ] **Implement volume pruning**
-  - Find dangling volumes (not referenced by any container)
-  - Delete dangling volumes
-  - Calculate space reclaimed
-  - Files: `Sources/ContainerBridge/VolumeManager.swift` (pruneVolumes method)
+#### VolumeManager Actor ✅ COMPLETE
 
-#### Volume API Endpoints
+- [x] **Implement VolumeManager actor**
+  - ✅ Track named volumes: [name: VolumeMetadata]
+  - ✅ Store volumes in `~/.arca/volumes/`
+  - ✅ Support "local" driver only (store on host filesystem)
+  - ✅ SQLite persistence via StateStore
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift` (370 lines)
 
-- [ ] **POST /volumes/create - Create volume**
-  - Parse VolumeCreateRequest
-  - Validate driver (only "local" supported)
-  - Call volumeManager.createVolume()
-  - Return Volume response
-  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+- [x] **Implement volume creation**
+  - ✅ Create directory under `~/.arca/volumes/{name}/`
+  - ✅ Store volume metadata (name, driver, labels, created date)
+  - ✅ Auto-generate volume names if not provided
+  - ✅ Return Volume response
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift:createVolume()`
 
-- [ ] **GET /volumes - List volumes**
-  - Parse filters query parameter
-  - Call volumeManager.listVolumes(filters:)
-  - Return VolumeListResponse
-  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+- [x] **Implement volume listing and inspection**
+  - ✅ listVolumes(filters:) - Support filters: name, label
+  - ✅ inspectVolume(name:) - Return full volume details
+  - ✅ Calculate volume size via filesystem enumeration
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift`
 
-- [ ] **GET /volumes/{name} - Inspect volume**
-  - Parse volume name
-  - Call volumeManager.inspectVolume()
-  - Return Volume object
-  - Error handling: 404 if not found
-  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+- [x] **Implement volume deletion**
+  - ✅ Delete volume directory
+  - ✅ Remove metadata from StateStore
+  - ✅ Error handling: 404 if not found
+  - ⚠️ Volume usage checking TODO (currently allows deletion even if in use)
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift:deleteVolume()`
 
-- [ ] **DELETE /volumes/{name} - Delete volume**
-  - Parse volume name and force parameter
-  - Call volumeManager.deleteVolume(force:)
-  - Return 204 No Content on success
-  - Error handling: 404 if not found, 409 if in use
-  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+- [x] **Implement volume pruning**
+  - ✅ Find volumes (dangling filter TODO - needs container integration)
+  - ✅ Delete volumes and calculate space reclaimed
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift:pruneVolumes()`
 
-- [ ] **POST /volumes/prune - Prune volumes**
-  - Parse filters query parameter
-  - Call volumeManager.pruneVolumes(filters:)
-  - Return VolumePruneResponse
-  - Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift`
+#### Volume API Endpoints ✅ COMPLETE
 
-- [ ] **Register volume routes in ArcaDaemon**
-  - POST /volumes/create → handleCreateVolume
-  - GET /volumes → handleListVolumes
-  - GET /volumes/{name} → handleInspectVolume
-  - DELETE /volumes/{name} → handleDeleteVolume
-  - POST /volumes/prune → handlePruneVolumes
-  - Files: `Sources/ArcaDaemon/ArcaDaemon.swift`
+- [x] **POST /volumes/create - Create volume**
+  - ✅ Parse VolumeCreateRequest
+  - ✅ Validate driver (only "local" supported)
+  - ✅ Call volumeManager.createVolume()
+  - ✅ Return Volume response (201 Created)
+  - ✅ Tested: `docker volume create my-volume`
+
+- [x] **GET /volumes - List volumes**
+  - ✅ Parse filters query parameter
+  - ✅ Call volumeManager.listVolumes(filters:)
+  - ✅ Return VolumeListResponse
+  - ✅ Tested: `docker volume ls`
+
+- [x] **GET /volumes/{name} - Inspect volume**
+  - ✅ Parse volume name
+  - ✅ Call volumeManager.inspectVolume()
+  - ✅ Return Volume object
+  - ✅ Error handling: 404 if not found
+  - ✅ Tested: `docker volume inspect my-volume`
+
+- [x] **DELETE /volumes/{name} - Delete volume**
+  - ✅ Parse volume name and force parameter
+  - ✅ Call volumeManager.deleteVolume(force:)
+  - ✅ Return 204 No Content on success
+  - ✅ Error handling: 404 if not found, 409 if in use (TODO: implement usage check)
+  - ✅ Tested: `docker volume rm my-volume`
+
+- [x] **POST /volumes/prune - Prune volumes**
+  - ✅ Parse filters query parameter
+  - ✅ Call volumeManager.pruneVolumes(filters:)
+  - ✅ Return VolumePruneResponse (volumesDeleted, spaceReclaimed)
+  - ✅ Tested: `docker volume prune -f`
+
+- [x] **Register volume routes in ArcaDaemon**
+  - ✅ POST /volumes/create → handleCreateVolume
+  - ✅ GET /volumes → handleListVolumes
+  - ✅ GET /volumes/{name} → handleInspectVolume
+  - ✅ DELETE /volumes/{name} → handleDeleteVolume
+  - ✅ POST /volumes/prune → handlePruneVolumes
+  - ✅ VolumeManager initialized with StateStore
+  - ✅ Graceful degradation if VolumeManager fails
+  - ✅ Files: `Sources/ArcaDaemon/ArcaDaemon.swift` (+110 lines)
+  - ✅ Files: `Sources/DockerAPI/Handlers/VolumeHandlers.swift` (230 lines)
 
 #### Container-Volume Integration
 
@@ -1924,7 +1951,9 @@ cd tests/compose/web-redis && docker compose up -d  # Web + Redis works
 - ✅ **Task 1: Container Persistence** - COMPLETE (Schema, StateStore, Integration, Reconciliation)
 - ✅ **Task 2: Container Recreation** - COMPLETE (recreate from persisted state, crash recovery, graceful shutdown)
 - ✅ **Task 3: Restart Policies** - COMPLETE (always, unless-stopped, on-failure, no)
-- ✅ **Task 4: Volume Support** - COMPLETE (VirtioFS bind mounts, read-only, persistence)
+- ✅ **Task 4: Bind Mount Support** - COMPLETE (VirtioFS bind mounts, read-only, persistence)
+  - **Note**: This is BIND MOUNT support only (`-v /host:/container`), NOT named volumes
+  - Named volume system (VolumeManager, `/volumes/*` API) is tracked separately (see "Phase 3.7: Named Volumes")
 - ✅ **Task 5: Network Persistence** - COMPLETE (StateStore integration, OVN reconciliation)
 - ⏳ **Task 6: Control Plane as Container** - NOT STARTED
 - ⏳ **Task 7: Integration & Testing** - NOT STARTED
@@ -2119,7 +2148,9 @@ NetworkManager → Networks (reconciled from OVN on startup)
 
 **Known Limitation**: Short-lived containers (<1-2s) + immediate daemon crash may not persist real exit code. Crash recovery marks them as killed (exit code 137) instead. This affects 3/8 tests but represents <5% of real-world scenarios. Graceful shutdown (95% of cases) works correctly. See Task 8 for future improvement.
 
-#### Task 4: Volume Support ✅ COMPLETE
+#### Task 4: Bind Mount Support ✅ COMPLETE
+
+**Scope**: This task implements BIND MOUNT support only (`-v /host:/container`), NOT the full named volume system. Named volumes (VolumeManager, `/volumes/*` API endpoints) are tracked separately in "Phase 3.7: Named Volumes (Future)".
 
 **Note**: Needed for control plane persistence (OVN databases) and general Docker compatibility
 

@@ -13,6 +13,7 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var imageManager: ImageManager?
     private var execManager: ExecManager?
     private var networkManager: NetworkManager?
+    private var volumeManager: VolumeManager?
     private var sharedNetwork: SharedVmnetNetwork?
 
     public init(socketPath: String, logger: Logger) {
@@ -238,6 +239,28 @@ public final class ArcaDaemon: @unchecked Sendable {
             networkManager = nil
         }
 
+        // Initialize VolumeManager
+        let vm = VolumeManager(
+            volumesBasePath: nil,  // Use default ~/.arca/volumes
+            stateStore: stateStore,
+            logger: logger
+        )
+        self.volumeManager = vm
+        var volumeManager: VolumeManager? = vm
+
+        do {
+            try await vm.initialize()
+            logger.info("Volume manager initialized successfully")
+        } catch {
+            logger.error("Failed to initialize volume manager", metadata: [
+                "error": "\(error)"
+            ])
+            // Continue without volume manager - volume features won't be available
+            logger.warning("Daemon will continue without volume manager - volume features disabled")
+            self.volumeManager = nil
+            volumeManager = nil
+        }
+
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
             .use(RequestLogger(logger: logger))
@@ -247,7 +270,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             containerManager: containerManager,
             imageManager: imageManager,
             execManager: execManager,
-            networkManager: networkManager
+            networkManager: networkManager,
+            volumeManager: volumeManager
         )
         let router = builder.build()
 
@@ -289,7 +313,8 @@ public final class ArcaDaemon: @unchecked Sendable {
         containerManager: ContainerBridge.ContainerManager,
         imageManager: ImageManager,
         execManager: ExecManager,
-        networkManager: NetworkManager?
+        networkManager: NetworkManager?,
+        volumeManager: VolumeManager?
     ) {
         logger.info("Registering API routes")
 
@@ -298,6 +323,7 @@ public final class ArcaDaemon: @unchecked Sendable {
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
+        let volumeHandlers = volumeManager.map { VolumeHandlers(volumeManager: $0, logger: logger) }
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -872,10 +898,99 @@ public final class ArcaDaemon: @unchecked Sendable {
                     return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
                 }
             }
+        }
 
-            logger.info("Registered 23 routes (including 6 network routes)")
+        // Volume routes (if VolumeManager is available)
+        if let volumeHandlers = volumeHandlers {
+            // POST /volumes/create - Create volume
+            _ = builder.post("/volumes/create") { request in
+                do {
+                    let createRequest = try request.jsonBody(VolumeCreateRequest.self)
+                    let result = await volumeHandlers.handleCreateVolume(request: createRequest)
+
+                    switch result {
+                    case .success(let volume):
+                        return .standard(HTTPResponse.created(volume))
+                    case .failure(let error):
+                        return .standard(HTTPResponse.error(error.description, status: error.statusCode))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
+                }
+            }
+
+            // GET /volumes - List volumes
+            _ = builder.get("/volumes") { request in
+                do {
+                    let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
+                    let result = await volumeHandlers.handleListVolumes(filters: filters)
+
+                    switch result {
+                    case .success(let response):
+                        return .standard(HTTPResponse.ok(response))
+                    case .failure(let error):
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid filters parameter"))
+                }
+            }
+
+            // GET /volumes/{name} - Inspect volume
+            _ = builder.get("/volumes/{name}") { request in
+                guard let name = request.pathParam("name") else {
+                    return .standard(HTTPResponse.badRequest("Missing volume name"))
+                }
+
+                let result = await volumeHandlers.handleInspectVolume(name: name)
+
+                switch result {
+                case .success(let volume):
+                    return .standard(HTTPResponse.ok(volume))
+                case .failure(let error):
+                    return .standard(HTTPResponse.error(error.description, status: error.statusCode))
+                }
+            }
+
+            // DELETE /volumes/{name} - Delete volume
+            _ = builder.delete("/volumes/{name}") { request in
+                guard let name = request.pathParam("name") else {
+                    return .standard(HTTPResponse.badRequest("Missing volume name"))
+                }
+
+                let force = request.queryBool("force", default: false)
+                let result = await volumeHandlers.handleDeleteVolume(name: name, force: force)
+
+                switch result {
+                case .success:
+                    return .standard(HTTPResponse.noContent())
+                case .failure(let error):
+                    return .standard(HTTPResponse.error(error.description, status: error.statusCode))
+                }
+            }
+
+            // POST /volumes/prune - Prune volumes
+            _ = builder.post("/volumes/prune") { request in
+                do {
+                    let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
+                    let result = await volumeHandlers.handlePruneVolumes(filters: filters)
+
+                    switch result {
+                    case .success(let response):
+                        return .standard(HTTPResponse.ok(response))
+                    case .failure(let error):
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid filters parameter"))
+                }
+            }
+
+            logger.info("Registered 28 routes (including 6 network routes, 5 volume routes)")
+        } else if networkHandlers != nil {
+            logger.info("Registered 23 routes (including 6 network routes, volume routes skipped)")
         } else {
-            logger.info("Registered 17 routes (network routes skipped - NetworkManager not available)")
+            logger.info("Registered 17 routes (network and volume routes skipped)")
         }
     }
 
