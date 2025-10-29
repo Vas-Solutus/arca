@@ -251,6 +251,10 @@ public final class ArcaDaemon: @unchecked Sendable {
         do {
             try await vm.initialize()
             logger.info("Volume manager initialized successfully")
+
+            // Wire up VolumeManager reference in ContainerManager for named volume resolution
+            await containerManager.setVolumeManager(vm)
+            logger.debug("ContainerManager configured with VolumeManager")
         } catch {
             logger.error("Failed to initialize volume manager", metadata: [
                 "error": "\(error)"

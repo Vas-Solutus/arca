@@ -38,6 +38,9 @@ public actor ContainerManager {
     // Optional NetworkManager reference for auto-attachment to networks
     private var networkManager: NetworkManager?
 
+    // Optional VolumeManager reference for named volume resolution
+    private var volumeManager: VolumeManager?
+
     // Shared vmnet network for Layer 2 connectivity (VLAN networking)
     private var sharedNetwork: SharedVmnetNetwork?
 
@@ -108,6 +111,11 @@ public actor ContainerManager {
     /// Set the NetworkManager (called after NetworkManager is initialized)
     public func setNetworkManager(_ manager: NetworkManager) {
         self.networkManager = manager
+    }
+
+    /// Set the VolumeManager (called after VolumeManager is initialized)
+    public func setVolumeManager(_ manager: VolumeManager) {
+        self.volumeManager = manager
     }
 
     /// Initialize the Containerization manager
@@ -634,8 +642,8 @@ public actor ContainerManager {
         let (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
         logWriters[dockerID] = (stdoutWriter, stderrWriter)
 
-        // Parse bind mounts
-        let mounts = try parseBindMounts(binds)
+        // Parse bind mounts and named volumes
+        let mounts = try await parseVolumeMounts(binds)
         if !mounts.isEmpty {
             logger.info("Container has volume mounts", metadata: [
                 "docker_id": "\(dockerID)",
@@ -954,8 +962,8 @@ public actor ContainerManager {
                     (stdoutLogWriter, stderrLogWriter) = writers
                 }
 
-                // Parse volume mounts from persisted binds
-                let recreatedMounts = try parseBindMounts(info.hostConfig.binds)
+                // Parse volume mounts from persisted binds (includes both bind mounts and named volumes)
+                let recreatedMounts = try await parseVolumeMounts(info.hostConfig.binds)
 
                 // Recreate the LinuxContainer with the persisted configuration
                 let container = try await createNativeContainer(
@@ -1666,9 +1674,11 @@ public actor ContainerManager {
 
     // MARK: - Volume/Mount Helpers
 
-    /// Parse Docker bind mount strings into Containerization.Mount objects
-    /// Format: "/host/path:/container/path[:ro]"
-    private func parseBindMounts(_ binds: [String]?) throws -> [Containerization.Mount] {
+    /// Parse Docker volume mount strings into Containerization.Mount objects
+    /// Supports both bind mounts and named volumes:
+    /// - Bind mounts: "/host/path:/container/path[:ro]" or "relative/path:/container/path[:ro]"
+    /// - Named volumes: "volume-name:/container/path[:ro]"
+    private func parseVolumeMounts(_ binds: [String]?) async throws -> [Containerization.Mount] {
         guard let binds = binds else {
             return []
         }
@@ -1682,12 +1692,72 @@ public actor ContainerManager {
                 continue
             }
 
-            let hostPath = String(parts[0])
+            let source = String(parts[0])
             let containerPath = String(parts[1])
             let isReadOnly = parts.count >= 3 && parts[2] == "ro"
 
-            // Expand tilde in host path
-            let expandedHostPath = NSString(string: hostPath).expandingTildeInPath
+            // Determine if this is a named volume or bind mount
+            // Logic follows Docker's behavior:
+            // 1. If source contains "/" or starts with "." or "~", it's a path (bind mount)
+            // 2. Otherwise, check if it exists as a file/directory in current directory
+            // 3. If not, treat it as a named volume
+            let looksLikePath = source.contains("/") || source.hasPrefix(".") || source.hasPrefix("~")
+
+            let expandedHostPath: String
+            var isNamedVolume = false
+
+            if looksLikePath {
+                // It's a path - expand it (handles absolute, relative, and tilde paths)
+                if source.hasPrefix("/") {
+                    // Absolute path
+                    expandedHostPath = source
+                } else if source.hasPrefix("~") {
+                    // Tilde path
+                    expandedHostPath = NSString(string: source).expandingTildeInPath
+                } else {
+                    // Relative path - resolve to absolute
+                    let currentDir = FileManager.default.currentDirectoryPath
+                    expandedHostPath = NSString(string: currentDir).appendingPathComponent(source)
+                }
+            } else {
+                // No path separators - could be a file in current directory or a named volume
+                // Check if it exists as a file/directory in current directory
+                let currentDir = FileManager.default.currentDirectoryPath
+                let potentialPath = NSString(string: currentDir).appendingPathComponent(source)
+
+                if FileManager.default.fileExists(atPath: potentialPath) {
+                    // It's a file/directory in current directory - bind mount
+                    expandedHostPath = potentialPath
+                    logger.debug("Treating as bind mount to file in current directory", metadata: [
+                        "source": "\(source)",
+                        "resolvedPath": "\(expandedHostPath)"
+                    ])
+                } else {
+                    // It doesn't exist - treat as named volume
+                    guard let volumeManager = volumeManager else {
+                        logger.error("Named volume requested but VolumeManager not available", metadata: [
+                            "volume": "\(source)"
+                        ])
+                        throw ContainerManagerError.volumeManagerNotAvailable
+                    }
+
+                    do {
+                        let volumeMetadata = try await volumeManager.inspectVolume(name: source)
+                        expandedHostPath = volumeMetadata.mountpoint
+                        isNamedVolume = true
+                        logger.info("Resolved named volume", metadata: [
+                            "volume": "\(source)",
+                            "mountpoint": "\(expandedHostPath)"
+                        ])
+                    } catch {
+                        logger.error("Named volume not found", metadata: [
+                            "volume": "\(source)",
+                            "error": "\(error)"
+                        ])
+                        throw ContainerManagerError.volumeNotFound(source)
+                    }
+                }
+            }
 
             // Validate host path exists (create directory if it doesn't exist for rw mounts)
             let fileManager = FileManager.default
@@ -1730,8 +1800,10 @@ public actor ContainerManager {
 
             mounts.append(mount)
 
-            logger.debug("Parsed bind mount", metadata: [
-                "source": "\(expandedHostPath)",
+            let mountType = isNamedVolume ? "named volume" : "bind mount"
+            logger.debug("Parsed \(mountType)", metadata: [
+                "source": "\(source)",
+                "resolvedPath": "\(expandedHostPath)",
                 "destination": "\(containerPath)",
                 "readOnly": "\(isReadOnly)"
             ])
@@ -2109,6 +2181,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case imageNotFound(String)
     case invalidConfiguration(String)
     case volumeSourceNotFound(String)
+    case volumeNotFound(String)
+    case volumeManagerNotAvailable
 
     public var description: String {
         switch self {
@@ -2130,6 +2204,10 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "Invalid configuration: \(msg)"
         case .volumeSourceNotFound(let path):
             return "Volume source path does not exist: \(path)"
+        case .volumeNotFound(let name):
+            return "No such volume: \(name)"
+        case .volumeManagerNotAvailable:
+            return "VolumeManager not available - named volumes are not supported"
         }
     }
 }
