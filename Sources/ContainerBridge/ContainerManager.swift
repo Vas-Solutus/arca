@@ -320,61 +320,29 @@ public actor ContainerManager {
     // MARK: - Graceful Shutdown
 
     /// Gracefully shutdown ContainerManager
-    /// Waits for monitoring tasks to complete (with timeout) before returning
+    /// Cancels all monitoring tasks and returns immediately
     public func shutdown() async {
         logger.info("ContainerManager graceful shutdown started")
 
-        // Wait for all monitoring tasks to complete (with timeout)
-        let shutdownTimeout: Duration = .seconds(5)
         let taskCount = monitoringTasks.count
-
-        logger.info("Waiting for monitoring tasks to complete", metadata: [
-            "task_count": "\(taskCount)",
-            "timeout_seconds": "5"
+        logger.info("Cancelling monitoring tasks", metadata: [
+            "task_count": "\(taskCount)"
         ])
 
-        // Create a task group to wait for all monitoring tasks
-        await withTaskGroup(of: Void.self) { group in
-            // Add all monitoring tasks to the group
-            for (dockerID, task) in monitoringTasks {
-                group.addTask {
-                    // Wait for the task or timeout
-                    do {
-                        try await withThrowingTaskGroup(of: Void.self) { timeoutGroup in
-                            // Add the monitoring task
-                            timeoutGroup.addTask {
-                                await task.value
-                            }
-
-                            // Add timeout task
-                            timeoutGroup.addTask {
-                                try await Task.sleep(for: shutdownTimeout)
-                                throw CancellationError()
-                            }
-
-                            // Wait for first to complete
-                            try await timeoutGroup.next()
-                            timeoutGroup.cancelAll()
-                        }
-
-                        self.logger.debug("Monitoring task completed during shutdown", metadata: [
-                            "container": "\(dockerID)"
-                        ])
-                    } catch {
-                        // Timeout or cancellation - that's ok
-                        self.logger.debug("Monitoring task timed out during shutdown", metadata: [
-                            "container": "\(dockerID)"
-                        ])
-                    }
-                }
-            }
-
-            // Wait for all tasks in the group
-            await group.waitForAll()
+        // Cancel all monitoring tasks - they will clean up asynchronously
+        // We don't wait for them because they block on container.wait() indefinitely
+        for (dockerID, task) in monitoringTasks {
+            task.cancel()
+            logger.debug("Cancelled monitoring task", metadata: [
+                "container": "\(dockerID)"
+            ])
         }
 
+        // Clear the monitoring tasks dictionary
+        monitoringTasks.removeAll()
+
         logger.info("ContainerManager graceful shutdown complete", metadata: [
-            "tasks_awaited": "\(taskCount)"
+            "tasks_cancelled": "\(taskCount)"
         ])
     }
 
@@ -1109,6 +1077,47 @@ public actor ContainerManager {
                 logger.debug("Container networkMode is 'none', skipping auto-attachment", metadata: [
                     "container": "\(dockerID)"
                 ])
+            }
+        } else if let networkManager = networkManager,
+                  !info.networkAttachments.isEmpty {
+            // Container has persisted network attachments - restore them
+            logger.info("Restoring persisted network attachments", metadata: [
+                "container": "\(dockerID)",
+                "attachmentCount": "\(info.networkAttachments.count)"
+            ])
+
+            let containerName = info.name ?? String(dockerID.prefix(12))
+
+            for (networkID, attachment) in info.networkAttachments {
+                do {
+                    logger.debug("Restoring network attachment", metadata: [
+                        "container": "\(dockerID)",
+                        "network": "\(networkID)",
+                        "ip": "\(attachment.ip)"
+                    ])
+
+                    // Reattach to the network
+                    let newAttachment = try await networkManager.attachContainerToNetwork(
+                        containerID: dockerID,
+                        container: nativeContainer,
+                        networkID: networkID,
+                        containerName: containerName,
+                        aliases: attachment.aliases
+                    )
+
+                    logger.info("Network attachment restored successfully", metadata: [
+                        "container": "\(dockerID)",
+                        "network": "\(networkID)",
+                        "ip": "\(newAttachment.ip)"
+                    ])
+                } catch {
+                    // Log the error but continue with other attachments
+                    logger.error("Failed to restore network attachment", metadata: [
+                        "container": "\(dockerID)",
+                        "network": "\(networkID)",
+                        "error": "\(error)"
+                    ])
+                }
             }
         }
 
