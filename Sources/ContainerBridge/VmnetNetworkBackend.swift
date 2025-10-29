@@ -186,6 +186,14 @@ public actor VmnetNetworkBackend {
         return [:]
     }
 
+    /// Clean up in-memory network state for a stopped/exited container
+    /// Called when container stops to ensure state is clean for restart
+    /// vmnet backend doesn't need to do anything as containers are attached at creation time
+    public func cleanupStoppedContainer(containerID: String) {
+        // No-op for vmnet backend - no dynamic state to clean up
+        // Containers are attached at creation time and cleaned up automatically
+    }
+
     // MARK: - Subnet Allocation
 
     private var nextSubnetIndex: Int = 0

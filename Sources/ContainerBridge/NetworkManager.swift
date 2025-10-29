@@ -533,6 +533,19 @@ public actor NetworkManager {
         return await getNetwork(id: networkID)?.name
     }
 
+    /// Clean up in-memory network state for a stopped/exited container
+    /// Called when container stops to ensure state is clean for restart
+    public func cleanupStoppedContainer(containerID: String) async {
+        // Clean up in both backends (container could be in either)
+        if let backend = ovsBackend {
+            await backend.cleanupStoppedContainer(containerID: containerID)
+        }
+
+        if let backend = vmnetBackend {
+            await backend.cleanupStoppedContainer(containerID: containerID)
+        }
+    }
+
     // MARK: - Helper Methods
 
     /// Generate a Docker-compatible network ID (64-char hex)

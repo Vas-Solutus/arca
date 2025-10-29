@@ -1008,6 +1008,15 @@ public actor ContainerManager {
             "state": "running"
         ])
 
+        // DEBUG: Log network attachment state before attachment logic
+        logger.debug("Network attachment state before attachment logic", metadata: [
+            "container": "\(dockerID)",
+            "networkAttachments_isEmpty": "\(info.networkAttachments.isEmpty)",
+            "networkAttachments_count": "\(info.networkAttachments.count)",
+            "networkAttachments_keys": "\(info.networkAttachments.keys.joined(separator: ", "))",
+            "networkMode": "\(info.hostConfig.networkMode)"
+        ])
+
         // Auto-attach to network based on networkMode if no networks are attached
         // Docker CLI sets networkMode in HostConfig and expects the daemon to handle attachment
         if let networkManager = networkManager,
@@ -1081,7 +1090,7 @@ public actor ContainerManager {
         } else if let networkManager = networkManager,
                   !info.networkAttachments.isEmpty {
             // Container has persisted network attachments - restore them
-            logger.info("Restoring persisted network attachments", metadata: [
+            logger.info("🔵 NETWORK RESTORATION: Restoring persisted network attachments", metadata: [
                 "container": "\(dockerID)",
                 "attachmentCount": "\(info.networkAttachments.count)"
             ])
@@ -1223,6 +1232,11 @@ public actor ContainerManager {
         // Push DNS topology updates to remove this container from other containers' view
         for networkID in info.networkAttachments.keys {
             await pushDNSTopologyToNetwork(networkID: networkID)
+        }
+
+        // Clean up in-memory network state (TAP devices are auto-cleaned by VM shutdown)
+        if let networkManager = networkManager {
+            await networkManager.cleanupStoppedContainer(containerID: dockerID)
         }
 
         // Update state
@@ -1414,6 +1428,11 @@ public actor ContainerManager {
         containerInfo.finishedAt = Date()
         containerInfo.pid = 0
         containers[dockerID] = containerInfo
+
+        // Clean up in-memory network state (TAP devices are auto-cleaned by VM shutdown)
+        if let networkManager = networkManager {
+            await networkManager.cleanupStoppedContainer(containerID: dockerID)
+        }
 
         // Persist container state (not stopped by user - this was a natural exit)
         do {

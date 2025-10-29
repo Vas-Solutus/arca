@@ -517,9 +517,9 @@ func (s *NetworkServer) DetachContainer(ctx context.Context, req *pb.DetachConta
 	}
 
 	// Remove OVN logical switch port (this also removes DHCP lease and DNS records)
-	portName := fmt.Sprintf("lsp-%s", req.ContainerId[:12])
-	log.Printf("Removing OVN logical switch port %s from network %s", portName, req.NetworkId)
-	if err := runCommand("ovn-nbctl", "lsp-del", portName); err != nil {
+	ovnPortName := fmt.Sprintf("lsp-%s", req.ContainerId[:12])
+	log.Printf("Removing OVN logical switch port %s from network %s", ovnPortName, req.NetworkId)
+	if err := runCommand("ovn-nbctl", "lsp-del", ovnPortName); err != nil {
 		log.Printf("Warning: Failed to delete logical switch port: %v", err)
 		// Continue anyway - port may not exist
 	}
@@ -527,6 +527,17 @@ func (s *NetworkServer) DetachContainer(ctx context.Context, req *pb.DetachConta
 	// - Releases IP allocation when port is deleted
 	// - Removes DNS records associated with the port (if using "dynamic hostname")
 	// - Cancels DHCP leases
+
+	// Remove OVS internal port (created by TAP relay)
+	// Port name must match the format used in AttachContainer
+	// Normally the relay's defer should clean this up, but if the relay crashes/is killed,
+	// the defer might not run, so we explicitly delete it here for safety
+	ovsPortName := fmt.Sprintf("p-%s%s", req.ContainerId[:6], req.NetworkId[:6])
+	log.Printf("Removing OVS internal port %s from br-int", ovsPortName)
+	if err := deleteOVSPort("br-int", ovsPortName); err != nil {
+		log.Printf("Warning: Failed to delete OVS port: %v (may have already been cleaned up by relay)", err)
+		// Continue anyway - port may not exist or already deleted by relay defer
+	}
 
 	// Update tracking
 	if s.containerMap[req.NetworkId] != nil {

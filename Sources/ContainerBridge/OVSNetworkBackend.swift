@@ -525,6 +525,77 @@ public actor OVSNetworkBackend {
         ])
     }
 
+    /// Clean up network state for a stopped/exited container
+    /// Called when container stops to ensure state is clean for restart
+    /// Removes OVN/OVS ports via control plane RPC, clears in-memory state, and deletes StateStore records
+    /// TAP devices are already cleaned up automatically by VM shutdown
+    public func cleanupStoppedContainer(containerID: String) async {
+        guard let networkIDs = containerNetworks[containerID] else {
+            return  // Container has no network attachments
+        }
+
+        logger.info("Cleaning up network state for stopped container", metadata: [
+            "container_id": "\(containerID)",
+            "network_count": "\(networkIDs.count)"
+        ])
+
+        // Clean up OVN/OVS resources and in-memory state for each network
+        for networkID in networkIDs {
+            do {
+                // Call control plane's DetachContainer RPC directly via OVN client
+                // This is critical - OVN client talks to control plane, not to the stopped container VM
+                // The control plane will delete both OVN logical switch port and OVS internal port
+                try await ovnClient.detachContainer(containerID: containerID, networkID: networkID)
+
+                logger.debug("OVN/OVS resources cleaned up for stopped container", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)"
+                ])
+            } catch {
+                // Log error but continue - we want to clean up as much as possible
+                logger.error("Failed to clean up OVN/OVS resources for stopped container", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)",
+                    "error": "\(error)"
+                ])
+            }
+
+            // Clear in-memory state
+            if var metadata = networks[networkID] {
+                metadata.containers.remove(containerID)
+                networks[networkID] = metadata
+            }
+
+            // Clear attachment details
+            containerAttachments[networkID]?.removeValue(forKey: containerID)
+
+            // Delete attachment from StateStore
+            do {
+                try await stateStore.deleteNetworkAttachment(containerID: containerID, networkID: networkID)
+                logger.debug("Network attachment deleted from database", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)"
+                ])
+            } catch {
+                logger.error("Failed to delete network attachment from database", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)",
+                    "error": "\(error)"
+                ])
+                // Continue - in-memory state is already updated
+            }
+        }
+
+        // Clear container network tracking
+        containerNetworks.removeValue(forKey: containerID)
+        deviceCounter.removeValue(forKey: containerID)
+
+        logger.info("Network state cleaned up for stopped container", metadata: [
+            "container_id": "\(containerID)",
+            "networks_cleaned": "\(networkIDs.count)"
+        ])
+    }
+
     // MARK: - Network Queries
 
     /// Get network metadata by ID
