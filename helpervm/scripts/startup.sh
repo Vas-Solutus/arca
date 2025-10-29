@@ -185,45 +185,6 @@ echo "Testing basic ovn-nbctl connectivity..."
 echo "  Running: ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock list NB_Global"
 ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock list NB_Global 2>&1 || echo "ERROR: ovn-nbctl list failed with exit code $?"
 
-echo ""
-echo "Testing DHCP options creation..."
-echo "  Note: Using 'ovn-nbctl create' instead of 'dhcp-options-create'"
-echo "  (dhcp-options-create does not return UUID - known OVN limitation)"
-echo "  Running: ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock create dhcp_options cidr=192.168.99.0/24"
-TEST_UUID=$(ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock create dhcp_options cidr=192.168.99.0/24 2>&1)
-EXIT_CODE=$?
-echo "  Exit code: $EXIT_CODE"
-echo "  Test DHCP UUID: $TEST_UUID"
-if [ -n "$TEST_UUID" ] && [ "$EXIT_CODE" -eq 0 ]; then
-    echo "✓ DHCP options creation working - UUID: $TEST_UUID"
-    # Clean up test entry
-    ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock destroy dhcp_options "$TEST_UUID" 2>/dev/null || true
-else
-    echo "ERROR: DHCP options creation returned empty UUID!"
-    echo ""
-    echo "=== Diagnostic Information ==="
-    echo ""
-    echo "OVN northd log (most recent 50 lines):"
-    tail -50 /var/log/ovn/ovn-northd.log
-    echo ""
-    echo "OVN northbound database log (most recent 50 lines):"
-    tail -50 /var/log/ovn/ovsdb-server-nb.log
-    echo ""
-    echo "OVN southbound database log (most recent 50 lines):"
-    tail -50 /var/log/ovn/ovsdb-server-sb.log
-    echo ""
-    echo "OVN northbound database connection test:"
-    ovn-nbctl --db=unix:/var/run/ovn/ovnnb_db.sock show 2>&1 || echo "Failed to connect to NB database"
-    echo ""
-    echo "Socket permissions:"
-    ls -la /var/run/ovn/ 2>&1 || echo "Cannot list /var/run/ovn/"
-    echo ""
-    echo "Process status:"
-    ps aux | grep -E "(ovn-northd|ovsdb-server)" | grep -v grep || echo "No OVN processes found"
-    echo ""
-    echo "=== End Diagnostic Information ==="
-fi
-
 STARTUP_END=$(date +%s)
 TOTAL_STARTUP=$((STARTUP_END - STARTUP_START))
 echo "========================================================"

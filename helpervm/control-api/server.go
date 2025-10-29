@@ -53,38 +53,34 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if logical switch already exists (idempotency)
-	if _, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "name"); err == nil {
+	// Check if logical switch already exists to reuse existing VLAN tag (idempotency)
+	var vlanTag uint32
+	vlanStr, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "external_ids:vlan_tag")
+	if err == nil {
 		// Logical switch exists - get existing VLAN tag
-		vlanStr, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "external_ids:vlan_tag")
 		vlanStr = strings.Trim(strings.TrimSpace(vlanStr), "\"")
-		if err != nil || vlanStr == "" {
-			log.Printf("WARNING: Logical switch %s exists but has no VLAN tag", req.NetworkId)
-			vlanStr = "0"
+		if vlanStr != "" {
+			if _, err := fmt.Sscanf(vlanStr, "%d", &vlanTag); err == nil {
+				log.Printf("Logical switch %s already exists with VLAN tag %d (idempotent - will ensure all components exist)", req.NetworkId, vlanTag)
+			}
 		}
-
-		log.Printf("Logical switch %s already exists with VLAN tag %s (idempotent)", req.NetworkId, vlanStr)
-
-		return &pb.CreateBridgeResponse{
-			BridgeName: "br-int", // All networks use br-int now
-			Success:    true,
-		}, nil
 	}
 
-	// Allocate VLAN tag for this network (100-4095)
-	vlanTag := s.nextVLAN
-	if vlanTag > 4095 {
-		return &pb.CreateBridgeResponse{
-			Success: false,
-			Error:   "VLAN tag exhaustion: maximum 3996 networks reached (100-4095)",
-		}, nil
+	// Allocate VLAN tag if not already assigned
+	if vlanTag == 0 {
+		vlanTag = s.nextVLAN
+		if vlanTag > 4095 {
+			return &pb.CreateBridgeResponse{
+				Success: false,
+				Error:   "VLAN tag exhaustion: maximum 3996 networks reached (100-4095)",
+			}, nil
+		}
+		s.nextVLAN++
+		log.Printf("Allocated new VLAN tag %d for network %s", vlanTag, req.NetworkId)
 	}
-	s.nextVLAN++
 
-	log.Printf("Allocated VLAN tag %d for network %s", vlanTag, req.NetworkId)
-
-	// Create OVN logical switch
-	if err := runCommand("ovn-nbctl", "ls-add", req.NetworkId); err != nil {
+	// Create OVN logical switch (idempotent)
+	if err := runCommand("ovn-nbctl", "--may-exist", "ls-add", req.NetworkId); err != nil {
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to create OVN logical switch: %v", err),
@@ -116,84 +112,96 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		}, nil
 	}
 
-	// Configure OVN DHCP options for this network
+	// Configure OVN DHCP options for this network (idempotent)
 	log.Printf("Configuring OVN DHCP for network %s (subnet: %s, gateway: %s, VLAN: %d)", req.NetworkId, req.Subnet, req.Gateway, vlanTag)
 
-	// Generate a MAC address for the DHCP server (gateway) based on VLAN tag
-	// This ensures uniqueness across networks
-	serverMAC := fmt.Sprintf("00:00:00:00:%02x:%02x", (vlanTag>>8)&0xff, vlanTag&0xff)
+	// Check if DHCP options already exist for this network
+	dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "other_config:dhcp_options")
+	dhcpUUID = strings.Trim(strings.TrimSpace(dhcpUUID), "\"")
 
-	// Create DHCP options using 'ovn-nbctl create' which returns the UUID directly
-	// Note: 'dhcp-options-create' does NOT return a UUID (known OVN limitation)
-	// Format: create dhcp_options cidr=SUBNET options="key1"="value1" "key2"="value2" ...
-	dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "create", "dhcp_options",
-		fmt.Sprintf("cidr=%s", req.Subnet),
-		fmt.Sprintf(`options="lease_time"="3600" "router"="%s" "server_id"="%s" "server_mac"="%s" "dns_server"="{%s}"`,
-			req.Gateway, req.Gateway, serverMAC, req.Gateway))
+	if err != nil || dhcpUUID == "" {
+		// DHCP options don't exist yet, create them
+		log.Printf("Creating new DHCP options for network %s", req.NetworkId)
 
-	if err != nil {
-		log.Printf("ERROR: Failed to create DHCP options for subnet %s: %v (output: %q)", req.Subnet, err, dhcpUUID)
-		// Continue anyway - DHCP is optional enhancement
-	} else {
-		// Trim whitespace from UUID
-		dhcpUUID = strings.TrimSpace(dhcpUUID)
-		log.Printf("Created DHCP options with UUID: %s", dhcpUUID)
+		// Generate a MAC address for the DHCP server (gateway) based on VLAN tag
+		// This ensures uniqueness across networks
+		serverMAC := fmt.Sprintf("00:00:00:00:%02x:%02x", (vlanTag>>8)&0xff, vlanTag&0xff)
 
-		// Validate UUID is not empty
-		if dhcpUUID == "" {
-			log.Printf("ERROR: DHCP UUID is empty! Command succeeded but returned no output.")
+		// Create DHCP options using 'ovn-nbctl create' which returns the UUID directly
+		// Note: 'dhcp-options-create' does NOT return a UUID (known OVN limitation)
+		// Format: create dhcp_options cidr=SUBNET options="key1"="value1" "key2"="value2" ...
+		dhcpUUID, err = runCommandWithOutput("ovn-nbctl", "create", "dhcp_options",
+			fmt.Sprintf("cidr=%s", req.Subnet),
+			fmt.Sprintf(`options="lease_time"="3600" "router"="%s" "server_id"="%s" "server_mac"="%s" "dns_server"="{%s}"`,
+				req.Gateway, req.Gateway, serverMAC, req.Gateway))
+
+		if err != nil {
+			log.Printf("ERROR: Failed to create DHCP options for subnet %s: %v (output: %q)", req.Subnet, err, dhcpUUID)
+			// Continue anyway - DHCP is optional enhancement
 		} else {
-			log.Printf("DHCP options configured successfully for network %s", req.NetworkId)
+			// Trim whitespace from UUID
+			dhcpUUID = strings.TrimSpace(dhcpUUID)
+			log.Printf("Created DHCP options with UUID: %s", dhcpUUID)
 
-			// Store DHCP UUID in logical switch other_config for later use
-			if err := runCommand("ovn-nbctl", "set", "logical_switch", req.NetworkId,
-				fmt.Sprintf("other_config:dhcp_options=%s", dhcpUUID)); err != nil {
-				log.Printf("Warning: Failed to store DHCP UUID in logical switch: %v", err)
+			// Validate UUID is not empty
+			if dhcpUUID == "" {
+				log.Printf("ERROR: DHCP UUID is empty! Command succeeded but returned no output.")
+			} else {
+				log.Printf("DHCP options configured successfully for network %s", req.NetworkId)
+
+				// Store DHCP UUID in logical switch other_config for later use
+				if err := runCommand("ovn-nbctl", "set", "logical_switch", req.NetworkId,
+					fmt.Sprintf("other_config:dhcp_options=%s", dhcpUUID)); err != nil {
+					log.Printf("Warning: Failed to store DHCP UUID in logical switch: %v", err)
+				}
 			}
 		}
+	} else {
+		// DHCP options already exist, reuse them
+		log.Printf("Reusing existing DHCP options UUID: %s (idempotent)", dhcpUUID)
 	}
 
-	// Create OVN logical router for this network
+	// Create OVN logical router for this network (idempotent)
 	// This provides the gateway functionality (responds to pings, ARP, etc.)
 	routerName := fmt.Sprintf("router-%s", req.NetworkId)
 	log.Printf("Creating logical router %s for network %s", routerName, req.NetworkId)
 
-	if err := runCommand("ovn-nbctl", "lr-add", routerName); err != nil {
+	if err := runCommand("ovn-nbctl", "--may-exist", "lr-add", routerName); err != nil {
 		log.Printf("ERROR: Failed to create logical router: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to create logical router: %v", err),
 		}, nil
 	}
 
-	// Create router port with gateway IP/MAC
+	// Create router port with gateway IP/MAC (idempotent)
 	// Format: lrp-{networkID} with gateway IP (e.g., 172.17.0.1/24)
 	routerPortName := fmt.Sprintf("lrp-%s", req.NetworkId)
 	routerMAC := fmt.Sprintf("00:00:00:00:%02x:%02x", (vlanTag>>8)&0xff, vlanTag&0xff)
 
-	if err := runCommand("ovn-nbctl", "lrp-add", routerName, routerPortName,
+	if err := runCommand("ovn-nbctl", "--may-exist", "lrp-add", routerName, routerPortName,
 		routerMAC, req.Gateway+"/"+strings.Split(req.Subnet, "/")[1]); err != nil {
 		log.Printf("ERROR: Failed to create router port: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "lr-del", routerName)
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to create router port: %v", err),
 		}, nil
 	}
 
-	// Create switch port to connect to router
+	// Create switch port to connect to router (idempotent)
 	// Format: lsp-{networkID}-router
 	switchPortName := fmt.Sprintf("lsp-%s-router", req.NetworkId)
 
-	if err := runCommand("ovn-nbctl", "lsp-add", req.NetworkId, switchPortName); err != nil {
+	if err := runCommand("ovn-nbctl", "--may-exist", "lsp-add", req.NetworkId, switchPortName); err != nil {
 		log.Printf("ERROR: Failed to create switch port for router: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "lr-del", routerName)
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to create switch port: %v", err),
@@ -204,8 +212,8 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	if err := runCommand("ovn-nbctl", "lsp-set-type", switchPortName, "router"); err != nil {
 		log.Printf("ERROR: Failed to set switch port type: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "lr-del", routerName)
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to set switch port type: %v", err),
@@ -215,8 +223,8 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 	if err := runCommand("ovn-nbctl", "lsp-set-addresses", switchPortName, "router"); err != nil {
 		log.Printf("ERROR: Failed to set switch port addresses: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "lr-del", routerName)
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to set switch port addresses: %v", err),
@@ -227,8 +235,8 @@ func (s *NetworkServer) CreateBridge(ctx context.Context, req *pb.CreateBridgeRe
 		fmt.Sprintf("router-port=%s", routerPortName)); err != nil {
 		log.Printf("ERROR: Failed to connect switch port to router: %v", err)
 		// Cleanup
-		_ = runCommand("ovn-nbctl", "lr-del", routerName)
-		_ = runCommand("ovn-nbctl", "ls-del", req.NetworkId)
+		_ = runCommand("ovn-nbctl", "--if-exists", "lr-del", routerName)
+		_ = runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId)
 		return &pb.CreateBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to connect switch to router: %v", err),
@@ -268,8 +276,8 @@ func (s *NetworkServer) DeleteBridge(ctx context.Context, req *pb.DeleteBridgeRe
 		// Continue anyway - switch deletion will cascade
 	}
 
-	// Delete OVN logical switch (this removes all ports, DHCP, etc.)
-	if err := runCommand("ovn-nbctl", "ls-del", req.NetworkId); err != nil {
+	// Delete OVN logical switch (this removes all ports, DHCP, etc.) (idempotent)
+	if err := runCommand("ovn-nbctl", "--if-exists", "ls-del", req.NetworkId); err != nil {
 		return &pb.DeleteBridgeResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Failed to delete OVN logical switch: %v", err),
@@ -328,9 +336,9 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	// OVS internal ports become Linux interfaces, so we must keep names <= 15 chars
 	portName := fmt.Sprintf("p-%s%s", req.ContainerId[:6], req.NetworkId[:6])
 
-	// Create OVN logical switch port for DHCP/DNS
+	// Create OVN logical switch port for DHCP/DNS (idempotent)
 	log.Printf("Creating OVN logical switch port %s on network %s", portName, req.NetworkId)
-	if err := runCommand("ovn-nbctl", "lsp-add", req.NetworkId, portName); err != nil {
+	if err := runCommand("ovn-nbctl", "--may-exist", "lsp-add", req.NetworkId, portName); err != nil {
 		log.Printf("Warning: Failed to create logical switch port: %v", err)
 		// Continue anyway - port may already exist
 	}
@@ -516,10 +524,10 @@ func (s *NetworkServer) DetachContainer(ctx context.Context, req *pb.DetachConta
 		delete(s.containerPort, req.ContainerId)
 	}
 
-	// Remove OVN logical switch port (this also removes DHCP lease and DNS records)
+	// Remove OVN logical switch port (this also removes DHCP lease and DNS records) (idempotent)
 	ovnPortName := fmt.Sprintf("lsp-%s", req.ContainerId[:12])
 	log.Printf("Removing OVN logical switch port %s from network %s", ovnPortName, req.NetworkId)
-	if err := runCommand("ovn-nbctl", "lsp-del", ovnPortName); err != nil {
+	if err := runCommand("ovn-nbctl", "--if-exists", "lsp-del", ovnPortName); err != nil {
 		log.Printf("Warning: Failed to delete logical switch port: %v", err)
 		// Continue anyway - port may not exist
 	}

@@ -616,7 +616,7 @@ public actor ContainerManager {
         let containerName = name ?? generateContainerName()
 
         // Use real Containerization API
-        guard var manager = nativeManager else {
+        guard var _ = nativeManager else {
             logger.error("ContainerManager not initialized")
             throw ContainerManagerError.notInitialized
         }
@@ -926,7 +926,7 @@ public actor ContainerManager {
                     "id": "\(dockerID)"
                 ])
                 do {
-                    try await manager.delete(dockerID)
+                    try manager.delete(dockerID)
                     logger.debug("Cleaned up orphaned storage via manager.delete()", metadata: [
                         "id": "\(dockerID)"
                     ])
