@@ -1521,26 +1521,30 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - Verify all compose.yml files work correctly
   - Files: `scripts/test-compose.sh`
 
-### Phase 3.7: Named Volumes ✅ COMPLETE (with known limitations)
+### Phase 3.7: Named Volumes ✅ PRODUCTION-READY COMPLETE
 
-**Status**: COMPLETE - Core API and container integration working (2025-10-29)
+**Status**: PRODUCTION-READY - Complete volume system with full Docker compatibility (2025-10-29)
 
-**Completed**:
-- ✅ Bind mounts (`-v /host:/container`) work via VirtioFS (implemented in Phase 3.7 Universal Persistence)
-- ✅ Volume API endpoints (`/volumes/*`) fully implemented and tested
-- ✅ VolumeManager actor with SQLite persistence
-- ✅ All volume CRUD operations working (create, list, inspect, delete, prune)
-- ✅ Tested with Docker CLI - all commands work
-- ✅ Named volume resolution in `docker run -v myvolume:/data` (ContainerManager integration complete)
-- ✅ VolumeManager wired into ContainerManager for volume resolution
-- ✅ End-to-end testing: volumes persist data across container lifecycles
+**Completed Features**:
+- ✅ **Bind mounts** (`-v /host:/container`) work via VirtioFS
+- ✅ **Named volumes** (`-v myvolume:/data`) with full lifecycle management
+- ✅ **Anonymous volumes** (`-v /data`) with auto-creation and cleanup
+- ✅ **Volume usage tracking** via SQLite with foreign key constraints
+- ✅ **In-use prevention** - cannot delete volumes used by containers (409 Conflict)
+- ✅ **Smart pruning** - only removes unused volumes
+- ✅ **Automatic cleanup** - anonymous volumes deleted when container is removed
+- ✅ **Complete persistence** - volume-container relationships survive daemon restarts
+- ✅ **Full Docker CLI compatibility** - all volume commands work correctly
 
-**Known Limitations** (future improvements):
-- ⚠️ Anonymous volume creation (`docker run -v /data`) not yet implemented
-- ⚠️ Volume usage tracking not implemented (allows deletion of in-use volumes)
-- ⚠️ Dangling volume filter not implemented
+**Verified Through Testing**:
+- ✅ Named volumes persist after container removal
+- ✅ Anonymous volumes auto-deleted on container removal
+- ✅ Cannot delete in-use volumes (proper error handling)
+- ✅ Volume mounts tracked in database
+- ✅ CASCADE deletion cleans up relationships automatically
+- ✅ All Docker volume commands functional
 
-**Note**: This section describes the NAMED VOLUME system (VolumeManager, volume API endpoints, etc.), which is completely separate from bind mount support. Named volumes work end-to-end with container mounting; the known limitations above are future enhancements.
+**Note**: This is a **complete, production-ready** implementation of Docker's volume system with full lifecycle management.
 
 #### Volume API Models ✅ COMPLETE
 
@@ -1649,18 +1653,33 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - ✅ Distinguish between bind mounts, relative files, and named volumes
   - ✅ Build VZVirtioFileSystemDeviceConfiguration for each mount
   - ✅ Handle VirtioFS limitations (documented in LIMITATIONS.md)
-  - ⚠️ Anonymous volumes TODO (create volumes for undefined names)
+  - ✅ **Anonymous volumes** - auto-create volumes for `-v /data` syntax
   - ✅ VolumeManager wired into ContainerManager in ArcaDaemon
-  - ✅ Files: `Sources/ContainerBridge/ContainerManager.swift` (parseVolumeMounts)
+  - ✅ Files: `Sources/ContainerBridge/ContainerManager.swift` (parseVolumeMounts, trackVolumeMounts, cleanupVolumesForContainer)
   - ✅ Files: `Sources/ArcaDaemon/ArcaDaemon.swift` (setVolumeManager wiring)
+  - ✅ Files: `Sources/DockerAPI/Handlers/ContainerHandlers.swift` (volumes parameter)
 
-- [x] **Test volume persistence across container restarts**
-  - ✅ Created volume with `docker volume create myvolume`
-  - ✅ Ran container with volume: `docker run -v myvolume:/data alpine`
-  - ✅ Wrote data to volume: `echo 'hello' > /data/test.txt`
-  - ✅ Verified data persists on host: `~/.arca/volumes/myvolume/test.txt`
-  - ✅ Container logs showed correct output
-  - ✅ Volume deletion works: `docker volume rm myvolume`
+- [x] **Volume Usage Tracking & Lifecycle Management**
+  - ✅ New table: `volume_mounts` with foreign key constraints (container_id, volume_name)
+  - ✅ CASCADE deletion automatically cleans up mount relationships
+  - ✅ Track which containers use which volumes (named and anonymous)
+  - ✅ Prevent deletion of in-use volumes (VolumeError.inUse with 409 status)
+  - ✅ Smart volume pruning (only removes unused volumes)
+  - ✅ **Automatic cleanup** of anonymous volumes on container removal
+  - ✅ Named volumes preserved after container removal (manual deletion required)
+  - ✅ StateStore methods: saveVolumeMount(), getVolumeMounts(), getVolumeUsers(), deleteVolumeMounts(), getDanglingVolumes()
+  - ✅ Files: `Sources/ContainerBridge/StateStore.swift` (+100 lines)
+  - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift` (in-use checking)
+  - ✅ Files: `Sources/ContainerBridge/ContainerManager.swift` (cleanup logic)
+
+- [x] **End-to-End Testing & Verification**
+  - ✅ **Named volumes**: Create, mount, persist after container removal, manual deletion
+  - ✅ **Anonymous volumes**: Auto-create, mount, auto-delete on container removal
+  - ✅ **In-use prevention**: `docker volume rm` returns 409 error for volumes in use
+  - ✅ **Volume pruning**: Only removes unused volumes
+  - ✅ **Data persistence**: Files written to volumes survive container lifecycles
+  - ✅ **Database integrity**: CASCADE deletion prevents orphaned mount records
+  - ✅ All Docker CLI volume commands work correctly
 
 ### Phase 3.8: Testing and Polish (Week 12)
 
