@@ -267,6 +267,29 @@ public final class ArcaDaemon: @unchecked Sendable {
             volumeManager = nil
         }
 
+        // Initialize BuildKitManager
+        let bkm = BuildKitManager(
+            containerManager: containerManager,
+            imageManager: imageManager,
+            volumeManager: vm,
+            logger: logger
+        )
+        self.buildKitManager = bkm
+        var buildKitManager: BuildKitManager? = bkm
+
+        do {
+            try await bkm.initialize()
+            logger.info("BuildKit manager initialized successfully")
+        } catch {
+            logger.error("Failed to initialize BuildKit manager", metadata: [
+                "error": "\(error)"
+            ])
+            // Continue without BuildKit - build features won't be available
+            logger.warning("Daemon will continue without BuildKit - build features disabled")
+            self.buildKitManager = nil
+            buildKitManager = nil
+        }
+
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
             .use(RequestLogger(logger: logger))
@@ -277,7 +300,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             imageManager: imageManager,
             execManager: execManager,
             networkManager: networkManager,
-            volumeManager: volumeManager
+            volumeManager: volumeManager,
+            buildKitManager: buildKitManager
         )
         let router = builder.build()
 
@@ -320,7 +344,8 @@ public final class ArcaDaemon: @unchecked Sendable {
         imageManager: ImageManager,
         execManager: ExecManager,
         networkManager: NetworkManager?,
-        volumeManager: VolumeManager?
+        volumeManager: VolumeManager?,
+        buildKitManager: BuildKitManager?
     ) {
         logger.info("Registering API routes")
 
@@ -330,6 +355,7 @@ public final class ArcaDaemon: @unchecked Sendable {
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
         let volumeHandlers = volumeManager.map { VolumeHandlers(volumeManager: $0, logger: logger) }
+        let buildHandlers = buildKitManager.map { BuildHandlers(buildKitManager: $0, imageManager: imageManager, logger: logger) }
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -928,6 +954,73 @@ public final class ArcaDaemon: @unchecked Sendable {
                 return .standard(error.toHTTPResponse())
             } catch {
                 return .standard(HTTPResponse.badRequest("Invalid filters parameter: \(error.localizedDescription)"))
+            }
+        }
+
+        // Build endpoint
+        if let buildHandlers = buildHandlers {
+            _ = builder.post("/build") { request in
+                // Parse build parameters from query string
+                let dockerfile = request.queryString("dockerfile") ?? "Dockerfile"
+
+                // Parse tags - Docker allows multiple t= parameters, for now we handle single tag
+                // TODO: Support multiple t= parameters in query string
+                let tags = request.queryString("t").map { [$0] } ?? []
+
+                let noCache = request.queryBool("nocache", default: false)
+                let pull = request.queryBool("pull", default: false)
+                let rm = request.queryBool("rm", default: true)
+                let forcerm = request.queryBool("forcerm", default: false)
+                let quiet = request.queryBool("q", default: false)
+                let target = request.queryString("target")
+                let platform = request.queryString("platform")
+
+                // Parse buildargs (JSON object)
+                var buildArgs: [String: String] = [:]
+                if let buildArgsStr = request.queryString("buildargs") {
+                    if let data = buildArgsStr.data(using: .utf8),
+                       let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+                        buildArgs = decoded
+                    }
+                }
+
+                // Parse labels (JSON object)
+                var labels: [String: String] = [:]
+                if let labelsStr = request.queryString("labels") {
+                    if let data = labelsStr.data(using: .utf8),
+                       let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+                        labels = decoded
+                    }
+                }
+
+                let networkMode = request.queryString("networkmode")
+
+                // Create build parameters
+                let params = BuildParameters(
+                    dockerfile: dockerfile,
+                    tags: Array(tags),
+                    buildArgs: buildArgs,
+                    noCache: noCache,
+                    pull: pull,
+                    remove: rm,
+                    forceRemove: forcerm,
+                    quiet: quiet,
+                    labels: labels,
+                    networkMode: networkMode,
+                    target: target,
+                    platform: platform
+                )
+
+                // Get build context from request body
+                guard let contextData = request.body else {
+                    return .standard(HTTPResponse.badRequest("Build context (tar archive) is required"))
+                }
+
+                // Call build handler (returns streaming response)
+                return await buildHandlers.handleBuildImage(
+                    contextData: contextData,
+                    parameters: params
+                )
             }
         }
 
