@@ -2876,9 +2876,144 @@ $ docker top container          # ✅ Works
 - ⏸️ `GET /events` - System events stream (TODO - Future)
 - ⏸️ `POST /images/prune` - Prune unused images (TODO - Future)
 
-### Build API - TODO (Future)
-- `POST /build` - Build image from Dockerfile
-- `GET /images/{name}/history` - Image history
+### Build API - In Progress
+
+#### GET /images/{name}/history - TODO
+Simple endpoint returning layer information from OCI image config.
+
+**Tasks:**
+- [ ] Create HistoryResponseItem model
+- [ ] Add getImageHistory() to ImageManager
+- [ ] Implement handleImageHistory() handler
+- [ ] Register GET /images/{name}/history route
+- [ ] Test with docker history command
+
+**Estimated effort:** 1-2 hours
+
+#### POST /build - BuildKit Integration (Direct API)
+
+**Architecture Decision:** Use BuildKit's official gRPC API directly (not Apple's shim).
+
+**Why BuildKit Direct:**
+- Same API Docker buildx uses - maximum compatibility
+- Less code than wrapper approach (~650 vs ~1200 lines)
+- Well-documented official protocol
+- No vendor lock-in to Apple's CLI tool
+- Simpler mental model (no translation layer)
+
+**BuildKit Container Setup:**
+```
+Container: arca-buildkit (similar to arca-control-plane)
+Image: moby/buildkit:latest
+Process: /usr/bin/buildkitd --addr vsock://8088
+Resources: 2 CPUs, 2GB memory (configurable)
+Mounts:
+  - /tmp/buildkit - tmpfs for temporary build files
+  - ~/.arca/buildkit-cache - VirtioFS for persistent layer cache
+Network: Attached to default network
+```
+
+**Implementation Tasks:**
+
+**Phase 1: Proto & gRPC Setup** (Day 1)
+- [ ] Vendor BuildKit proto files from moby/buildkit
+  - api/services/control/control.proto
+  - api/types/*.proto (dependencies)
+- [ ] Add BuildKit proto files to Sources/ContainerBuild/proto/
+- [ ] Update Package.swift with ContainerBuild target
+- [ ] Add gRPC code generation to scripts/generate-grpc.sh
+- [ ] Generate Swift gRPC client code
+- [ ] Verify generated code compiles
+
+**Phase 2: BuildKit Manager** (Day 2, Morning)
+- [ ] Create Sources/ContainerBuild/BuildKitManager.swift
+- [ ] Implement BuildKitManager actor with:
+  - [ ] ensureRunning() - Start/ensure buildkit container
+  - [ ] createBuildKitContainer() - Initial container setup
+  - [ ] stopBuildKit() - Cleanup on daemon shutdown
+  - [ ] checkHealth() - Verify buildkit is responsive
+- [ ] Create Sources/ContainerBuild/BuildKitClient.swift
+- [ ] Implement BuildKitClient wrapper for gRPC:
+  - [ ] connect(vsockPort: 8088) via container.dial()
+  - [ ] solve() - Main build RPC
+  - [ ] status() - Build progress streaming
+  - [ ] disconnect() - Cleanup
+
+**Phase 3: Build Handler** (Day 2, Afternoon)
+- [ ] Create BuildRequest model (Docker API → BuildKit)
+- [ ] Create BuildResponse model (BuildKit → Docker API)
+- [ ] Implement handleBuildImage() in ImageHandlers:
+  - [ ] Parse build context tar from request body
+  - [ ] Extract Dockerfile from context
+  - [ ] Parse query parameters (tags, buildargs, etc.)
+  - [ ] Call BuildKitManager.build()
+  - [ ] Stream progress to client (newline-delimited JSON)
+  - [ ] Import resulting OCI tar into image store
+  - [ ] Tag the built image
+- [ ] Register POST /build route in ArcaDaemon
+
+**Phase 4: Progress Streaming** (Day 3, Morning)
+- [ ] Implement BuildKit → Docker progress translation
+- [ ] Map BuildKit vertex status to Docker status messages
+- [ ] Stream "Step 1/5 : FROM alpine" style messages
+- [ ] Handle build errors and stream to client
+- [ ] Test with docker build command
+
+**Phase 5: Build Context Handling** (Day 3, Afternoon)
+- [ ] Implement tar context extraction
+- [ ] Handle .dockerignore files
+- [ ] Support remote contexts (Git URLs)
+- [ ] Validate Dockerfile exists in context
+- [ ] Test with various build contexts
+
+**Phase 6: Advanced Features** (Optional - Future)
+- [ ] Build arguments (--build-arg)
+- [ ] Multi-stage builds (BuildKit native support)
+- [ ] Build cache (--cache-from, --cache-to)
+- [ ] Target stage (--target)
+- [ ] Platform specification (--platform)
+- [ ] Labels (--label)
+- [ ] Network mode during build (--network)
+
+**Testing Strategy:**
+```bash
+# Basic build
+docker build -t test:latest .
+
+# With build args
+docker build --build-arg VERSION=1.0 -t test:v1 .
+
+# Multi-stage
+docker build --target production -t test:prod .
+
+# Verify image
+docker run test:latest
+docker history test:latest
+```
+
+**Success Criteria:**
+- ✅ Basic Dockerfile builds work (FROM, RUN, COPY, CMD)
+- ✅ Build progress streams to client
+- ✅ Built images appear in docker images
+- ✅ docker run works with built images
+- ✅ Multi-stage builds work
+- ✅ Build arguments work
+- ✅ Build cache improves rebuild times
+
+**Estimated Total Effort:** 3 days
+- Day 1: Proto setup and gRPC generation
+- Day 2: BuildKit manager + Build handler
+- Day 3: Progress streaming + Context handling
+
+**Dependencies:**
+- moby/buildkit:latest image (~150MB, pulled on first build)
+- grpc-swift (already have it)
+- protoc (already have it for other protos)
+
+**No New Repository Dependencies:**
+- ❌ NOT depending on Apple's container CLI repo
+- ✅ Only vendoring BuildKit's .proto files (protocol spec)
+- ✅ Using official moby/buildkit image from Docker Hub
 
 #### Image Size Tracking (TODO)
 **Problem**: Arca currently reports compressed (OCI blob) sizes instead of uncompressed (extracted) sizes like Docker.
