@@ -1397,7 +1397,10 @@ public actor ContainerManager {
         idMapping.removeValue(forKey: dockerID)
         containers.removeValue(forKey: dockerID)
 
-        // Delete from persistent storage
+        // Clean up volumes before deleting container
+        await cleanupVolumesForContainer(dockerID: dockerID)
+
+        // Delete from persistent storage (CASCADE will delete volume mounts)
         try await stateStore.deleteContainer(id: dockerID)
 
         // Close and remove log files
@@ -1908,6 +1911,49 @@ public actor ContainerManager {
                     ])
                 }
             }
+        }
+    }
+
+    /// Clean up volumes when a container is removed
+    /// Deletes anonymous volumes and removes volume mount relationships
+    private func cleanupVolumesForContainer(dockerID: String) async {
+        guard let volumeManager = volumeManager else {
+            return  // No volume manager, nothing to clean up
+        }
+
+        do {
+            // Get all volume mounts for this container
+            let mounts = try await stateStore.getVolumeMounts(containerID: dockerID)
+
+            // Delete anonymous volumes
+            for mount in mounts where mount.isAnonymous {
+                logger.info("Cleaning up anonymous volume", metadata: [
+                    "container": "\(dockerID)",
+                    "volume": "\(mount.volumeName)"
+                ])
+
+                do {
+                    try await volumeManager.deleteVolume(name: mount.volumeName, force: true)
+                    logger.info("Deleted anonymous volume", metadata: [
+                        "container": "\(dockerID)",
+                        "volume": "\(mount.volumeName)"
+                    ])
+                } catch {
+                    logger.warning("Failed to delete anonymous volume", metadata: [
+                        "container": "\(dockerID)",
+                        "volume": "\(mount.volumeName)",
+                        "error": "\(error)"
+                    ])
+                }
+            }
+
+            // Volume mount relationships will be deleted automatically via CASCADE
+            // when we delete the container from StateStore
+        } catch {
+            logger.warning("Failed to clean up volumes", metadata: [
+                "container": "\(dockerID)",
+                "error": "\(error)"
+            ])
         }
     }
 
