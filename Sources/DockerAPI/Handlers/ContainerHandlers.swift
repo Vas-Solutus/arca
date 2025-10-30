@@ -138,7 +138,8 @@ public struct ContainerHandlers: Sendable {
                 openStdin: request.openStdin ?? false,
                 networkMode: request.hostConfig?.networkMode,
                 restartPolicy: restartPolicy,
-                binds: request.hostConfig?.binds
+                binds: request.hostConfig?.binds,
+                volumes: request.volumes?.mapValues { $0.value }  // Convert AnyCodable to Any
             )
 
             logger.info("Container created", metadata: [

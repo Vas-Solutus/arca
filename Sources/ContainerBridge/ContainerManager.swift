@@ -264,7 +264,8 @@ public actor ContainerManager {
                 finishedAt: actualFinishedAt,
                 tty: config.tty,
                 needsCreate: false,
-                networkAttachments: networkAttachments
+                networkAttachments: networkAttachments,
+                anonymousVolumes: []  // TODO: Persist anonymous volumes in StateStore
             )
 
             // Store in containers map
@@ -607,7 +608,8 @@ public actor ContainerManager {
         openStdin: Bool = false,
         networkMode: String? = nil,
         restartPolicy: RestartPolicy? = nil,
-        binds: [String]? = nil
+        binds: [String]? = nil,
+        volumes: [String: Any]? = nil  // Anonymous volumes: {"/container/path": {}}
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -642,8 +644,45 @@ public actor ContainerManager {
         let (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
         logWriters[dockerID] = (stdoutWriter, stderrWriter)
 
+        // Create anonymous volumes if specified
+        var anonymousVolumeNames: [String] = []
+        var effectiveBinds = binds ?? []
+
+        if let volumes = volumes, !volumes.isEmpty {
+            logger.info("Creating anonymous volumes", metadata: [
+                "docker_id": "\(dockerID)",
+                "volume_count": "\(volumes.count)"
+            ])
+
+            guard let volumeManager = volumeManager else {
+                logger.error("Anonymous volumes requested but VolumeManager not available")
+                throw ContainerManagerError.volumeManagerNotAvailable
+            }
+
+            for (containerPath, _) in volumes {
+                // Create anonymous volume with auto-generated name
+                let volumeMetadata = try await volumeManager.createVolume(
+                    name: nil,  // Auto-generate name
+                    driver: "local",
+                    driverOpts: nil,
+                    labels: ["com.arca.anonymous": "true"]  // Mark as anonymous
+                )
+
+                anonymousVolumeNames.append(volumeMetadata.name)
+
+                // Add to binds so it gets mounted
+                effectiveBinds.append("\(volumeMetadata.name):\(containerPath)")
+
+                logger.info("Created anonymous volume", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "volume_name": "\(volumeMetadata.name)",
+                    "container_path": "\(containerPath)"
+                ])
+            }
+        }
+
         // Parse bind mounts and named volumes
-        let mounts = try await parseVolumeMounts(binds)
+        let mounts = try await parseVolumeMounts(effectiveBinds)
         if !mounts.isEmpty {
             logger.info("Container has volume mounts", metadata: [
                 "docker_id": "\(dockerID)",
@@ -746,7 +785,8 @@ public actor ContainerManager {
             finishedAt: nil,
             tty: tty,
             needsCreate: shouldDeferCreate,
-            networkAttachments: [:]  // Start with no network attachments
+            networkAttachments: [:],  // Start with no network attachments
+            anonymousVolumes: anonymousVolumeNames  // Track anonymous volumes for cleanup
         )
 
         containers[dockerID] = containerInfo
@@ -2150,6 +2190,7 @@ public actor ContainerManager {
         let tty: Bool  // Whether container was created with TTY
         var needsCreate: Bool  // Whether .create() was deferred (for attached containers)
         var networkAttachments: [String: NetworkAttachment]  // Network ID -> Attachment details
+        var anonymousVolumes: [String]  // Names of anonymous volumes to delete on container removal
     }
 
     /// Network attachment details for a container
