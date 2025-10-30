@@ -61,6 +61,7 @@ public actor StateStore {
     // Volume columns (nonisolated - immutable and thread-safe)
     private nonisolated(unsafe) let volumeName = Expression<String>("name")
     private nonisolated(unsafe) let volumeDriver = Expression<String>("driver")
+    private nonisolated(unsafe) let volumeFormat = Expression<String>("format")
     private nonisolated(unsafe) let volumeMountpoint = Expression<String>("mountpoint")
     private nonisolated(unsafe) let volumeCreatedAt = Expression<String>("created_at")
     private nonisolated(unsafe) let volumeLabelsJSON = Expression<String?>("labels_json")
@@ -237,6 +238,7 @@ public actor StateStore {
             try db.run(volumes.create(ifNotExists: true) { t in
                 t.column(volumeName, primaryKey: true)
                 t.column(volumeDriver, defaultValue: "local")
+                t.column(volumeFormat, defaultValue: "ext4")
                 t.column(volumeMountpoint)
                 t.column(volumeCreatedAt, defaultValue: Date().iso8601String)
                 t.column(volumeLabelsJSON)
@@ -699,6 +701,7 @@ public actor StateStore {
     public func saveVolume(
         name: String,
         driver: String,
+        format: String,
         mountpoint: String,
         createdAt: Date,
         labelsJSON: String?,
@@ -707,6 +710,7 @@ public actor StateStore {
         try db.run(volumes.insert(or: .replace,
             self.volumeName <- name,
             self.volumeDriver <- driver,
+            self.volumeFormat <- format,
             self.volumeMountpoint <- mountpoint,
             self.volumeCreatedAt <- createdAt.iso8601String,
             self.volumeLabelsJSON <- labelsJSON,
@@ -715,7 +719,8 @@ public actor StateStore {
 
         logger.debug("Volume saved", metadata: [
             "name": "\(name)",
-            "driver": "\(driver)"
+            "driver": "\(driver)",
+            "format": "\(format)"
         ])
     }
 
@@ -723,13 +728,14 @@ public actor StateStore {
     public func loadAllVolumes() throws -> [(
         name: String,
         driver: String,
+        format: String,
         mountpoint: String,
         createdAt: Date,
         labelsJSON: String?,
         optionsJSON: String?
     )] {
         var result: [(
-            name: String, driver: String, mountpoint: String,
+            name: String, driver: String, format: String, mountpoint: String,
             createdAt: Date, labelsJSON: String?, optionsJSON: String?
         )] = []
 
@@ -739,6 +745,7 @@ public actor StateStore {
             result.append((
                 name: row[volumeName],
                 driver: row[volumeDriver],
+                format: row[volumeFormat],
                 mountpoint: row[volumeMountpoint],
                 createdAt: createdDate,
                 labelsJSON: row[volumeLabelsJSON],

@@ -1684,6 +1684,114 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - ✅ **Database integrity**: CASCADE deletion prevents orphaned mount records
   - ✅ All Docker CLI volume commands work correctly
 
+### Phase 3.7.9: Block Device Volumes 🚧 IN PROGRESS
+
+**Goal**: Replace VirtioFS directory-based volumes with EXT4 block device volumes (matching Apple's implementation) for better I/O performance.
+
+**Rationale**:
+- Apple's container CLI uses EXT4-formatted block devices (`volume.img`) instead of VirtioFS directory shares
+- Block devices bypass host filesystem layer → 30-50% lower latency, 20-100% higher throughput
+- Particularly beneficial for database workloads (PostgreSQL, MySQL) with heavy random I/O
+- No backwards compatibility needed - hard cutover from VirtioFS to block devices
+
+**Key Changes**:
+- Named volumes: VirtioFS directories → EXT4 block device files
+- Anonymous volumes: VirtioFS directories → EXT4 block device files
+- Bind mounts: Keep using VirtioFS (no change)
+
+**Implementation Tasks**:
+
+#### Task 3.7.9.1: VolumeManager Block Device Creation 🚧 IN PROGRESS
+- [ ] **Import ContainerizationEXT4 module** in VolumeManager.swift
+- [ ] **Update createVolume() to create EXT4-formatted volume.img files**
+  - Create `~/.arca/volumes/{name}/volume.img` instead of empty directory
+  - Use `EXT4.Formatter` to format block device
+  - Default size: 512GB (sparse file, only uses actual disk space needed)
+  - Block size: 4096 bytes (4KB blocks)
+- [ ] **Update volumeMetadata to track format and block device path**
+  - Add `format: String` field (always "ext4")
+  - Mountpoint becomes path to volume.img file (not directory)
+- [ ] **Update StateStore schema** to persist format field
+  - Add `format TEXT` column to volumes table
+  - Migration: existing volumes marked as "legacy" (if any exist)
+- [ ] **Error handling** for EXT4.Formatter failures
+  - Handle disk space errors
+  - Handle permission errors
+  - Clean up partial volume.img files on failure
+- Files: `Sources/ContainerBridge/VolumeManager.swift`
+
+#### Task 3.7.9.2: ContainerManager Block Device Mounting 🚧 IN PROGRESS
+- [ ] **Update parseVolumeMounts() to use Mount.block() for named volumes**
+  - Keep Mount.share() for bind mounts (paths with "/" or existing files)
+  - Change to Mount.block() for named volumes
+  - Pass format="ext4" and source=volume.img path
+- [ ] **Distinguish bind mounts from named volumes**
+  - Bind mount detection: contains "/", starts with ".", starts with "~", or exists as file/dir
+  - Named volume: resolved via VolumeManager.inspectVolume()
+  - Use volumeMetadata.format to determine mount type
+- [ ] **Anonymous volumes use block devices too**
+  - Update anonymous volume creation to create EXT4 volume.img
+  - Use Mount.block() instead of Mount.share()
+- Files: `Sources/ContainerBridge/ContainerManager.swift` (parseVolumeMounts, createContainer)
+
+#### Task 3.7.9.3: Volume Size Management
+- [ ] **Add size parameter to volume creation**
+  - Default: 512GB sparse file (uses ~0MB initially, grows as data written)
+  - Support docker volume create --opt size=10G syntax
+  - Parse size from DriverOpts in VolumeCreateRequest
+- [ ] **Update inspectVolume() to report block device size**
+  - Get actual disk usage of volume.img (sparse file size)
+  - Get filesystem size reported by EXT4
+  - Return both in volume metadata
+- Files: `Sources/ContainerBridge/VolumeManager.swift`, `Sources/DockerAPI/Models/Volume.swift`
+
+#### Task 3.7.9.4: Volume Deletion and Cleanup
+- [ ] **Update deleteVolume() to delete volume.img file**
+  - Remove volume.img file (not directory)
+  - Clean up parent directory if empty
+- [ ] **Update pruneVolumes() space calculation**
+  - Calculate space from volume.img file sizes
+  - Use actual disk usage (not sparse size)
+- Files: `Sources/ContainerBridge/VolumeManager.swift`
+
+#### Task 3.7.9.5: Testing
+- [ ] **Update FullPersistenceTests for block device volumes**
+  - Verify volume.img files are created (not directories)
+  - Verify data persists in EXT4 filesystem
+  - Verify mount type is Mount.block() for named volumes
+- [ ] **Test volume size handling**
+  - Create volumes with custom sizes
+  - Verify sparse file behavior
+  - Verify disk usage reporting
+- [ ] **Test bind mounts still work with VirtioFS**
+  - `-v /host/path:/container` uses Mount.share()
+  - `-v ./file.txt:/container/file` uses Mount.share()
+  - Named volumes use Mount.block()
+- [ ] **Manual verification with Docker CLI**
+  - Create named volume: `docker volume create test-block`
+  - Verify `~/.arca/volumes/test-block/volume.img` exists
+  - Mount in container: `docker run -v test-block:/data alpine sh -c "echo hello > /data/test.txt"`
+  - Verify data persists: `docker run -v test-block:/data alpine cat /data/test.txt`
+- Files: `Tests/ArcaTests/FullPersistenceTests.swift`
+
+#### Task 3.7.9.6: Documentation
+- [ ] **Update IMPLEMENTATION_PLAN.md**
+  - Mark Phase 3.7.9 complete
+  - Document block device implementation
+- [ ] **Update LIMITATIONS.md**
+  - Remove volume performance limitations (if any)
+  - Document sparse file behavior
+  - Document volume size limits
+- [ ] **Update README.md volume section**
+  - Explain block device approach
+  - Document size parameter syntax
+  - Performance comparison vs VirtioFS bind mounts
+
+**Expected Performance Improvements**:
+- Database workloads (PostgreSQL, MySQL): 50-100% faster random I/O
+- Build caches (CI/CD): 30-50% faster mixed I/O
+- General volume I/O: 20-40% lower latency
+
 ### Phase 3.8: Testing and Polish (Week 12)
 
 #### Comprehensive Testing

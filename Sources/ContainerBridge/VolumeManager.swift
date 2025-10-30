@@ -1,8 +1,10 @@
 import Foundation
 import Logging
+import ContainerizationEXT4
+import SystemPackage
 
 /// Manages Docker named volumes
-/// Volumes are stored at ~/.arca/volumes/{name}/
+/// Volumes are stored as EXT4-formatted block devices at ~/.arca/volumes/{name}/volume.img
 /// Metadata is persisted in StateStore (SQLite)
 public actor VolumeManager {
     private let logger: Logger
@@ -16,7 +18,8 @@ public actor VolumeManager {
     public struct VolumeMetadata: Codable, Sendable {
         public let name: String
         public let driver: String
-        public let mountpoint: String
+        public let format: String  // Filesystem format: "ext4" for block devices
+        public let mountpoint: String  // Path to volume.img file (block device)
         public let createdAt: Date
         public let labels: [String: String]
         public let options: [String: String]?
@@ -24,6 +27,7 @@ public actor VolumeManager {
         public init(
             name: String,
             driver: String = "local",
+            format: String = "ext4",
             mountpoint: String,
             createdAt: Date = Date(),
             labels: [String: String] = [:],
@@ -31,6 +35,7 @@ public actor VolumeManager {
         ) {
             self.name = name
             self.driver = driver
+            self.format = format
             self.mountpoint = mountpoint
             self.createdAt = createdAt
             self.labels = labels
@@ -111,34 +116,66 @@ public actor VolumeManager {
             throw VolumeError.alreadyExists(volumeName)
         }
 
-        // Create volume directory
-        let mountpoint = "\(volumesBasePath)/\(volumeName)"
+        // Create volume directory and EXT4 block device
+        let volumeDir = "\(volumesBasePath)/\(volumeName)"
+        let blockImagePath = "\(volumeDir)/volume.img"
         let fileManager = FileManager.default
 
+        // Parse size from driverOpts (default 512GB)
+        let sizeInBytes: UInt64
+        if let sizeStr = driverOpts?["size"] {
+            sizeInBytes = try parseSizeString(sizeStr)
+        } else {
+            sizeInBytes = 512 * 1024 * 1024 * 1024  // 512GB default (sparse)
+        }
+
         do {
+            // Create volume directory
             try fileManager.createDirectory(
-                atPath: mountpoint,
+                atPath: volumeDir,
                 withIntermediateDirectories: true,
                 attributes: nil
             )
             logger.debug("Created volume directory", metadata: [
                 "name": "\(volumeName)",
-                "path": "\(mountpoint)"
+                "path": "\(volumeDir)"
+            ])
+
+            // Create and format EXT4 block device
+            logger.info("Creating EXT4 block device", metadata: [
+                "name": "\(volumeName)",
+                "path": "\(blockImagePath)",
+                "size": "\(sizeInBytes) bytes"
+            ])
+
+            let formatter = try EXT4.Formatter(
+                FilePath(blockImagePath),
+                blockSize: 4096,
+                minDiskSize: sizeInBytes
+            )
+            try formatter.close()
+
+            logger.info("EXT4 block device created", metadata: [
+                "name": "\(volumeName)",
+                "path": "\(blockImagePath)"
             ])
         } catch {
-            logger.error("Failed to create volume directory", metadata: [
+            // Clean up on failure
+            try? fileManager.removeItem(atPath: volumeDir)
+            logger.error("Failed to create volume block device", metadata: [
                 "name": "\(volumeName)",
                 "error": "\(error)"
             ])
             throw VolumeError.creationFailed(volumeName, error.localizedDescription)
         }
 
-        // Create metadata
+        // Create metadata (mountpoint is the block device file, not directory)
         let createdAt = Date()
         let metadata = VolumeMetadata(
             name: volumeName,
             driver: volumeDriver,
-            mountpoint: mountpoint,
+            format: "ext4",
+            mountpoint: blockImagePath,  // Path to volume.img file
             createdAt: createdAt,
             labels: labels ?? [:],
             options: driverOpts
@@ -153,7 +190,7 @@ public actor VolumeManager {
         logger.info("Volume created", metadata: [
             "name": "\(volumeName)",
             "driver": "\(volumeDriver)",
-            "mountpoint": "\(mountpoint)"
+            "mountpoint": "\(blockImagePath)"
         ])
 
         return metadata
@@ -245,17 +282,20 @@ public actor VolumeManager {
             }
         }
 
-        // Delete volume directory
+        // Delete volume directory (containing volume.img)
+        // mountpoint is path to volume.img, need to delete parent directory
+        let volumeDir = NSString(string: metadata.mountpoint).deletingLastPathComponent
         let fileManager = FileManager.default
         do {
-            try fileManager.removeItem(atPath: metadata.mountpoint)
+            try fileManager.removeItem(atPath: volumeDir)
             logger.debug("Deleted volume directory", metadata: [
                 "name": "\(name)",
-                "path": "\(metadata.mountpoint)"
+                "path": "\(volumeDir)"
             ])
         } catch {
             logger.error("Failed to delete volume directory", metadata: [
                 "name": "\(name)",
+                "path": "\(volumeDir)",
                 "error": "\(error)"
             ])
             throw VolumeError.deletionFailed(name, error.localizedDescription)
@@ -370,6 +410,7 @@ public actor VolumeManager {
             let metadata = VolumeMetadata(
                 name: row.name,
                 driver: row.driver,
+                format: row.format,
                 mountpoint: row.mountpoint,
                 createdAt: row.createdAt,
                 labels: labels,
@@ -400,6 +441,7 @@ public actor VolumeManager {
         try await stateStore.saveVolume(
             name: metadata.name,
             driver: metadata.driver,
+            format: metadata.format,
             mountpoint: metadata.mountpoint,
             createdAt: metadata.createdAt,
             labelsJSON: labelsJSON,
@@ -409,6 +451,36 @@ public actor VolumeManager {
         logger.debug("Volume saved to database", metadata: [
             "name": "\(metadata.name)"
         ])
+    }
+
+    /// Parse size string (e.g., "10G", "500M", "1T") to bytes
+    private func parseSizeString(_ sizeStr: String) throws -> UInt64 {
+        let trimmed = sizeStr.trimmingCharacters(in: .whitespaces).uppercased()
+        let multipliers: [Character: UInt64] = [
+            "K": 1024,
+            "M": 1024 * 1024,
+            "G": 1024 * 1024 * 1024,
+            "T": 1024 * 1024 * 1024 * 1024
+        ]
+
+        guard let lastChar = trimmed.last else {
+            throw VolumeError.invalidSize(sizeStr)
+        }
+
+        if let multiplier = multipliers[lastChar] {
+            // Has unit suffix (e.g., "10G")
+            let numericPart = String(trimmed.dropLast())
+            guard let value = UInt64(numericPart) else {
+                throw VolumeError.invalidSize(sizeStr)
+            }
+            return value * multiplier
+        } else {
+            // No suffix, assume bytes
+            guard let value = UInt64(trimmed) else {
+                throw VolumeError.invalidSize(sizeStr)
+            }
+            return value
+        }
     }
 }
 
@@ -423,6 +495,7 @@ public enum VolumeError: Error, CustomStringConvertible {
     case inUse(String, [String])  // volume name, container IDs
     case metadataLoadFailed(String)
     case metadataSaveFailed(String)
+    case invalidSize(String)  // invalid size string
 
     public var description: String {
         switch self {
@@ -442,6 +515,8 @@ public enum VolumeError: Error, CustomStringConvertible {
             return "Failed to load volume metadata: \(reason)"
         case .metadataSaveFailed(let reason):
             return "Failed to save volume metadata: \(reason)"
+        case .invalidSize(let sizeStr):
+            return "Invalid size string: '\(sizeStr)'. Use format like '10G', '500M', or '1T'."
         }
     }
 }

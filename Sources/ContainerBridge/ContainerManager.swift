@@ -1797,7 +1797,8 @@ public actor ContainerManager {
                         isNamedVolume = true
                         logger.info("Resolved named volume", metadata: [
                             "volume": "\(source)",
-                            "mountpoint": "\(expandedHostPath)"
+                            "mountpoint": "\(expandedHostPath)",
+                            "format": "\(volumeMetadata.format)"
                         ])
                     } catch {
                         logger.error("Named volume not found", metadata: [
@@ -1809,54 +1810,67 @@ public actor ContainerManager {
                 }
             }
 
-            // Validate host path exists (create directory if it doesn't exist for rw mounts)
-            let fileManager = FileManager.default
-            var isDirectory: ObjCBool = false
-            let exists = fileManager.fileExists(atPath: expandedHostPath, isDirectory: &isDirectory)
-
-            if !exists && !isReadOnly {
-                // For read-write mounts, create the directory if it doesn't exist
-                logger.info("Creating host directory for volume mount", metadata: [
-                    "path": "\(expandedHostPath)"
-                ])
-                try fileManager.createDirectory(
-                    atPath: expandedHostPath,
-                    withIntermediateDirectories: true,
-                    attributes: nil
-                )
-            } else if !exists && isReadOnly {
-                logger.error("Read-only bind mount source does not exist", metadata: [
-                    "path": "\(expandedHostPath)"
-                ])
-                throw ContainerManagerError.volumeSourceNotFound(expandedHostPath)
-            }
-
             // Create mount options
             var options: [String] = []
             if isReadOnly {
                 options.append("ro")
             }
 
-            // Create the Mount using the host path as source
-            // The Containerization framework will:
-            // 1. Use the host path to create the VirtioFS shared directory
-            // 2. Hash the path to generate the device tag
-            // 3. Transform to AttachedFilesystem with the hashed tag as source (for vminitd)
-            let mount = Containerization.Mount.share(
-                source: expandedHostPath,
-                destination: containerPath,
-                options: options
-            )
+            // Create the appropriate mount type
+            let mount: Containerization.Mount
+            if isNamedVolume {
+                // Named volumes: Use block device mount
+                // expandedHostPath is the path to volume.img file
+                mount = Containerization.Mount.block(
+                    format: "ext4",
+                    source: expandedHostPath,
+                    destination: containerPath,
+                    options: options
+                )
+                logger.debug("Created block device mount for named volume", metadata: [
+                    "source": "\(source)",
+                    "blockDevice": "\(expandedHostPath)",
+                    "destination": "\(containerPath)",
+                    "readOnly": "\(isReadOnly)"
+                ])
+            } else {
+                // Bind mounts: Use VirtioFS share
+                // Validate host path exists (create directory if needed for rw mounts)
+                let fileManager = FileManager.default
+                var isDirectory: ObjCBool = false
+                let exists = fileManager.fileExists(atPath: expandedHostPath, isDirectory: &isDirectory)
+
+                if !exists && !isReadOnly {
+                    // For read-write mounts, create the directory if it doesn't exist
+                    logger.info("Creating host directory for bind mount", metadata: [
+                        "path": "\(expandedHostPath)"
+                    ])
+                    try fileManager.createDirectory(
+                        atPath: expandedHostPath,
+                        withIntermediateDirectories: true,
+                        attributes: nil
+                    )
+                } else if !exists && isReadOnly {
+                    logger.error("Read-only bind mount source does not exist", metadata: [
+                        "path": "\(expandedHostPath)"
+                    ])
+                    throw ContainerManagerError.volumeSourceNotFound(expandedHostPath)
+                }
+
+                mount = Containerization.Mount.share(
+                    source: expandedHostPath,
+                    destination: containerPath,
+                    options: options
+                )
+                logger.debug("Created VirtioFS share for bind mount", metadata: [
+                    "source": "\(source)",
+                    "resolvedPath": "\(expandedHostPath)",
+                    "destination": "\(containerPath)",
+                    "readOnly": "\(isReadOnly)"
+                ])
+            }
 
             mounts.append(mount)
-
-            let mountType = isNamedVolume ? "named volume" : "bind mount"
-            logger.debug("Parsed \(mountType)", metadata: [
-                "source": "\(source)",
-                "resolvedPath": "\(expandedHostPath)",
-                "destination": "\(containerPath)",
-                "readOnly": "\(isReadOnly)"
-            ])
         }
 
         return mounts
