@@ -794,6 +794,13 @@ public actor ContainerManager {
         // Persist container state
         try await persistContainerState(dockerID: dockerID, info: containerInfo)
 
+        // Track volume mounts in StateStore
+        try await trackVolumeMounts(
+            dockerID: dockerID,
+            binds: effectiveBinds,
+            anonymousVolumes: anonymousVolumeNames
+        )
+
         logger.info("Container created successfully", metadata: [
             "docker_id": "\(dockerID)",
             "native_id": "\(nativeID)",
@@ -1850,6 +1857,58 @@ public actor ContainerManager {
         }
 
         return mounts
+    }
+
+    /// Track volume mounts in StateStore for usage tracking
+    private func trackVolumeMounts(
+        dockerID: String,
+        binds: [String],
+        anonymousVolumes: [String]
+    ) async throws {
+        guard !binds.isEmpty else {
+            return
+        }
+
+        // Parse binds to extract volume names (for named volumes)
+        for bind in binds {
+            let parts = bind.split(separator: ":")
+            guard parts.count >= 2 else {
+                continue  // Skip invalid binds
+            }
+
+            let source = String(parts[0])
+            let containerPath = String(parts[1])
+
+            // Determine if this is a named volume (vs bind mount)
+            let looksLikePath = source.contains("/") || source.hasPrefix(".") || source.hasPrefix("~")
+
+            if !looksLikePath {
+                // This is a named volume - record it in StateStore
+                let isAnonymous = anonymousVolumes.contains(source)
+
+                do {
+                    try await stateStore.saveVolumeMount(
+                        containerID: dockerID,
+                        volumeName: source,
+                        containerPath: containerPath,
+                        isAnonymous: isAnonymous
+                    )
+
+                    logger.debug("Tracked volume mount", metadata: [
+                        "container": "\(dockerID)",
+                        "volume": "\(source)",
+                        "path": "\(containerPath)",
+                        "anonymous": "\(isAnonymous)"
+                    ])
+                } catch {
+                    logger.warning("Failed to track volume mount", metadata: [
+                        "container": "\(dockerID)",
+                        "volume": "\(source)",
+                        "error": "\(error)"
+                    ])
+                }
+            }
+        }
     }
 
     // MARK: - ID Mapping

@@ -14,6 +14,7 @@ public actor StateStore {
     private nonisolated(unsafe) let networks = Table("networks")
     private nonisolated(unsafe) let networkAttachments = Table("network_attachments")
     private nonisolated(unsafe) let volumes = Table("volumes")
+    private nonisolated(unsafe) let volumeMounts = Table("volume_mounts")
     private nonisolated(unsafe) let subnetAllocation = Table("subnet_allocation")
     private nonisolated(unsafe) let schemaVersion = Table("schema_version")
 
@@ -64,6 +65,14 @@ public actor StateStore {
     private nonisolated(unsafe) let volumeCreatedAt = Expression<String>("created_at")
     private nonisolated(unsafe) let volumeLabelsJSON = Expression<String?>("labels_json")
     private nonisolated(unsafe) let volumeOptionsJSON = Expression<String?>("options_json")
+
+    // Volume mount columns (nonisolated - immutable and thread-safe)
+    private nonisolated(unsafe) let mountID = Expression<Int64>("id")
+    private nonisolated(unsafe) let mountContainerID = Expression<String>("container_id")
+    private nonisolated(unsafe) let mountVolumeName = Expression<String>("volume_name")
+    private nonisolated(unsafe) let mountContainerPath = Expression<String>("container_path")
+    private nonisolated(unsafe) let mountIsAnonymous = Expression<Bool>("is_anonymous")
+    private nonisolated(unsafe) let mountedAt = Expression<String>("mounted_at")
 
     // Subnet allocation columns (nonisolated - immutable and thread-safe)
     private nonisolated(unsafe) let allocationID = Expression<Int>("id")
@@ -233,6 +242,24 @@ public actor StateStore {
             // Volume indexes
             try db.run(volumes.createIndex(volumeName, ifNotExists: true))
             try db.run(volumes.createIndex(volumeDriver, ifNotExists: true))
+
+            // Volume mounts table (tracks which containers use which volumes)
+            try db.run(volumeMounts.create(ifNotExists: true) { t in
+                t.column(mountID, primaryKey: .autoincrement)
+                t.column(mountContainerID)
+                t.column(mountVolumeName)
+                t.column(mountContainerPath)
+                t.column(mountIsAnonymous, defaultValue: false)
+                t.column(mountedAt, defaultValue: Date().iso8601String)
+
+                // Foreign key constraints
+                t.foreignKey(mountContainerID, references: containers, id, delete: .cascade)
+                t.foreignKey(mountVolumeName, references: volumes, volumeName, delete: .cascade)
+            })
+
+            // Volume mount indexes
+            try db.run(volumeMounts.createIndex(mountContainerID, ifNotExists: true))
+            try db.run(volumeMounts.createIndex(mountVolumeName, ifNotExists: true))
 
             // Subnet allocation table (singleton)
             try db.run(subnetAllocation.create(ifNotExists: true) { t in
@@ -729,6 +756,81 @@ public actor StateStore {
         }
 
         logger.debug("Volume deleted from database", metadata: ["name": "\(name)"])
+    }
+
+    // MARK: - Volume Mount Operations
+
+    /// Save a volume mount relationship
+    public func saveVolumeMount(
+        containerID: String,
+        volumeName: String,
+        containerPath: String,
+        isAnonymous: Bool
+    ) throws {
+        try db.run(volumeMounts.insert(
+            mountContainerID <- containerID,
+            mountVolumeName <- volumeName,
+            mountContainerPath <- containerPath,
+            mountIsAnonymous <- isAnonymous,
+            mountedAt <- Date().iso8601String
+        ))
+
+        logger.debug("Volume mount saved", metadata: [
+            "container": "\(containerID)",
+            "volume": "\(volumeName)",
+            "path": "\(containerPath)",
+            "anonymous": "\(isAnonymous)"
+        ])
+    }
+
+    /// Get all volume mounts for a container
+    public func getVolumeMounts(containerID: String) throws -> [(volumeName: String, containerPath: String, isAnonymous: Bool)] {
+        let query = volumeMounts
+            .filter(mountContainerID == containerID)
+            .order(mountedAt)
+
+        return try db.prepare(query).map { row in
+            (
+                volumeName: row[mountVolumeName],
+                containerPath: row[mountContainerPath],
+                isAnonymous: row[mountIsAnonymous]
+            )
+        }
+    }
+
+    /// Get all containers using a volume
+    public func getVolumeUsers(volumeName: String) throws -> [String] {
+        let query = volumeMounts
+            .filter(mountVolumeName == volumeName)
+            .select(distinct: mountContainerID)
+
+        return try db.prepare(query).map { row in
+            row[mountContainerID]
+        }
+    }
+
+    /// Delete volume mounts for a container
+    public func deleteVolumeMounts(containerID: String) throws {
+        let mounts = volumeMounts.filter(mountContainerID == containerID)
+        let deleted = try db.run(mounts.delete())
+
+        logger.debug("Volume mounts deleted", metadata: [
+            "container": "\(containerID)",
+            "count": "\(deleted)"
+        ])
+    }
+
+    /// Get all dangling volumes (not used by any container)
+    public func getDanglingVolumes() throws -> [String] {
+        // Find volumes that have no corresponding mounts
+        let usedVolumes = volumeMounts.select(distinct: mountVolumeName)
+        let allVolumes = volumes.select(volumeName)
+
+        // SQLite doesn't support EXCEPT, so we do it manually
+        let used = try Set(db.prepare(usedVolumes).map { $0[mountVolumeName] })
+        let all = try db.prepare(allVolumes).map { $0[volumeName] }
+
+        return all.filter { !used.contains($0) }
     }
 
     // MARK: - Transaction Support

@@ -223,8 +223,17 @@ public actor VolumeManager {
             throw VolumeError.notFound(name)
         }
 
-        // TODO: Check if volume is in use by any container
-        // For now, we'll allow deletion (force parameter ignored)
+        // Check if volume is in use by any container (unless force is true)
+        if !force {
+            let users = try await stateStore.getVolumeUsers(volumeName: name)
+            if !users.isEmpty {
+                logger.error("Volume is in use by containers", metadata: [
+                    "name": "\(name)",
+                    "users": "\(users.joined(separator: ", "))"
+                ])
+                throw VolumeError.inUse(name, users)
+            }
+        }
 
         // Delete volume directory
         let fileManager = FileManager.default
@@ -259,10 +268,16 @@ public actor VolumeManager {
         var spaceReclaimed: Int64 = 0
 
         // Get all volumes (dangling filter should be applied by caller)
-        let volumesToPrune = listVolumes(filters: filters)
+        let allVolumes = listVolumes(filters: filters)
 
-        // TODO: Filter out volumes that are in use by containers
-        // For now, we'll consider all volumes as potentially pruneable
+        // Filter out volumes that are in use by containers
+        var volumesToPrune: [VolumeMetadata] = []
+        for volume in allVolumes {
+            let users = try await stateStore.getVolumeUsers(volumeName: volume.name)
+            if users.isEmpty {
+                volumesToPrune.append(volume)
+            }
+        }
 
         for volume in volumesToPrune {
             do {
