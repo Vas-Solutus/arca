@@ -333,6 +333,78 @@ public struct ContainerHandlers: Sendable {
         }
     }
 
+    /// Handle POST /containers/{id}/pause
+    /// Pauses a running container
+    public func handlePauseContainer(id: String) async -> Result<Void, ContainerError> {
+        logger.info("Handling pause container request", metadata: ["id": "\(id)"])
+
+        do {
+            try await containerManager.pauseContainer(id: id)
+
+            logger.info("Container paused successfully", metadata: ["id": "\(id)"])
+
+            return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to pause container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            case .invalidConfiguration(let msg):
+                return .failure(ContainerError.invalidRequest(msg))
+            default:
+                return .failure(ContainerError.pauseFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to pause container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.pauseFailed(errorDescription(error)))
+        }
+    }
+
+    /// Handle POST /containers/{id}/unpause
+    /// Unpauses a paused container
+    public func handleUnpauseContainer(id: String) async -> Result<Void, ContainerError> {
+        logger.info("Handling unpause container request", metadata: ["id": "\(id)"])
+
+        do {
+            try await containerManager.unpauseContainer(id: id)
+
+            logger.info("Container unpaused successfully", metadata: ["id": "\(id)"])
+
+            return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to unpause container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            case .invalidConfiguration(let msg):
+                return .failure(ContainerError.invalidRequest(msg))
+            default:
+                return .failure(ContainerError.unpauseFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to unpause container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.unpauseFailed(errorDescription(error)))
+        }
+    }
+
     /// Handle DELETE /containers/{id}
     /// Removes a container
     public func handleRemoveContainer(id: String, force: Bool, removeVolumes: Bool) async -> Result<Void, ContainerError> {
@@ -1010,6 +1082,8 @@ public enum ContainerError: Error, CustomStringConvertible {
     case stopFailed(String)
     case restartFailed(String)
     case renameFailed(String)
+    case pauseFailed(String)
+    case unpauseFailed(String)
     case removeFailed(String)
     case inspectFailed(String)
     case notFound(String)
@@ -1030,6 +1104,10 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to restart container: \(msg)"
         case .renameFailed(let msg):
             return "Failed to rename container: \(msg)"
+        case .pauseFailed(let msg):
+            return "Failed to pause container: \(msg)"
+        case .unpauseFailed(let msg):
+            return "Failed to unpause container: \(msg)"
         case .removeFailed(let msg):
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):

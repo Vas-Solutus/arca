@@ -523,6 +523,54 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Container endpoints - Pause
+        _ = builder.post("/containers/{id}/pause") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            let result = await containerHandlers.handlePauseContainer(id: id)
+
+            switch result {
+            case .success:
+                return .standard(HTTPResponse.noContent())
+            case .failure(let error):
+                // Map ContainerError to appropriate HTTP status
+                switch error {
+                case .notFound:
+                    return .standard(HTTPResponse.notFound(error.description))
+                case .invalidRequest:
+                    return .standard(HTTPResponse.conflict(error.description))
+                default:
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+        }
+
+        // Container endpoints - Unpause
+        _ = builder.post("/containers/{id}/unpause") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            let result = await containerHandlers.handleUnpauseContainer(id: id)
+
+            switch result {
+            case .success:
+                return .standard(HTTPResponse.noContent())
+            case .failure(let error):
+                // Map ContainerError to appropriate HTTP status
+                switch error {
+                case .notFound:
+                    return .standard(HTTPResponse.notFound(error.description))
+                case .invalidRequest:
+                    return .standard(HTTPResponse.conflict(error.description))
+                default:
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+        }
+
         // Container endpoints - Remove
         _ = builder.delete("/containers/{id}") { request in
             guard let id = request.pathParam("id") else {

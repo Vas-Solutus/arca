@@ -1310,6 +1310,78 @@ public actor ContainerManager {
         ])
     }
 
+    /// Pause a running container
+    public func pauseContainer(id: String) async throws {
+        logger.info("Pausing container", metadata: ["id": "\(id)"])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard var info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Verify container is running
+        guard info.state == "running" else {
+            throw ContainerManagerError.invalidConfiguration("Container is not running")
+        }
+
+        // Get native container
+        guard let nativeContainer = nativeContainers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(dockerID)
+        }
+
+        // Pause the container via Containerization API
+        try await nativeContainer.pause()
+
+        // Update state
+        info.state = "paused"
+        containers[dockerID] = info
+
+        // Persist state change
+        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
+
+        logger.info("Container paused successfully", metadata: ["id": "\(dockerID)"])
+    }
+
+    /// Unpause a paused container
+    public func unpauseContainer(id: String) async throws {
+        logger.info("Unpausing container", metadata: ["id": "\(id)"])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard var info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Verify container is paused
+        guard info.state == "paused" else {
+            throw ContainerManagerError.invalidConfiguration("Container is not paused")
+        }
+
+        // Get native container
+        guard let nativeContainer = nativeContainers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(dockerID)
+        }
+
+        // Resume the container via Containerization API
+        try await nativeContainer.resume()
+
+        // Update state back to running
+        info.state = "running"
+        containers[dockerID] = info
+
+        // Persist state change
+        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
+
+        logger.info("Container unpaused successfully", metadata: ["id": "\(dockerID)"])
+    }
+
     /// Rename a container
     public func renameContainer(id: String, newName: String) async throws {
         logger.info("Renaming container", metadata: [
