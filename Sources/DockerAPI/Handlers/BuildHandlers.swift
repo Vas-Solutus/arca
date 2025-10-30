@@ -130,14 +130,36 @@ public struct BuildHandlers: Sendable {
 
     /// Extract Dockerfile from tar archive
     private func extractDockerfile(from tarData: Data, path: String) async throws -> String {
-        // TODO: Implement tar extraction
-        // For MVP, we'll assume the Dockerfile is provided directly
-        // In full implementation, we would:
-        // 1. Parse the tar archive
-        // 2. Find the file at the specified path
-        // 3. Extract and return its contents
+        let extractor = TarExtractor(logger: logger)
 
-        throw BuildError.notImplemented("Dockerfile extraction from tar not yet implemented")
+        do {
+            return try extractor.extractFile(from: tarData, filePath: path)
+        } catch let error as TarError {
+            // If exact path not found, try common variations
+            if case .fileNotFound = error {
+                logger.debug("Dockerfile not found at exact path, trying variations", metadata: [
+                    "requestedPath": "\(path)"
+                ])
+
+                // List files for debugging
+                if let files = try? extractor.listFiles(in: tarData) {
+                    logger.debug("Available files in tar: \(files.joined(separator: ", "))")
+
+                    // Try without leading ./ if present
+                    let cleanPath = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+
+                    // Try exact match
+                    if let matchedFile = files.first(where: { $0 == cleanPath || $0 == "./\(cleanPath)" }) {
+                        logger.debug("Found Dockerfile at: \(matchedFile)")
+                        return try extractor.extractFile(from: tarData, filePath: matchedFile)
+                    }
+                }
+            }
+
+            throw BuildError.dockerfileNotFound(path)
+        } catch {
+            throw BuildError.invalidContext("Failed to extract Dockerfile: \(error)")
+        }
     }
 
     /// Send build status message to client

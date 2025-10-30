@@ -1,5 +1,5 @@
 {
-  "originHash" : "133edfd1b2e70b05421c04bd387548b7c5fd493dc063d2f8bd97ef7e803b1d31",
+  "originHash" : "0dfd19920aabcd0329dac33ab94d3869d34a49d8bab0abe9b71df6481146820d",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "8430dd49d4e2b417f472141805c9691ec2923cb8",
         "version" : "1.29.0"
+      }
+    },
+    {
+      "identity" : "bitbytedata",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tsolomko/BitByteData",
+      "state" : {
+        "revision" : "cdcdc5177ad536cfb11b95c620f926a81014b7fe",
+        "version" : "2.0.4"
       }
     },
     {
@@ -26,6 +35,15 @@
       "state" : {
         "revision" : "392dd6058624d9f6c5b4c769d165ddd8c7293394",
         "version" : "0.15.4"
+      }
+    },
+    {
+      "identity" : "swcompression",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/tsolomko/SWCompression.git",
+      "state" : {
+        "revision" : "390e0b0af8dd19a600005a242a89e570ff482e09",
+        "version" : "4.8.6"
       }
     },
     {

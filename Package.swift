@@ -15,6 +15,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.23.0"),
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.4"),
+        .package(url: "https://github.com/tsolomko/SWCompression.git", from: "4.8.0"),
     ],
     targets: [
         // Main executable target
@@ -55,6 +56,7 @@ let package = Package(
             name: "DockerAPI",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "SWCompression", package: "SWCompression"),
                 "ContainerBridge",
                 "ContainerBuild",
             ]
