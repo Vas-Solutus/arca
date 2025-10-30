@@ -71,6 +71,16 @@ let package = Package(
             ]
         ),
 
+        // BuildKit gRPC client and build operations
+        .target(
+            name: "ContainerBuild",
+            dependencies: [
+                .product(name: "GRPC", package: "grpc-swift"),
+                .product(name: "Logging", package: "swift-log"),
+                "ContainerBridge",
+            ]
+        ),
+
         // Tests
         .testTarget(
             name: "ArcaTests",

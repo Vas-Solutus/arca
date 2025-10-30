@@ -91,6 +91,54 @@ else
     echo "  ⚠ Skipping - proto file not found: $TAP_FORWARDER_PROTO"
 fi
 
+# Generate Swift code for BuildKit Control API
+echo ""
+echo "→ Generating Swift code for BuildKit Control API..."
+BUILDKIT_PROTO_DIR="$PROJECT_ROOT/Sources/ContainerBuild/proto"
+BUILDKIT_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBuild/Generated"
+
+# Create BuildKit output directory
+mkdir -p "$BUILDKIT_OUTPUT_DIR"
+
+# List of BuildKit proto files to compile (in dependency order)
+BUILDKIT_PROTOS=(
+    "$BUILDKIT_PROTO_DIR/google/rpc/status.proto"
+    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/solver/pb/ops.proto"
+    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/solver/errdefs/errdefs.proto"
+    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/sourcepolicy/pb/policy.proto"
+    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/api/types/worker.proto"
+    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/api/services/control/control.proto"
+)
+
+# Check if all proto files exist
+ALL_EXIST=true
+for proto in "${BUILDKIT_PROTOS[@]}"; do
+    if [ ! -f "$proto" ]; then
+        echo "  ⚠ Missing proto file: $proto"
+        ALL_EXIST=false
+    fi
+done
+
+if [ "$ALL_EXIST" = true ]; then
+    # Generate Swift code for all BuildKit protos
+    # Note: We use --proto_path to point to the root of our vendored proto files
+    # so that imports like "github.com/moby/buildkit/..." resolve correctly
+    # We also include protoc's default include path for google/protobuf well-known types
+    PROTOC_INCLUDE=$(dirname $(dirname $(which protoc)))/include
+
+    # Compile all protos together so imports are resolved
+    protoc "${BUILDKIT_PROTOS[@]}" \
+        --proto_path="$BUILDKIT_PROTO_DIR" \
+        --proto_path="$PROTOC_INCLUDE" \
+        --swift_out=Visibility=Public:"$BUILDKIT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$BUILDKIT_OUTPUT_DIR"
+
+    echo "  ✓ Generated Swift code for BuildKit in $BUILDKIT_OUTPUT_DIR"
+    echo "  ✓ Files: ops.pb.swift, errdefs.pb.swift, policy.pb.swift, worker.pb.swift, control.{pb,grpc}.swift"
+else
+    echo "  ⚠ Skipping - some proto files not found"
+fi
+
 echo ""
 echo "========================================"
 echo "✓ gRPC code generation complete"
