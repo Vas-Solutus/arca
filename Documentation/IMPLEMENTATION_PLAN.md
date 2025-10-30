@@ -2954,84 +2954,113 @@ Network: Attached to default network
 - [x] Exponential backoff connection retry (10 attempts)
 - [x] Verified: swift build compiles successfully
 
-**Phase 3: Build Handler, Progress Streaming & Context** ✅ COMPLETE (2025-10-30)
+**Phase 3: Build Infrastructure** ✅ COMPLETE (2025-10-30)
 - [x] Create BuildParameters model (all Docker build flags)
 - [x] Create BuildStatus/BuildResponse models (streaming format)
-- [x] Create BuildHandlers with handleBuildImage()
+- [x] Create BuildHandlers with handleBuildImage() skeleton
 - [x] Integrate BuildKitManager into daemon lifecycle
 - [x] Register POST /build route with full parameter parsing
 - [x] Add SWCompression library for tar extraction
-- [x] Implement TarExtractor helper (production-ready):
+- [x] Implement TarExtractor helper:
   - [x] extractFile() - Extract single file by path
   - [x] listFiles() - List all files in tar
   - [x] extractAll() - Extract all to dictionary
   - [x] Smart path matching (handles ./ prefixes)
 - [x] Extract Dockerfile from tar build context
-- [x] Pass Dockerfile content inline to BuildKit (base64)
-- [x] Frontend attribute support (buildargs, labels, platform, target, no-cache)
-- [x] Step-by-step build progress streaming:
-  - [x] "Step 1/N" format matching Docker output
-  - [x] Report each Dockerfile instruction
-  - [x] Show FROM base image
-  - [x] Success messages with tag confirmation
+- [x] Streaming response framework
 - [x] Comprehensive error handling (BuildError, TarError)
-- [x] Stream progress as newline-delimited JSON
-- [x] Handle BuildKit solve() response
-- [x] Verified: swift build compiles successfully (3.59s)
 
-**Completed Implementation**:
-- BuildKit container auto-created and managed
-- POST /build accepts tar archives
-- Dockerfile extracted and passed to BuildKit
-- Build executes end-to-end via BuildKit solve()
-- Progress streamed to client in Docker format
-- Basic Dockerfiles (without COPY/ADD) work
+**Current State - Infrastructure Only**:
+✅ BuildKit container auto-created and managed
+✅ POST /build accepts tar archives
+✅ Dockerfile extracted from tar
+✅ Streaming framework in place
+❌ Build context NOT transferred to BuildKit (COPY/ADD don't work)
+❌ Progress is SIMULATED, not real BuildKit vertex updates
+❌ Images NOT exported from BuildKit cache
+❌ Images NOT imported to local image store
+❌ Tags NOT actually applied to images
+❌ NOT Docker-compatible for real builds
 
-**Known Limitations (Future Enhancements)**:
-- COPY/ADD instructions require full context transfer (needs BuildKit session API)
-- Real-time BuildKit vertex progress (would need Status RPC streaming)
-- Image import to local store (built images stay in BuildKit cache)
-- Automatic tagging in image store (tags reported but not persisted)
-- .dockerignore support
-- Remote contexts (Git URLs)
+**Phase 4: FULL Build Implementation** ⚠️ NOT STARTED - CRITICAL FOR DOCKER COMPATIBILITY
+This phase implements ACTUAL build functionality (current code is infrastructure only):
 
-**Phase 4: Advanced Features** (Partially Complete)
-- [x] Build arguments (--build-arg) - Fully supported via frontend attributes
-- [x] Target stage (--target) - Fully supported via frontend attributes
-- [x] Platform specification (--platform) - Fully supported via frontend attributes
-- [x] Labels (--label) - Parsed and passed to BuildKit
-- [x] Network mode during build (--network) - Parsed and ready
-- [x] No-cache flag (--no-cache) - Fully supported
-- [ ] Multi-stage builds - Supported by BuildKit (needs testing)
-- [ ] Build cache (--cache-from, --cache-to) - Future enhancement
-- [ ] Full COPY/ADD support - Requires BuildKit session API
-- [ ] .dockerignore processing - Future enhancement
-- [ ] Remote contexts (Git URLs) - Future enhancement
+**4.1: BuildKit Session API - Context Transfer** (REQUIRED for COPY/ADD)
+- [ ] Implement bidirectional gRPC streaming for Session RPC
+- [ ] Create session manager to handle build sessions
+- [ ] Implement file sync protocol to transfer build context
+- [ ] Support context diff for incremental transfers
+- [ ] Handle .dockerignore file processing
+- [ ] Transfer entire build context to BuildKit
+- [ ] Verify COPY and ADD instructions work correctly
 
-**Testing Strategy:**
-```bash
-# Basic build
-docker build -t test:latest .
+**4.2: Real-time Progress Streaming** (REQUIRED for accurate progress)
+- [ ] Subscribe to BuildKit Status RPC during build
+- [ ] Stream vertex updates in real-time
+- [ ] Parse vertex status (started, completed, error)
+- [ ] Map BuildKit vertex IDs to Dockerfile steps
+- [ ] Convert vertex updates to Docker-compatible progress messages
+- [ ] Stream log output from RUN commands
+- [ ] Handle build warnings and errors
+- [ ] Report actual build timings
 
-# With build args
-docker build --build-arg VERSION=1.0 -t test:v1 .
+**4.3: Image Export from BuildKit** (REQUIRED to use built images)
+- [ ] Configure BuildKit to export images
+- [ ] Use BuildKit's exporter to create OCI tar
+- [ ] Handle multi-platform image exports
+- [ ] Stream export progress
+- [ ] Verify OCI tar format correctness
 
-# Multi-stage
-docker build --target production -t test:prod .
+**4.4: Image Import to Local Store** (REQUIRED for docker images/docker run)
+- [ ] Import OCI tar into ImageManager
+- [ ] Extract layers from OCI tar
+- [ ] Decompress layers (gzip/zstd)
+- [ ] Store layers in image store
+- [ ] Create image manifest
+- [ ] Calculate uncompressed sizes
+- [ ] Update image metadata
 
-# Verify image
-docker run test:latest
-docker history test:latest
-```
+**4.5: Image Tagging** (REQUIRED for docker run <tag>)
+- [ ] Tag imported image with requested tags
+- [ ] Support multiple tags per build
+- [ ] Handle tag conflicts (force/no-force)
+- [ ] Update image store metadata
+- [ ] Verify tags appear in docker images
 
-**Success Criteria:**
-- ✅ Basic Dockerfile builds work (FROM, RUN, COPY, CMD)
-- ✅ Build progress streams to client
-- ✅ Built images appear in docker images
-- ✅ docker run works with built images
-- ✅ Multi-stage builds work
-- ✅ Build arguments work
-- ✅ Build cache improves rebuild times
+**4.6: Integration Testing** (REQUIRED to verify everything works)
+- [ ] Test simple Dockerfile (FROM, RUN, CMD)
+- [ ] Test COPY instruction with local files
+- [ ] Test ADD instruction with URLs
+- [ ] Test multi-stage builds
+- [ ] Test build arguments
+- [ ] Test .dockerignore
+- [ ] Test docker run with built images
+- [ ] Test docker images shows built images
+- [ ] Test docker history shows layers
+
+**Success Criteria for Phase 4 Completion:**
+- [ ] Basic Dockerfile builds work (FROM, RUN, CMD) - currently broken
+- [ ] COPY instruction works with local files - NOT IMPLEMENTED
+- [ ] ADD instruction works with URLs - NOT IMPLEMENTED
+- [ ] Build progress streams from BuildKit in real-time - currently simulated
+- [ ] Built images appear in `docker images` - NOT IMPLEMENTED
+- [ ] `docker run` works with built images - NOT IMPLEMENTED
+- [ ] Multi-stage builds work - NOT TESTED
+- [ ] Build arguments work (--build-arg) - parsed but needs testing
+- [ ] .dockerignore is respected - NOT IMPLEMENTED
+- [ ] `docker history` shows correct layers - NOT IMPLEMENTED
+
+**Current Reality Check:**
+The Build API currently has:
+✅ Route infrastructure
+✅ Parameter parsing
+✅ Tar extraction
+✅ BuildKit connection
+❌ Actual build functionality
+❌ Image output
+❌ Docker compatibility
+
+**Phase 4 is CRITICAL** - without it, the Build API is non-functional infrastructure.
 
 **Estimated Total Effort:** 3 days
 - Day 1: Proto setup and gRPC generation
