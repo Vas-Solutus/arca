@@ -2931,19 +2931,28 @@ Network: Attached to default network
   - worker.pb.swift, ops.pb.swift, errdefs.pb.swift, policy.pb.swift, status.pb.swift
 - [x] Verify generated code compiles (swift build successful)
 
-**Phase 2: BuildKit Manager** (Day 2, Morning)
-- [ ] Create Sources/ContainerBuild/BuildKitManager.swift
-- [ ] Implement BuildKitManager actor with:
-  - [ ] ensureRunning() - Start/ensure buildkit container
-  - [ ] createBuildKitContainer() - Initial container setup
-  - [ ] stopBuildKit() - Cleanup on daemon shutdown
-  - [ ] checkHealth() - Verify buildkit is responsive
-- [ ] Create Sources/ContainerBuild/BuildKitClient.swift
-- [ ] Implement BuildKitClient wrapper for gRPC:
-  - [ ] connect(vsockPort: 8088) via container.dial()
-  - [ ] solve() - Main build RPC
-  - [ ] status() - Build progress streaming
-  - [ ] disconnect() - Cleanup
+**Phase 2: BuildKit Manager** ✅ COMPLETE (2025-10-30)
+- [x] Create Sources/ContainerBuild/BuildKitManager.swift
+- [x] Implement BuildKitManager actor with:
+  - [x] initialize() - Ensure BuildKit container running, connect client
+  - [x] ensureBuildKitRunning() - Start/ensure buildkit container exists
+  - [x] ensureBuildKitImage() - Auto-pull moby/buildkit:latest if needed
+  - [x] ensureBuildKitVolume() - Create buildkit-cache named volume
+  - [x] createBuildKitContainer() - Container setup with restart policy
+  - [x] healthCheck() - Verify buildkit is responsive via listWorkers()
+  - [x] shutdown() - Cleanup on daemon shutdown
+- [x] Create Sources/ContainerBuild/BuildKitClient.swift
+- [x] Implement BuildKitClient wrapper for gRPC:
+  - [x] connect(vsockPort: 8088) via container.dialVsock()
+  - [x] solve() - Main build RPC
+  - [x] streamStatus() - Build progress streaming
+  - [x] listWorkers() - Health checks
+  - [x] prune() - Cache cleanup
+  - [x] diskUsage() - Cache statistics
+  - [x] disconnect() - Cleanup
+- [x] Use named volume (buildkit-cache) instead of bind mount
+- [x] Exponential backoff connection retry (10 attempts)
+- [x] Verified: swift build compiles successfully
 
 **Phase 3: Build Handler** (Day 2, Afternoon)
 - [ ] Create BuildRequest model (Docker API → BuildKit)
