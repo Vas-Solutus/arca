@@ -4,16 +4,34 @@ import ContainerBridge
 import Containerization
 import NIOHTTP1
 
+/// Simple Writer implementation that captures data to a Data buffer
+private final class DataWriter: Writer, @unchecked Sendable {
+    private(set) var data = Data()
+    private let lock = NSLock()
+
+    func write(_ buffer: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        data.append(buffer)
+    }
+
+    func close() throws {
+        // No-op: data is already captured
+    }
+}
+
 /// Handlers for Docker Engine API container endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct ContainerHandlers: Sendable {
     private let containerManager: ContainerBridge.ContainerManager
     private let imageManager: ImageManager
+    private let execManager: ExecManager
     private let logger: Logger
 
-    public init(containerManager: ContainerBridge.ContainerManager, imageManager: ImageManager, logger: Logger) {
+    public init(containerManager: ContainerBridge.ContainerManager, imageManager: ImageManager, execManager: ExecManager, logger: Logger) {
         self.containerManager = containerManager
         self.imageManager = imageManager
+        self.execManager = execManager
         self.logger = logger
     }
 
@@ -1272,6 +1290,147 @@ public struct ContainerHandlers: Sendable {
         }
     }
 
+    /// Handle GET /containers/{id}/top
+    /// List processes running inside a container
+    public func handleTopContainer(id: String, psArgs: String?) async -> Result<ContainerTopResponse, ContainerError> {
+        logger.info("Handling container top request", metadata: [
+            "id": "\(id)",
+            "ps_args": "\(psArgs ?? "-ef")"
+        ])
+
+        // Verify container exists and is running
+        guard let containerInfo = try? await containerManager.getContainer(id: id) else {
+            return .failure(ContainerError.notFound(id))
+        }
+
+        // Container must be running to list processes
+        if !containerInfo.state.running {
+            return .failure(ContainerError.invalidRequest("Container is not running"))
+        }
+
+        // Use exec to run ps inside the container
+        let args = psArgs ?? "-ef"
+        let command = ["/bin/ps", args]
+
+        do {
+            // Create exec instance
+            let execID = try await execManager.createExec(
+                containerID: id,
+                cmd: command,
+                env: nil,
+                workingDir: nil,
+                user: "root",
+                tty: false,
+                attachStdin: false,
+                attachStdout: true,
+                attachStderr: true
+            )
+
+            // Create writer to capture stdout
+            let writer = DataWriter()
+
+            // Start exec and capture output
+            try await execManager.startExec(
+                execID: execID,
+                detach: false,
+                tty: false,
+                stdout: writer
+            )
+
+            // Get exec info to check exit code
+            guard let execInfo = await execManager.getExecInfo(execID: execID),
+                  let exitCode = execInfo.exitCode else {
+                logger.error("Failed to get exec result", metadata: ["id": "\(id)"])
+                return .failure(ContainerError.topFailed("Failed to get exec result"))
+            }
+
+            // Check if exec succeeded
+            guard exitCode == 0, let output = String(data: writer.data, encoding: .utf8) else {
+                logger.error("ps command failed", metadata: [
+                    "id": "\(id)",
+                    "exit_code": "\(exitCode)"
+                ])
+                return .failure(ContainerError.topFailed("Failed to execute ps command"))
+            }
+
+            // Parse ps output
+            let response = parsePsOutput(output)
+
+            logger.info("Container top completed", metadata: [
+                "id": "\(id)",
+                "process_count": "\(response.Processes.count)"
+            ])
+
+            return .success(response)
+        } catch {
+            logger.error("Failed to get container top", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+            return .failure(ContainerError.topFailed(errorDescription(error)))
+        }
+    }
+
+    /// Parse ps command output into ContainerTopResponse
+    private func parsePsOutput(_ output: String) -> ContainerTopResponse {
+        let lines = output.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        guard !lines.isEmpty else {
+            return ContainerTopResponse(Titles: [], Processes: [])
+        }
+
+        // First line is the header with column titles
+        let headerLine = lines[0]
+        let titles = headerLine.components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+
+        // Remaining lines are processes
+        var processes: [[String]] = []
+        for line in lines.dropFirst() {
+            // Split by whitespace, but handle command column which may contain spaces
+            let parts = parseProcessLine(line, columnCount: titles.count)
+            if !parts.isEmpty {
+                processes.append(parts)
+            }
+        }
+
+        return ContainerTopResponse(Titles: titles, Processes: processes)
+    }
+
+    /// Parse a single process line from ps output
+    /// Handles the case where the last column (CMD) may contain spaces
+    private func parseProcessLine(_ line: String, columnCount: Int) -> [String] {
+        var parts: [String] = []
+        var remaining = line
+
+        // Parse first n-1 columns (before CMD)
+        for _ in 0..<(columnCount - 1) {
+            remaining = remaining.trimmingCharacters(in: .whitespaces)
+            if remaining.isEmpty { break }
+
+            // Find next whitespace
+            if let spaceRange = remaining.rangeOfCharacter(from: .whitespaces) {
+                let part = String(remaining[..<spaceRange.lowerBound])
+                parts.append(part)
+                remaining = String(remaining[spaceRange.upperBound...])
+            } else {
+                // No more whitespace, this is the last column
+                parts.append(remaining)
+                remaining = ""
+                break
+            }
+        }
+
+        // Remaining text is the CMD column (may contain spaces)
+        if !remaining.isEmpty {
+            parts.append(remaining.trimmingCharacters(in: .whitespaces))
+        }
+
+        return parts
+    }
+
     /// Handle POST /containers/{id}/resize
     /// Resize the TTY for a container
     public func handleResizeContainer(id: String, height: Int?, width: Int?) async -> Result<Void, ContainerError> {
@@ -1393,6 +1552,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case pauseFailed(String)
     case unpauseFailed(String)
     case statsFailed(String)
+    case topFailed(String)
     case removeFailed(String)
     case inspectFailed(String)
     case notFound(String)
@@ -1419,6 +1579,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to unpause container: \(msg)"
         case .statsFailed(let msg):
             return "Failed to get container stats: \(msg)"
+        case .topFailed(let msg):
+            return "Failed to list container processes: \(msg)"
         case .removeFailed(let msg):
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):

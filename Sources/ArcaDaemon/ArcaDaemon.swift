@@ -323,7 +323,7 @@ public final class ArcaDaemon: @unchecked Sendable {
         logger.info("Registering API routes")
 
         // Create handlers
-        let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, logger: logger)
+        let containerHandlers = ContainerHandlers(containerManager: containerManager, imageManager: imageManager, execManager: execManager, logger: logger)
         let imageHandlers = ImageHandlers(imageManager: imageManager, logger: logger)
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
@@ -581,6 +581,25 @@ public final class ArcaDaemon: @unchecked Sendable {
             let stream = request.queryParameters["stream"] != "false" && request.queryParameters["stream"] != "0"
 
             return await containerHandlers.handleGetContainerStatsStreaming(id: id, stream: stream)
+        }
+
+        // Container endpoints - Top (list processes)
+        _ = builder.get("/containers/{id}/top") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            let psArgs = request.queryString("ps_args")
+
+            let result = await containerHandlers.handleTopContainer(id: id, psArgs: psArgs)
+
+            switch result {
+            case .success(let topResponse):
+                return .standard(HTTPResponse.ok(topResponse))
+            case .failure(let error):
+                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
         }
 
         // Container endpoints - Remove
