@@ -1310,6 +1310,43 @@ public actor ContainerManager {
         ])
     }
 
+    /// Rename a container
+    public func renameContainer(id: String, newName: String) async throws {
+        logger.info("Renaming container", metadata: [
+            "id": "\(id)",
+            "newName": "\(newName)"
+        ])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard let info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Update in-memory state
+        var updatedInfo = info
+        updatedInfo.name = newName
+        containers[dockerID] = updatedInfo
+
+        // Update database (will throw if name already exists due to UNIQUE constraint)
+        do {
+            try await stateStore.updateContainerName(id: dockerID, newName: newName)
+        } catch {
+            // Rollback in-memory change
+            containers[dockerID] = info
+            throw ContainerManagerError.invalidConfiguration("Name '\(newName)' is already in use")
+        }
+
+        logger.info("Container renamed successfully", metadata: [
+            "id": "\(dockerID)",
+            "oldName": "\(info.name ?? "none")",
+            "newName": "\(newName)"
+        ])
+    }
+
     /// Remove a container
     public func removeContainer(id: String, force: Bool = false, removeVolumes: Bool = false) async throws {
         logger.info("Removing container", metadata: [
@@ -2287,7 +2324,7 @@ public actor ContainerManager {
     /// Internal container tracking info
     private struct ContainerInfo {
         let nativeID: String
-        let name: String?
+        var name: String?
         let image: String
         let imageID: String
         let created: Date

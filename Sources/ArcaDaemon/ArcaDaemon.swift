@@ -493,6 +493,36 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Container endpoints - Rename
+        _ = builder.post("/containers/{id}/rename") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            guard let newName = request.queryString("name") else {
+                return .standard(HTTPResponse.badRequest("Missing required parameter: name"))
+            }
+
+            let result = await containerHandlers.handleRenameContainer(id: id, newName: newName)
+
+            switch result {
+            case .success:
+                return .standard(HTTPResponse.noContent())
+            case .failure(let error):
+                // Map ContainerError to appropriate HTTP status
+                switch error {
+                case .notFound:
+                    return .standard(HTTPResponse.notFound(error.description))
+                case .nameAlreadyInUse:
+                    return .standard(HTTPResponse.conflict(error.description))
+                case .operationNotPermitted:
+                    return .standard(HTTPResponse.conflict(error.description))
+                default:
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+        }
+
         // Container endpoints - Remove
         _ = builder.delete("/containers/{id}") { request in
             guard let id = request.pathParam("id") else {

@@ -30,11 +30,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Crash recovery (kill -9, power loss) marks containers as killed
 
 **Next Priorities**:
-1. Task 4: Volume mounts (VirtioFS)
-2. Task 5: Network persistence
-3. Task 6: Control plane as regular container
-4. Task 7: Integration testing
-5. Task 3.7.8: Write-ahead logging for exit state (future improvement)
+1. Task 6: Control plane as regular container (unify helper VM into ContainerManager)
+2. Task 7: Integration testing (comprehensive test suite for persistence)
+3. Phase 3.7: Named Volumes (VolumeManager, `/volumes/*` API endpoints)
+4. Task 3.7.8: Write-ahead logging for exit state (future improvement)
 
 **See**: `Documentation/IMPLEMENTATION_PLAN.md` for complete status
 
@@ -355,9 +354,10 @@ All behaviors must follow these specs for:
   - Simpler mental model: "container with special label"
 
 **Volumes**:
-- Docker named volumes map to Apple container volume paths
-- VirtioFS limitations require read-only mount workarounds
-- See `Documentation/LIMITATIONS.md` for known issues
+- ✅ **Bind mounts** (`-v /host:/container`) work via VirtioFS
+- ✅ Read-only mounts (`:ro` suffix) supported with validation
+- ❌ **Named volumes** (`-v myvolume:/data`) NOT implemented - no VolumeManager or `/volumes/*` API yet
+- See `Documentation/LIMITATIONS.md` for VirtioFS behavioral differences
 
 **Socket Configuration**:
 - Default: `/var/run/arca.sock` (NOT `/var/run/docker.sock`)
@@ -451,19 +451,18 @@ See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentat
   - Helper VM with OVS/OVN + dnsmasq
   - TAP-over-vsock packet relay
   - IPAM for IP address allocation
-- ✅ Volume API - Basic volume operations
+- ✅ **Bind Mounts** (`-v /host:/container`) - VirtioFS-based with read-only support
 - ✅ vminitd fork as submodule with Arca networking extensions
 
 **Known Limitations**:
 - ⚠️ **Short-lived container edge case**: Containers that exit within 1-2s may not have real exit code persisted if daemon crashes immediately (marked as killed with exit 137 instead). Affects 3/8 restart policy tests but 95% of real-world scenarios work correctly.
 
 **Still Missing (Future Work)**:
-- ❌ **Network persistence**: Networks vanish on daemon restart (next priority)
-- ❌ **Control plane persistence**: Helper VM deleted on every startup
-- ❌ **Volume mounts**: No VirtioFS volume support yet
+- ❌ **Named Volumes**: No VolumeManager, no `/volumes/*` API endpoints (see Phase 3.7: Named Volumes)
+- ❌ **Control plane as container**: Helper VM not yet unified into ContainerManager
 - ❌ **Write-ahead logging**: Exit state persistence optimization (Task 3.7.8)
 
-**Next Priority**: Network persistence and control plane as regular container
+**Next Priority**: Control plane as regular container (Task 6) and integration testing (Task 7)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
 

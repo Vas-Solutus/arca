@@ -360,6 +360,19 @@ public actor StateStore {
         ])
     }
 
+    /// Update container name in the database
+    /// Throws error if new name is already in use (UNIQUE constraint violation)
+    public func updateContainerName(id: String, newName: String) throws {
+        let container = containers.filter(self.id == id)
+
+        try db.run(container.update(self.name <- newName))
+
+        logger.debug("Container name updated", metadata: [
+            "id": "\(id)",
+            "newName": "\(newName)"
+        ])
+    }
+
     /// Load all containers from database
     public func loadAllContainers() throws -> [(
         id: String,

@@ -282,6 +282,57 @@ public struct ContainerHandlers: Sendable {
         }
     }
 
+    /// Handle POST /containers/{id}/rename
+    /// Renames a container
+    public func handleRenameContainer(id: String, newName: String) async -> Result<Void, ContainerError> {
+        logger.info("Handling rename container request", metadata: [
+            "id": "\(id)",
+            "newName": "\(newName)"
+        ])
+
+        // Protect control plane from being renamed
+        if await isControlPlane(id: id) {
+            logger.warning("Attempted to rename control plane container", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.operationNotPermitted(
+                "Cannot rename the control plane container 'arca-control-plane'. " +
+                "This container is managed by the Arca daemon."
+            ))
+        }
+
+        do {
+            try await containerManager.renameContainer(id: id, newName: newName)
+
+            logger.info("Container renamed successfully", metadata: [
+                "id": "\(id)",
+                "newName": "\(newName)"
+            ])
+
+            return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to rename container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            case .invalidConfiguration(let msg) where msg.contains("already in use"):
+                return .failure(ContainerError.nameAlreadyInUse(newName))
+            default:
+                return .failure(ContainerError.renameFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to rename container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.renameFailed(errorDescription(error)))
+        }
+    }
+
     /// Handle DELETE /containers/{id}
     /// Removes a container
     public func handleRemoveContainer(id: String, force: Bool, removeVolumes: Bool) async -> Result<Void, ContainerError> {
@@ -958,11 +1009,13 @@ public enum ContainerError: Error, CustomStringConvertible {
     case startFailed(String)
     case stopFailed(String)
     case restartFailed(String)
+    case renameFailed(String)
     case removeFailed(String)
     case inspectFailed(String)
     case notFound(String)
     case invalidRequest(String)
     case imageNotFound(String)
+    case nameAlreadyInUse(String)
     case operationNotPermitted(String)
 
     public var description: String {
@@ -975,6 +1028,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to stop container: \(msg)"
         case .restartFailed(let msg):
             return "Failed to restart container: \(msg)"
+        case .renameFailed(let msg):
+            return "Failed to rename container: \(msg)"
         case .removeFailed(let msg):
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):
@@ -985,6 +1040,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "No such container: \(id)"
         case .invalidRequest(let msg):
             return "Invalid request: \(msg)"
+        case .nameAlreadyInUse(let name):
+            return "Conflict. The container name '\(name)' is already in use."
         case .operationNotPermitted(let msg):
             return "\(msg)"
         }
