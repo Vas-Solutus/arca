@@ -46,6 +46,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "DockerAPI",
                 "ContainerBridge",
+                "ContainerBuild",
             ]
         ),
 
@@ -55,6 +56,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 "ContainerBridge",
+                "ContainerBuild",
             ]
         ),
 

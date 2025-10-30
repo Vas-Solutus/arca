@@ -3,6 +3,7 @@ import Logging
 import NIOHTTP1
 import DockerAPI
 import ContainerBridge
+import ContainerBuild
 
 /// The main Arca daemon that implements the Docker Engine API server
 public final class ArcaDaemon: @unchecked Sendable {
@@ -14,6 +15,7 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var execManager: ExecManager?
     private var networkManager: NetworkManager?
     private var volumeManager: VolumeManager?
+    private var buildKitManager: BuildKitManager?
     private var sharedNetwork: SharedVmnetNetwork?
 
     public init(socketPath: String, logger: Logger) {
