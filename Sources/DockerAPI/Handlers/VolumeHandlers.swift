@@ -64,17 +64,22 @@ public struct VolumeHandlers: Sendable {
             "filters": "\(filters)"
         ])
 
-        let volumeList = await volumeManager.listVolumes(filters: filters)
+        do {
+            let volumeList = try await volumeManager.listVolumes(filters: filters)
 
-        let volumes = volumeList.map { convertToDockerVolume($0) }
+            let volumes = volumeList.map { convertToDockerVolume($0) }
 
-        let response = VolumeListResponse(
-            volumes: volumes.isEmpty ? nil : volumes,
-            warnings: nil
-        )
+            let response = VolumeListResponse(
+                volumes: volumes.isEmpty ? nil : volumes,
+                warnings: nil
+            )
 
-        logger.info("Listed volumes", metadata: ["count": "\(volumes.count)"])
-        return .success(response)
+            logger.info("Listed volumes", metadata: ["count": "\(volumes.count)"])
+            return .success(response)
+        } catch {
+            logger.error("Failed to list volumes", metadata: ["error": "\(error)"])
+            return .failure(.internalError(error.localizedDescription))
+        }
     }
 
     /// Handle GET /volumes/{name}

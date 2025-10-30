@@ -162,7 +162,7 @@ public actor VolumeManager {
     /// List volumes with optional filters
     /// - Parameter filters: Filter criteria (label, name, dangling)
     /// - Returns: Array of volume metadata
-    public func listVolumes(filters: [String: [String]]? = nil) -> [VolumeMetadata] {
+    public func listVolumes(filters: [String: [String]]? = nil) async throws -> [VolumeMetadata] {
         var result = Array(volumes.values)
 
         // Apply filters
@@ -191,9 +191,19 @@ public actor VolumeManager {
             }
 
             // Filter by dangling (volumes not referenced by any container)
-            // TODO: Implement dangling detection when ContainerManager integration is added
             if let danglingFilters = filters["dangling"], !danglingFilters.isEmpty {
-                logger.warning("Dangling volume filter not yet implemented")
+                let danglingValue = danglingFilters.first ?? "false"
+                let shouldBeDangling = (danglingValue.lowercased() == "true" || danglingValue == "1")
+
+                var filteredResult: [VolumeMetadata] = []
+                for volume in result {
+                    let users = try await stateStore.getVolumeUsers(volumeName: volume.name)
+                    let isDangling = users.isEmpty
+                    if isDangling == shouldBeDangling {
+                        filteredResult.append(volume)
+                    }
+                }
+                result = filteredResult
             }
         }
 
@@ -268,7 +278,7 @@ public actor VolumeManager {
         var spaceReclaimed: Int64 = 0
 
         // Get all volumes (dangling filter should be applied by caller)
-        let allVolumes = listVolumes(filters: filters)
+        let allVolumes = try await listVolumes(filters: filters)
 
         // Filter out volumes that are in use by containers
         var volumesToPrune: [VolumeMetadata] = []

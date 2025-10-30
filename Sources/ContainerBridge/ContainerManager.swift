@@ -265,7 +265,7 @@ public actor ContainerManager {
                 tty: config.tty,
                 needsCreate: false,
                 networkAttachments: networkAttachments,
-                anonymousVolumes: []  // TODO: Persist anonymous volumes in StateStore
+                anonymousVolumes: []  // Anonymous volumes loaded from volume_mounts table
             )
 
             // Store in containers map

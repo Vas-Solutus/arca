@@ -487,8 +487,8 @@ public actor OVSNetworkBackend {
             networkID: networkID
         )
 
-        // TODO: Release IP from OVN DHCP
-        // OVN will handle IP release automatically when logical switch port is deleted
+        // Note: OVN handles IP release automatically when logical switch port is deleted
+        // No manual DHCP release required
 
         // Update tracking
         metadata.containers.remove(containerID)
