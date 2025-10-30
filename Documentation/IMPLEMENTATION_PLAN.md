@@ -1543,6 +1543,9 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
 - ✅ Volume mounts tracked in database
 - ✅ CASCADE deletion cleans up relationships automatically
 - ✅ All Docker volume commands functional
+- ✅ Integration tests passing: `volumeInUseProtection`, `namedVolumesPersist`, `anonymousVolumesCleanup`
+
+**Critical Bug Fixed (2025-10-29)**: SQLite foreign keys were disabled by default, causing CASCADE DELETE to fail. This meant volume_mounts records weren't deleted when containers were removed, causing volumes to remain "in use" forever. Fixed by adding `PRAGMA foreign_keys = ON` in StateStore initialization. (Commit: `adeab3f`)
 
 **Note**: This is a **complete, production-ready** implementation of Docker's volume system with full lifecycle management.
 
@@ -1590,12 +1593,12 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
 - [x] **Implement volume deletion**
   - ✅ Delete volume directory
   - ✅ Remove metadata from StateStore
-  - ✅ Error handling: 404 if not found
-  - ⚠️ Volume usage checking TODO (currently allows deletion even if in use)
+  - ✅ Error handling: 404 if not found, 409 if in use
+  - ✅ Volume usage checking via StateStore.getVolumeUsers()
   - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift:deleteVolume()`
 
 - [x] **Implement volume pruning**
-  - ✅ Find volumes (dangling filter TODO - needs container integration)
+  - ✅ Find volumes with dangling filter support (uses StateStore.getVolumeUsers())
   - ✅ Delete volumes and calculate space reclaimed
   - ✅ Files: `Sources/ContainerBridge/VolumeManager.swift:pruneVolumes()`
 
@@ -1625,8 +1628,8 @@ This phase implements Docker-compatible networking using a lightweight Linux VM 
   - ✅ Parse volume name and force parameter
   - ✅ Call volumeManager.deleteVolume(force:)
   - ✅ Return 204 No Content on success
-  - ✅ Error handling: 404 if not found, 409 if in use (TODO: implement usage check)
-  - ✅ Tested: `docker volume rm my-volume`
+  - ✅ Error handling: 404 if not found, 409 if in use (implemented via StateStore)
+  - ✅ Tested: `docker volume rm my-volume` (both success and in-use error cases)
 
 - [x] **POST /volumes/prune - Prune volumes**
   - ✅ Parse filters query parameter
@@ -2364,6 +2367,23 @@ NetworkManager → Networks (reconciled from OVN on startup)
 - Volume lifecycle and protection
 
 All tests use real Docker CLI commands and verify production scenarios. Performance benchmarking deferred as non-blocking.
+
+**Test Helper Improvements**:
+- ✅ Added `dockerExpectFailure()` in `TestHelpers.swift` for testing expected failures
+- ✅ Fixes Swift Testing error reporting for negative test cases
+- ✅ Used in tests that verify error conditions (volume in-use, network in-use)
+
+**Critical Bug Fixed During Testing** (Commit: `adeab3f`):
+- 🐛 **Bug**: SQLite foreign keys were disabled, breaking CASCADE DELETE
+- 💥 **Impact**: Volume mount records weren't deleted when containers removed
+- 😱 **Symptom**: Volumes stayed "in use" forever, couldn't be deleted after container removal
+- ✅ **Fix**: Added `PRAGMA foreign_keys = ON` in `StateStore.init()`
+- ✅ **Verified**: Volume in-use protection now works correctly end-to-end
+
+**Test Results**:
+- ✅ `controlPlaneHiddenFromPS` - PASSED (32.9s)
+- ✅ `volumeInUseProtection` - PASSED (36.1s)
+- All tests run with `make test FILTER=TestName` (ensures proper code signing with entitlements)
 
 #### Task 8: Write-Ahead Exit State (Future Enhancement)
 
