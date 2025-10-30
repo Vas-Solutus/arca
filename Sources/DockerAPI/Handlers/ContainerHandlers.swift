@@ -856,6 +856,70 @@ public struct ContainerHandlers: Sendable {
         logger.debug("Container resize not yet implemented, ignoring", metadata: ["id": "\(id)"])
         return .success(())
     }
+
+    /// Handle POST /containers/prune
+    /// Remove all stopped containers
+    public func handlePruneContainers(filters: [String: [String]]? = nil) async -> Result<ContainerPruneResponse, ContainerError> {
+        logger.info("Handling prune containers request", metadata: [
+            "filters": "\(filters?.description ?? "none")"
+        ])
+
+        var deletedContainers: [String] = []
+        var spaceReclaimed: Int64 = 0
+
+        // Get all containers (including stopped ones)
+        do {
+            let containers = try await containerManager.listContainers(all: true)
+
+            // Filter for stopped containers (not running)
+            for container in containers {
+                // Skip running containers
+                guard container.state != "running" else {
+                    continue
+                }
+
+                // Skip control plane
+                if await isControlPlane(id: container.id) {
+                    continue
+                }
+
+                // Calculate container size before removal
+                let containerSize = container.sizeRootFs ?? container.sizeRw ?? 0
+
+                // Attempt to remove the container
+                do {
+                    try await containerManager.removeContainer(id: container.id)
+                    deletedContainers.append(container.id)
+                    spaceReclaimed += containerSize
+
+                    logger.debug("Pruned stopped container", metadata: [
+                        "id": "\(container.id)",
+                        "name": "\(container.names.first ?? container.id)",
+                        "size": "\(containerSize)"
+                    ])
+                } catch {
+                    logger.warning("Failed to prune container", metadata: [
+                        "id": "\(container.id)",
+                        "error": "\(error)"
+                    ])
+                    // Continue with other containers
+                }
+            }
+
+            logger.info("Container prune complete", metadata: [
+                "deleted": "\(deletedContainers.count)",
+                "space": "\(spaceReclaimed)"
+            ])
+
+            return .success(ContainerPruneResponse(
+                containersDeleted: deletedContainers,
+                spaceReclaimed: spaceReclaimed
+            ))
+        } catch {
+            logger.error("Failed to list containers for prune", metadata: ["error": "\(error)"])
+            return .failure(ContainerError.invalidRequest("Failed to list containers: \(error)"))
+        }
+    }
 }
 
 // MARK: - Response Types
@@ -868,6 +932,22 @@ public struct ContainerListResponse {
     public init(containers: [ContainerListItem], error: Error? = nil) {
         self.containers = containers
         self.error = error
+    }
+}
+
+/// Response for POST /containers/prune
+public struct ContainerPruneResponse: Codable {
+    public let containersDeleted: [String]?
+    public let spaceReclaimed: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case containersDeleted = "ContainersDeleted"
+        case spaceReclaimed = "SpaceReclaimed"
+    }
+
+    public init(containersDeleted: [String], spaceReclaimed: Int64) {
+        self.containersDeleted = containersDeleted
+        self.spaceReclaimed = spaceReclaimed
     }
 }
 

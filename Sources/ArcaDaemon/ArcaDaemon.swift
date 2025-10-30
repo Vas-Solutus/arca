@@ -692,6 +692,26 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Container endpoints - Prune
+        _ = builder.post("/containers/prune") { request in
+            do {
+                let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
+
+                let result = await containerHandlers.handlePruneContainers(filters: filters)
+
+                switch result {
+                case .success(let response):
+                    return .standard(HTTPResponse.json(response))
+                case .failure(let error):
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            } catch let error as ValidationError {
+                return .standard(error.toHTTPResponse())
+            } catch {
+                return .standard(HTTPResponse.badRequest("Invalid filters parameter: \(error.localizedDescription)"))
+            }
+        }
+
         // Image endpoints
         _ = builder.get("/images/json") { request in
             // Validate and parse query parameters
