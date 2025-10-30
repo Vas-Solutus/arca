@@ -2840,26 +2840,45 @@ docker exec web ping -c 1 app
 
 ---
 
-## Phase 4: Build & Advanced Features (Weeks 9-12)
+## Phase 4: Container Lifecycle Extensions ✅ COMPLETE (2025-10-30)
 
-### API Endpoints to Implement
+### Container Operations - All Complete ✅
 
-#### Build API
+**Completed (2025-10-30)**:
+- ✅ `POST /containers/{id}/restart` - Restart container (graceful stop + start)
+- ✅ `POST /containers/{id}/kill` - Force kill container with optional signal
+- ✅ `POST /containers/{id}/pause` - Pause container execution (SIGSTOP)
+- ✅ `POST /containers/{id}/unpause` - Resume paused container (SIGCONT)
+- ✅ `POST /containers/{id}/rename` - Rename container with validation
+- ✅ `GET /containers/{id}/stats` - Container resource statistics (CPU, memory, network, block I/O, PIDs)
+  - Full streaming support (stream=true polls every 1s with precpu/preread for deltas)
+  - Single snapshot mode (stream=false for one-time stats)
+  - Microsecond → nanosecond conversion for Docker compatibility
+- ✅ `GET /containers/{id}/top` - List running processes
+  - Uses exec infrastructure to run `ps` inside container
+  - Supports ps_args query parameter (defaults to "-ef")
+  - Parses ps output into structured Titles + Processes arrays
+
+**Testing Results**:
+```bash
+$ docker restart container      # ✅ Works
+$ docker kill container         # ✅ Works
+$ docker pause container        # ✅ Works
+$ docker unpause container      # ✅ Works
+$ docker rename old new         # ✅ Works
+$ docker stats container        # ✅ Works (streaming)
+$ docker stats --no-stream      # ✅ Works (single snapshot)
+$ docker top container          # ✅ Works
+```
+
+### System Operations - Partially Complete
+- ✅ `POST /containers/prune` - Prune unused containers (basic implementation complete, filter support TODO)
+- ⏸️ `GET /events` - System events stream (TODO - Future)
+- ⏸️ `POST /images/prune` - Prune unused images (TODO - Future)
+
+### Build API - TODO (Future)
 - `POST /build` - Build image from Dockerfile
 - `GET /images/{name}/history` - Image history
-
-#### Container Operations
-- `POST /containers/{id}/restart` - Restart container
-- `POST /containers/{id}/pause` - Pause container
-- `POST /containers/{id}/unpause` - Unpause container
-- `POST /containers/{id}/rename` - Rename container
-- `GET /containers/{id}/stats` - Container stats (CPU, memory)
-- `GET /containers/{id}/top` - List processes
-
-#### System Operations
-- `GET /events` - System events stream
-- `POST /containers/prune` - Prune unused containers
-- `POST /images/prune` - Prune unused images
 
 #### Image Size Tracking (TODO)
 **Problem**: Arca currently reports compressed (OCI blob) sizes instead of uncompressed (extracted) sizes like Docker.
