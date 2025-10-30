@@ -2915,15 +2915,21 @@ Network: Attached to default network
 
 **Implementation Tasks:**
 
-**Phase 1: Proto & gRPC Setup** (Day 1)
-- [ ] Vendor BuildKit proto files from moby/buildkit
+**Phase 1: Proto & gRPC Setup** ✅ COMPLETE (2025-10-30)
+- [x] Vendor BuildKit proto files from moby/buildkit
   - api/services/control/control.proto
-  - api/types/*.proto (dependencies)
-- [ ] Add BuildKit proto files to Sources/ContainerBuild/proto/
-- [ ] Update Package.swift with ContainerBuild target
-- [ ] Add gRPC code generation to scripts/generate-grpc.sh
-- [ ] Generate Swift gRPC client code
-- [ ] Verify generated code compiles
+  - api/types/worker.proto
+  - solver/pb/ops.proto
+  - solver/errdefs/errdefs.proto
+  - sourcepolicy/pb/policy.proto
+  - google/rpc/status.proto (dependency)
+- [x] Add BuildKit proto files to Sources/ContainerBuild/proto/
+- [x] Update Package.swift with ContainerBuild target
+- [x] Add gRPC code generation to scripts/generate-grpc.sh
+- [x] Generate Swift gRPC client code (7 files)
+  - control.{pb,grpc}.swift - BuildKit Control API
+  - worker.pb.swift, ops.pb.swift, errdefs.pb.swift, policy.pb.swift, status.pb.swift
+- [x] Verify generated code compiles (swift build successful)
 
 **Phase 2: BuildKit Manager** (Day 2, Morning)
 - [ ] Create Sources/ContainerBuild/BuildKitManager.swift
