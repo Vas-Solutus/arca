@@ -230,6 +230,58 @@ public struct ContainerHandlers: Sendable {
         }
     }
 
+    /// Handle POST /containers/{id}/restart
+    /// Restarts a container
+    public func handleRestartContainer(id: String, timeout: Int?) async -> Result<Void, ContainerError> {
+        logger.info("Handling restart container request", metadata: [
+            "id": "\(id)",
+            "timeout": "\(timeout ?? 10)"
+        ])
+
+        // Protect control plane from being restarted by users
+        if await isControlPlane(id: id) {
+            logger.warning("Attempted to restart control plane container", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.operationNotPermitted(
+                "Cannot restart the control plane container 'arca-control-plane'. " +
+                "This container is managed by the Arca daemon and uses restart policy 'always'."
+            ))
+        }
+
+        do {
+            // Stop the container first (if running) - this is idempotent
+            try await containerManager.stopContainer(id: id, timeout: timeout)
+
+            logger.debug("Container stopped for restart", metadata: ["id": "\(id)"])
+
+            // Start the container
+            try await containerManager.startContainer(id: id)
+
+            logger.info("Container restarted", metadata: ["id": "\(id)"])
+
+            return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to restart container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            default:
+                return .failure(ContainerError.restartFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to restart container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.restartFailed(errorDescription(error)))
+        }
+    }
+
     /// Handle DELETE /containers/{id}
     /// Removes a container
     public func handleRemoveContainer(id: String, force: Bool, removeVolumes: Bool) async -> Result<Void, ContainerError> {
@@ -825,6 +877,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case creationFailed(String)
     case startFailed(String)
     case stopFailed(String)
+    case restartFailed(String)
     case removeFailed(String)
     case inspectFailed(String)
     case notFound(String)
@@ -840,6 +893,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to start container: \(msg)"
         case .stopFailed(let msg):
             return "Failed to stop container: \(msg)"
+        case .restartFailed(let msg):
+            return "Failed to restart container: \(msg)"
         case .removeFailed(let msg):
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):

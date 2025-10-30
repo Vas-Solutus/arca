@@ -461,6 +461,38 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        _ = builder.post("/containers/{id}/restart") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            // Validate timeout parameter
+            do {
+                let timeout = try QueryParameterValidator.parseNonNegativeInt(request.queryParameters["t"], paramName: "t")
+
+                let result = await containerHandlers.handleRestartContainer(id: id, timeout: timeout)
+
+                switch result {
+                case .success:
+                    return .standard(HTTPResponse.noContent())
+                case .failure(let error):
+                    // Map ContainerError to appropriate HTTP status
+                    switch error {
+                    case .notFound:
+                        return .standard(HTTPResponse.notFound(error.description))
+                    case .operationNotPermitted:
+                        return .standard(HTTPResponse.conflict(error.description))
+                    default:
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                }
+            } catch let error as ValidationError {
+                return .standard(error.toHTTPResponse())
+            } catch {
+                return .standard(HTTPResponse.badRequest("Invalid query parameters: \(error.localizedDescription)"))
+            }
+        }
+
         // Container endpoints - Remove
         _ = builder.delete("/containers/{id}") { request in
             guard let id = request.pathParam("id") else {
