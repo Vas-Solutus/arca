@@ -366,6 +366,106 @@ public struct ImageHandlers: Sendable {
         }
     }
 
+    /// Handle POST /images/prune
+    /// Removes unused images
+    public func handlePruneImages(
+        filters: [String: [String]]? = nil,
+        containerManager: ContainerManager
+    ) async -> Result<ImagePruneResponse, ImageHandlerError> {
+        logger.info("Handling prune images request", metadata: [
+            "filters": "\(filters?.description ?? "none")"
+        ])
+
+        var deletedImages: [ImageDeleteResponseItem] = []
+        var spaceReclaimed: Int64 = 0
+
+        do {
+            // Get all images
+            let images = try await imageManager.listImages()
+
+            // Determine if we should only prune dangling images
+            let danglingOnly = filters?["dangling"]?.first == "true" || filters?["dangling"]?.first == "1"
+
+            // Get all container image IDs to check usage
+            let containers = try await containerManager.listContainers(all: true)
+            let usedImageIDs = Set(containers.map { $0.imageID })
+
+            logger.debug("Image prune scan", metadata: [
+                "total_images": "\(images.count)",
+                "dangling_only": "\(danglingOnly)",
+                "images_in_use": "\(usedImageIDs.count)"
+            ])
+
+            // Filter images for pruning
+            for image in images {
+                // Check if image is dangling (no repo tags)
+                let isDangling = image.repoTags.isEmpty || image.repoTags == ["<none>:<none>"]
+
+                // Skip if we're only pruning dangling images and this isn't dangling
+                if danglingOnly && !isDangling {
+                    continue
+                }
+
+                // Skip if not dangling and danglingOnly is true
+                // OR skip if image is in use by a container
+                if usedImageIDs.contains(image.id) {
+                    logger.debug("Skipping image in use", metadata: [
+                        "image_id": "\(image.id)",
+                        "repo_tags": "\(image.repoTags)"
+                    ])
+                    continue
+                }
+
+                // Prune this image
+                do {
+                    // Use the first repo tag or ID for deletion
+                    let nameOrId = image.repoTags.first ?? image.id
+
+                    let deleteItems = try await imageManager.deleteImage(
+                        nameOrId: nameOrId,
+                        force: false
+                    )
+
+                    // Add to results
+                    for item in deleteItems {
+                        deletedImages.append(ImageDeleteResponseItem(
+                            untagged: item.untagged,
+                            deleted: item.deleted
+                        ))
+                    }
+
+                    // Add to space reclaimed
+                    spaceReclaimed += image.size
+
+                    logger.debug("Pruned image", metadata: [
+                        "image_id": "\(image.id)",
+                        "repo_tags": "\(image.repoTags)",
+                        "size": "\(image.size)"
+                    ])
+                } catch {
+                    logger.warning("Failed to prune image", metadata: [
+                        "image_id": "\(image.id)",
+                        "error": "\(error)"
+                    ])
+                    // Continue with other images
+                }
+            }
+
+            logger.info("Image prune complete", metadata: [
+                "deleted": "\(deletedImages.count)",
+                "space": "\(spaceReclaimed)"
+            ])
+
+            return .success(ImagePruneResponse(
+                imagesDeleted: deletedImages.isEmpty ? nil : deletedImages,
+                spaceReclaimed: spaceReclaimed
+            ))
+        } catch {
+            logger.error("Failed to prune images", metadata: ["error": "\(error)"])
+            return .failure(.pruneFailed(errorDescription(error)))
+        }
+    }
+
     // MARK: - Helper Methods
 
     /// Map ImageContainerConfig to ImageConfig
@@ -429,6 +529,7 @@ public enum ImageHandlerError: Error, CustomStringConvertible {
     case pullFailed(String)
     case inspectFailed(String)
     case deleteFailed(String)
+    case pruneFailed(String)
     case imageNotFound(String)
     case invalidRequest(String)
 
@@ -440,6 +541,8 @@ public enum ImageHandlerError: Error, CustomStringConvertible {
             return "Failed to inspect image: \(msg)"
         case .deleteFailed(let msg):
             return "Failed to delete image: \(msg)"
+        case .pruneFailed(let msg):
+            return "Failed to prune images: \(msg)"
         case .imageNotFound(let name):
             return "No such image: \(name)"
         case .invalidRequest(let msg):

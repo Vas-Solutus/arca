@@ -281,6 +281,22 @@ public struct ImageDeleteResponseItem: Codable {
     }
 }
 
+/// Response from image prune operation
+public struct ImagePruneResponse: Codable {
+    public let imagesDeleted: [ImageDeleteResponseItem]?
+    public let spaceReclaimed: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case imagesDeleted = "ImagesDeleted"
+        case spaceReclaimed = "SpaceReclaimed"
+    }
+
+    public init(imagesDeleted: [ImageDeleteResponseItem]?, spaceReclaimed: Int64) {
+        self.imagesDeleted = imagesDeleted
+        self.spaceReclaimed = spaceReclaimed
+    }
+}
+
 /// Request for image pull authentication (X-Registry-Auth header)
 public struct RegistryAuthConfig: Codable {
     public let username: String?
