@@ -1382,6 +1382,41 @@ public actor ContainerManager {
         logger.info("Container unpaused successfully", metadata: ["id": "\(dockerID)"])
     }
 
+    /// Get container statistics
+    public func getContainerStats(id: String) async throws -> Containerization.ContainerStatistics {
+        logger.info("Getting container statistics", metadata: ["id": "\(id)"])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard let info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Verify container is running
+        guard info.state == "running" else {
+            throw ContainerManagerError.invalidConfiguration("Container is not running")
+        }
+
+        // Get native container
+        guard let nativeContainer = nativeContainers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(dockerID)
+        }
+
+        // Get statistics from Containerization API
+        let stats = try await nativeContainer.statistics()
+
+        logger.debug("Container statistics retrieved", metadata: [
+            "id": "\(dockerID)",
+            "memory_usage": "\(stats.memory.usageBytes)",
+            "cpu_usage": "\(stats.cpu.usageUsec)"
+        ])
+
+        return stats
+    }
+
     /// Rename a container
     public func renameContainer(id: String, newName: String) async throws {
         logger.info("Renaming container", metadata: [

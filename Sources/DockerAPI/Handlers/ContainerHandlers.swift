@@ -1,16 +1,17 @@
 import Foundation
 import Logging
 import ContainerBridge
+import Containerization
 import NIOHTTP1
 
 /// Handlers for Docker Engine API container endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
 public struct ContainerHandlers: Sendable {
-    private let containerManager: ContainerManager
+    private let containerManager: ContainerBridge.ContainerManager
     private let imageManager: ImageManager
     private let logger: Logger
 
-    public init(containerManager: ContainerManager, imageManager: ImageManager, logger: Logger) {
+    public init(containerManager: ContainerBridge.ContainerManager, imageManager: ImageManager, logger: Logger) {
         self.containerManager = containerManager
         self.imageManager = imageManager
         self.logger = logger
@@ -403,6 +404,313 @@ public struct ContainerHandlers: Sendable {
 
             return .failure(ContainerError.unpauseFailed(errorDescription(error)))
         }
+    }
+
+    /// Handle GET /containers/{id}/stats
+    /// Gets container resource usage statistics
+    public func handleGetContainerStats(id: String) async -> Result<ContainerStatsResponse, ContainerError> {
+        logger.info("Handling get container stats request", metadata: ["id": "\(id)"])
+
+        do {
+            // Get container name for response
+            guard let containerInfo = try await containerManager.getContainer(id: id) else {
+                return .failure(ContainerError.notFound(id))
+            }
+
+            // Get statistics from container manager
+            let stats = try await containerManager.getContainerStats(id: id)
+
+            // Transform to Docker format
+            let now = ISO8601DateFormatter().string(from: Date())
+            let dockerStats = transformToDockerStats(
+                stats: stats,
+                containerID: containerInfo.id,
+                containerName: containerInfo.name ?? "",
+                timestamp: now
+            )
+
+            logger.info("Container stats retrieved successfully", metadata: ["id": "\(id)"])
+
+            return .success(dockerStats)
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to get container stats", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            case .invalidConfiguration(let msg):
+                return .failure(ContainerError.invalidRequest(msg))
+            default:
+                return .failure(ContainerError.statsFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to get container stats", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.statsFailed(errorDescription(error)))
+        }
+    }
+
+    /// Transform Apple ContainerStatistics to Docker stats format
+    private func transformToDockerStats(
+        stats: Containerization.ContainerStatistics,
+        containerID: String,
+        containerName: String,
+        timestamp: String
+    ) -> ContainerStatsResponse {
+        // Convert microseconds to nanoseconds for Docker compatibility
+        let cpuUsageNano = stats.cpu.usageUsec * 1000
+        let userUsageNano = stats.cpu.userUsec * 1000
+        let systemUsageNano = stats.cpu.systemUsec * 1000
+        let throttledTimeNano = stats.cpu.throttledTimeUsec * 1000
+
+        // Build CPU stats
+        let cpuUsage = CPUUsage(
+            totalUsage: cpuUsageNano,
+            usageInKernelmode: systemUsageNano,
+            usageInUsermode: userUsageNano
+        )
+
+        let throttlingData = ThrottlingData(
+            periods: stats.cpu.throttlingPeriods,
+            throttledPeriods: stats.cpu.throttledPeriods,
+            throttledTime: throttledTimeNano
+        )
+
+        let cpuStats = CPUStats(
+            cpuUsage: cpuUsage,
+            systemCpuUsage: cpuUsageNano,  // Approximate
+            onlineCpus: ProcessInfo.processInfo.processorCount,
+            throttlingData: throttlingData
+        )
+
+        // Build memory stats
+        let memoryStatsDetails = MemoryStatsDetails(
+            cache: stats.memory.cacheBytes,
+            pgfault: stats.memory.pageFaults,
+            pgmajfault: stats.memory.majorPageFaults
+        )
+
+        let memoryStats = MemoryStats(
+            usage: stats.memory.usageBytes,
+            limit: stats.memory.limitBytes,
+            stats: memoryStatsDetails
+        )
+
+        // Build PID stats
+        let pidsStats = PidsStats(
+            current: stats.process.current,
+            limit: stats.process.limit
+        )
+
+        // Build block I/O stats
+        var blkioEntries: [BlkioStatEntry] = []
+        for device in stats.blockIO.devices {
+            blkioEntries.append(BlkioStatEntry(
+                major: device.major,
+                minor: device.minor,
+                op: "Read",
+                value: device.readBytes
+            ))
+            blkioEntries.append(BlkioStatEntry(
+                major: device.major,
+                minor: device.minor,
+                op: "Write",
+                value: device.writeBytes
+            ))
+        }
+
+        let blkioStats = BlkioStats(
+            ioServiceBytesRecursive: blkioEntries.isEmpty ? nil : blkioEntries
+        )
+
+        // Build network stats
+        var networks: [String: NetworkStats] = [:]
+        for netStat in stats.networks {
+            networks[netStat.interface] = NetworkStats(
+                rxBytes: netStat.receivedBytes,
+                rxPackets: netStat.receivedPackets,
+                rxErrors: netStat.receivedErrors,
+                rxDropped: 0,  // Not available in Apple's stats
+                txBytes: netStat.transmittedBytes,
+                txPackets: netStat.transmittedPackets,
+                txErrors: netStat.transmittedErrors,
+                txDropped: 0  // Not available in Apple's stats
+            )
+        }
+
+        return ContainerStatsResponse(
+            id: containerID,
+            name: containerName,
+            read: timestamp,
+            preread: timestamp,  // Same as read for non-streaming
+            pidsStats: pidsStats,
+            cpuStats: cpuStats,
+            precpuStats: cpuStats,  // Same as cpuStats for single-shot
+            memoryStats: memoryStats,
+            blkioStats: blkioStats,
+            networks: networks.isEmpty ? nil : networks
+        )
+    }
+
+    /// Handle GET /containers/{id}/stats with streaming support
+    /// Streams container stats when stream=true (default), or returns single snapshot when stream=false
+    public func handleGetContainerStatsStreaming(id: String, stream: Bool) async -> HTTPResponseType {
+        logger.info("Handling container stats request (streaming)", metadata: [
+            "id": "\(id)",
+            "stream": "\(stream)"
+        ])
+
+        // Verify container exists and is running
+        guard let containerInfo = try? await containerManager.getContainer(id: id) else {
+            return .standard(HTTPResponse.notFound("container", id: id))
+        }
+
+        // Container must be running to get stats
+        if !containerInfo.state.running {
+            return .standard(HTTPResponse.error(
+                "Container is not running",
+                status: .internalServerError
+            ))
+        }
+
+        // For non-streaming, get a single snapshot
+        if !stream {
+            let result = await handleGetContainerStats(id: id)
+            switch result {
+            case .success(let stats):
+                return .standard(HTTPResponse.ok(stats))
+            case .failure(let error):
+                return .standard(HTTPResponse.error(
+                    error.localizedDescription,
+                    status: .internalServerError
+                ))
+            }
+        }
+
+        // Streaming response - poll stats every 1 second
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Type", value: "application/json")
+
+        return .streaming(status: .ok, headers: headers) { writer in
+            var previousStats: Containerization.ContainerStatistics?
+            var previousTimestamp: String?
+
+            do {
+                // Poll stats until the stream is cancelled or container stops
+                while true {
+                    // Check if container is still running
+                    guard let currentInfo = try? await self.containerManager.getContainer(id: id),
+                          currentInfo.state.running else {
+                        // Container stopped, finish the stream
+                        try await writer.finish()
+                        return
+                    }
+
+                    do {
+                        // Get current stats
+                        let currentStats = try await self.containerManager.getContainerStats(id: id)
+                        let currentTimestamp = ISO8601DateFormatter().string(from: Date())
+
+                        // Build stats response with previous values for deltas
+                        var statsResponse = self.transformToDockerStats(
+                            stats: currentStats,
+                            containerID: containerInfo.id,
+                            containerName: containerInfo.name ?? "",
+                            timestamp: currentTimestamp
+                        )
+
+                        // Update preread and precpu stats if we have previous values
+                        if let prevTimestamp = previousTimestamp {
+                            statsResponse = ContainerStatsResponse(
+                                id: statsResponse.id,
+                                name: statsResponse.name,
+                                read: statsResponse.read,
+                                preread: prevTimestamp,
+                                pidsStats: statsResponse.pidsStats,
+                                cpuStats: statsResponse.cpuStats,
+                                precpuStats: previousStats.map { prevStats in
+                                    self.buildCPUStats(from: prevStats)
+                                } ?? statsResponse.cpuStats,
+                                memoryStats: statsResponse.memoryStats,
+                                blkioStats: statsResponse.blkioStats,
+                                networks: statsResponse.networks
+                            )
+                        }
+
+                        // Encode and write JSON
+                        let encoder = JSONEncoder()
+                        encoder.dateEncodingStrategy = .iso8601
+                        let jsonData = try encoder.encode(statsResponse)
+
+                        // Docker stats format: newline-delimited JSON
+                        var dataWithNewline = jsonData
+                        dataWithNewline.append(contentsOf: "\n".utf8)
+
+                        try await writer.write(dataWithNewline)
+
+                        // Save for next iteration
+                        previousStats = currentStats
+                        previousTimestamp = currentTimestamp
+
+                        // Wait 1 second before next poll (standard Docker stats interval)
+                        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+                    } catch {
+                        // Log error but continue trying
+                        self.logger.error("Failed to get stats during streaming", metadata: [
+                            "id": "\(id)",
+                            "error": "\(error)"
+                        ])
+
+                        // If we get an error, wait a bit before retrying
+                        try await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                }
+            } catch is CancellationError {
+                // Stream was cancelled (client disconnected), this is normal
+                self.logger.debug("Stats streaming cancelled", metadata: ["id": "\(id)"])
+                try? await writer.finish()
+            } catch {
+                self.logger.error("Stats streaming error", metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)"
+                ])
+                try? await writer.finish()
+            }
+        }
+    }
+
+    /// Helper to build CPUStats from ContainerStatistics (for precpu stats)
+    private func buildCPUStats(from stats: Containerization.ContainerStatistics) -> CPUStats {
+        let cpuUsageNano = stats.cpu.usageUsec * 1000
+        let userUsageNano = stats.cpu.userUsec * 1000
+        let systemUsageNano = stats.cpu.systemUsec * 1000
+        let throttledTimeNano = stats.cpu.throttledTimeUsec * 1000
+
+        let cpuUsage = CPUUsage(
+            totalUsage: cpuUsageNano,
+            usageInKernelmode: systemUsageNano,
+            usageInUsermode: userUsageNano
+        )
+
+        let throttlingData = ThrottlingData(
+            periods: stats.cpu.throttlingPeriods,
+            throttledPeriods: stats.cpu.throttledPeriods,
+            throttledTime: throttledTimeNano
+        )
+
+        return CPUStats(
+            cpuUsage: cpuUsage,
+            systemCpuUsage: cpuUsageNano,
+            onlineCpus: ProcessInfo.processInfo.processorCount,
+            throttlingData: throttlingData
+        )
     }
 
     /// Handle DELETE /containers/{id}
@@ -1084,6 +1392,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case renameFailed(String)
     case pauseFailed(String)
     case unpauseFailed(String)
+    case statsFailed(String)
     case removeFailed(String)
     case inspectFailed(String)
     case notFound(String)
@@ -1108,6 +1417,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to pause container: \(msg)"
         case .unpauseFailed(let msg):
             return "Failed to unpause container: \(msg)"
+        case .statsFailed(let msg):
+            return "Failed to get container stats: \(msg)"
         case .removeFailed(let msg):
             return "Failed to remove container: \(msg)"
         case .inspectFailed(let msg):

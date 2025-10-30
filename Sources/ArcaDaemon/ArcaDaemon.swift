@@ -571,6 +571,18 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Container endpoints - Stats
+        _ = builder.get("/containers/{id}/stats") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            // Parse stream parameter (default: true in Docker API)
+            let stream = request.queryParameters["stream"] != "false" && request.queryParameters["stream"] != "0"
+
+            return await containerHandlers.handleGetContainerStatsStreaming(id: id, stream: stream)
+        }
+
         // Container endpoints - Remove
         _ = builder.delete("/containers/{id}") { request in
             guard let id = request.pathParam("id") else {
