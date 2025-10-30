@@ -41,6 +41,29 @@ func docker(_ args: String, socketPath: String) throws -> String {
     return try shell("docker \(args)", environment: env)
 }
 
+/// Execute a docker command with DOCKER_HOST set, returning success/failure without throwing
+func dockerExpectFailure(_ args: String, socketPath: String) -> Bool {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/bin/bash")
+    task.arguments = ["-c", "docker \(args)"]
+
+    var taskEnv = ProcessInfo.processInfo.environment
+    taskEnv["DOCKER_HOST"] = "unix://\(socketPath)"
+    task.environment = taskEnv
+
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = pipe
+
+    do {
+        try task.run()
+        task.waitUntilExit()
+        return task.terminationStatus != 0  // Return true if command failed (non-zero exit)
+    } catch {
+        return true  // Command execution failed
+    }
+}
+
 /// Start Arca daemon and return process ID
 func startDaemon(socketPath: String, arcaBinary: String = ".build/debug/Arca", logFile: String) throws -> Int32 {
     // Clean up old socket

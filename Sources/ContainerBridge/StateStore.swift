@@ -123,6 +123,10 @@ public actor StateStore {
         // Connect to database
         do {
             self.db = try Connection(expandedPath)
+
+            // Enable foreign key constraints (CRITICAL for CASCADE DELETE)
+            try self.db.execute("PRAGMA foreign_keys = ON")
+
             logger.info("Connected to state database", metadata: ["path": "\(expandedPath)"])
         } catch {
             throw StateStoreError.databaseInitFailed("Failed to connect: \(error)")

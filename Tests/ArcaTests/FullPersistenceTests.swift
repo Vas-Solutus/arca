@@ -237,13 +237,8 @@ struct FullPersistenceTests {
         _ = try docker("create --name \(containerName) --network \(networkName) \(Self.testImage) sleep 3600", socketPath: Self.socketPath)
 
         // Try to remove network (should fail - container attached)
-        do {
-            _ = try docker("network rm \(networkName)", socketPath: Self.socketPath)
-            Issue.record("Network removal should have failed with attached containers")
-        } catch {
-            // Expected - network is in use
-            print("Network removal correctly failed: \(error)")
-        }
+        let networkDeletionFailed = dockerExpectFailure("network rm \(networkName)", socketPath: Self.socketPath)
+        #expect(networkDeletionFailed, "Network removal should have failed with attached containers")
 
         // Remove container first
         _ = try docker("rm \(containerName)", socketPath: Self.socketPath)
@@ -414,13 +409,8 @@ struct FullPersistenceTests {
         _ = try docker("create --name \(containerName) -v \(volumeName):/data \(Self.testImage) sleep 3600", socketPath: Self.socketPath)
 
         // Try to delete volume (should fail - in use)
-        do {
-            _ = try docker("volume rm \(volumeName)", socketPath: Self.socketPath)
-            Issue.record("Volume deletion should have failed (volume in use)")
-        } catch {
-            // Expected - volume is in use
-            print("Volume deletion correctly failed: \(error)")
-        }
+        let volumeDeletionFailed = dockerExpectFailure("volume rm \(volumeName)", socketPath: Self.socketPath)
+        #expect(volumeDeletionFailed, "Volume deletion should have failed (volume in use)")
 
         // Remove container
         _ = try docker("rm \(containerName)", socketPath: Self.socketPath)
