@@ -122,7 +122,8 @@ public actor BuildKitClient {
     public func solve(
         definition: Pb_Definition?,
         frontend: String?,
-        frontendAttrs: [String: String]
+        frontendAttrs: [String: String],
+        exporters: [String: String] = [:]
     ) async throws -> Moby_Buildkit_V1_SolveResponse {
         guard let client = client else {
             throw BuildKitClientError.notConnected
@@ -130,7 +131,8 @@ public actor BuildKitClient {
 
         logger.info("Executing build (Solve RPC)", metadata: [
             "frontend": "\(frontend ?? "none")",
-            "hasDefinition": "\(definition != nil)"
+            "hasDefinition": "\(definition != nil)",
+            "exporters": "\(exporters.keys.joined(separator: ", "))"
         ])
 
         var request = Moby_Buildkit_V1_SolveRequest()
@@ -143,7 +145,13 @@ public actor BuildKitClient {
             request.frontend = frontend
         }
 
-        request.frontendAttrs = frontendAttrs
+        // Merge frontend attrs and exporter attrs
+        // BuildKit expects exporters to be configured via frontend attributes
+        var allAttrs = frontendAttrs
+        for (key, value) in exporters {
+            allAttrs[key] = value
+        }
+        request.frontendAttrs = allAttrs
 
         let call = client.solve(request)
 
@@ -268,5 +276,20 @@ public actor BuildKitClient {
             logger.warning("Failed to get disk usage", metadata: ["error": "\(error)"])
             throw BuildKitClientError.operationFailed("\(error)")
         }
+    }
+
+    /// Extract image tar from BuildKit container filesystem
+    /// - Parameters:
+    ///   - path: Path to tar file in BuildKit container
+    ///   - container: BuildKit LinuxContainer instance
+    /// - Returns: Tar file data
+    /// - Note: TODO: Implement proper tar extraction from container filesystem
+    public func extractImageTar(path: String, container: Containerization.LinuxContainer) async throws -> Data {
+        logger.warning("extractImageTar not yet implemented - stubbed for now", metadata: [
+            "path": "\(path)"
+        ])
+        // TODO: Use container filesystem APIs to extract the tar file
+        // For now, throw an error indicating this is not implemented
+        throw BuildKitClientError.operationFailed("Image export not yet implemented - requires container filesystem access")
     }
 }

@@ -166,6 +166,78 @@ public final class ArcaDaemon: @unchecked Sendable {
             logger.warning("Build it with: make helpervm")
         }
 
+        // Load BuildKit image (only if changed or missing)
+        let buildkitPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".arca")
+            .appendingPathComponent("buildkit")
+            .appendingPathComponent("oci-layout")
+
+        if FileManager.default.fileExists(atPath: buildkitPath.path) {
+            // Check if we need to reload by comparing digests
+            var shouldReload = true
+
+            if await imageManager.imageExists(nameOrId: "arca/buildkit:latest") {
+                // Get digest from OCI layout
+                let indexPath = buildkitPath.appendingPathComponent("index.json")
+                if let indexData = try? Data(contentsOf: indexPath),
+                   let indexJson = try? JSONSerialization.jsonObject(with: indexData) as? [String: Any],
+                   let manifests = indexJson["manifests"] as? [[String: Any]],
+                   let firstManifest = manifests.first,
+                   let ociDigest = firstManifest["digest"] as? String {
+
+                    // Get digest of currently loaded image
+                    do {
+                        let images = try await imageManager.listImages()
+                        if let currentImage = images.first(where: { $0.repoTags.contains("arca/buildkit:latest") }) {
+                            // Compare digests (id is sha256:abc123... format, ociDigest is from manifest)
+                            if currentImage.id.hasSuffix(ociDigest.replacingOccurrences(of: "sha256:", with: "")) {
+                                logger.debug("BuildKit image unchanged, skipping reload", metadata: [
+                                    "digest": "\(ociDigest)"
+                                ])
+                                shouldReload = false
+                            } else {
+                                logger.info("BuildKit image changed, will reload", metadata: [
+                                    "old": "\(currentImage.id)",
+                                    "new": "\(ociDigest)"
+                                ])
+                            }
+                        }
+                    } catch {
+                        logger.debug("Could not check current image digest, will reload: \(error)")
+                    }
+                }
+            }
+
+            if shouldReload {
+                logger.info("Loading BuildKit image from OCI layout", metadata: [
+                    "path": "\(buildkitPath.path)"
+                ])
+
+                // Delete existing image if present
+                if await imageManager.imageExists(nameOrId: "arca/buildkit:latest") {
+                    logger.debug("Deleting existing arca/buildkit:latest for reload")
+                    _ = try? await imageManager.deleteImage(nameOrId: "arca/buildkit:latest", force: true)
+                }
+
+                // Load the OCI layout into ImageStore
+                do {
+                    let loadedImages = try await imageManager.loadFromOCILayout(directory: buildkitPath)
+                    logger.info("BuildKit image loaded successfully", metadata: [
+                        "count": "\(loadedImages.count)",
+                        "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
+                    ])
+                } catch {
+                    logger.error("Failed to load BuildKit image", metadata: [
+                        "error": "\(error)"
+                    ])
+                    logger.warning("Build features will be disabled - build BuildKit image with: make buildkit")
+                }
+            }
+        } else {
+            logger.warning("BuildKit image not found at \(buildkitPath.path)")
+            logger.warning("Build it with: make buildkit")
+        }
+
         // OVS backend no longer needs separate NetworkHelperVM actor
         // Control plane is now a regular container managed by ContainerManager
         // It will be created by NetworkManager.initialize() with restart policy "always"

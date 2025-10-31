@@ -2982,8 +2982,25 @@ Network: Attached to default network
 ❌ Tags NOT actually applied to images
 ❌ NOT Docker-compatible for real builds
 
-**Phase 4: FULL Build Implementation** ⚠️ NOT STARTED - CRITICAL FOR DOCKER COMPATIBILITY
-This phase implements ACTUAL build functionality (current code is infrastructure only):
+**Phase 4: Build API with BuildKit Integration** ✅ INFRASTRUCTURE COMPLETE (2025-10-31) / ⚠️ FUNCTIONALITY IN PROGRESS
+
+This phase implements `docker build` functionality using BuildKit with **vsock-based secure communication**.
+
+**4.0: BuildKit Infrastructure** ✅ COMPLETE (2025-10-31)
+- [x] Custom BuildKit image with vsock proxy (`arca/buildkit:latest`)
+- [x] vsock-to-TCP proxy using mdlayher/vsock library
+- [x] BuildKit container with `networkMode: "none"` (complete network isolation)
+- [x] BuildKitManager with smart image loading (digest-based reload)
+- [x] BuildKitClient with vsock connection (10-attempt retry with exponential backoff)
+- [x] gRPC communication over vsock:8088
+- [x] Build infrastructure (`make buildkit`, OCI layout at `~/.arca/buildkit/oci-layout/`)
+- [x] BuildKit container persists with `restart: always` policy
+- [x] Buildkit cache volume (`buildkit-cache`) for layer caching
+- [x] Documentation: `Documentation/BUILDKIT_ARCHITECTURE.md`
+
+**Architecture**: `Host (Swift gRPC) → vsock:8088 → vsock-proxy (Go) → localhost:8088 → buildkitd`
+
+**Security**: BuildKit has NO network access - communication ONLY via virtio-vsock
 
 **4.1: BuildKit Session API - Context Transfer** (REQUIRED for COPY/ADD)
 - [ ] Implement bidirectional gRPC streaming for Session RPC
@@ -3005,10 +3022,11 @@ This phase implements ACTUAL build functionality (current code is infrastructure
 - [ ] Report actual build timings
 
 **4.3: Image Export from BuildKit** (REQUIRED to use built images)
-- [ ] Configure BuildKit to export images
-- [ ] Use BuildKit's exporter to create OCI tar
+- [ ] Configure BuildKit exporter in solve() call
+- [ ] Use BuildKit's OCI exporter to create tar
 - [ ] Handle multi-platform image exports
 - [ ] Stream export progress
+- [ ] Extract OCI tar from BuildKit container filesystem
 - [ ] Verify OCI tar format correctness
 
 **4.4: Image Import to Local Store** (REQUIRED for docker images/docker run)

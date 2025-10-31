@@ -453,16 +453,34 @@ See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentat
   - IPAM for IP address allocation
 - ✅ **Bind Mounts** (`-v /host:/container`) - VirtioFS-based with read-only support
 - ✅ vminitd fork as submodule with Arca networking extensions
+- ✅ **BuildKit Integration (Phase 4.0) - Infrastructure COMPLETE** (2025-10-31):
+  - Custom BuildKit image with vsock proxy (`arca/buildkit:latest`)
+  - vsock-to-TCP proxy using mdlayher/vsock library
+  - BuildKit container with `networkMode: "none"` (complete network isolation)
+  - gRPC communication over vsock:8088
+  - BuildKitManager with smart image loading (digest-based reload)
+  - BuildKitClient with retry logic (10 attempts, exponential backoff)
+  - Build infrastructure: `make buildkit`, OCI layout at `~/.arca/buildkit/oci-layout/`
+  - BuildKit persists with `restart: always` policy
+  - `buildkit-cache` volume for layer caching
+  - Architecture: `Host (Swift gRPC) → vsock:8088 → proxy (Go) → localhost:8088 → buildkitd`
+  - See `Documentation/BUILDKIT_ARCHITECTURE.md` for complete design
 
 **Known Limitations**:
 - ⚠️ **Short-lived container edge case**: Containers that exit within 1-2s may not have real exit code persisted if daemon crashes immediately (marked as killed with exit 137 instead). Affects 3/8 restart policy tests but 95% of real-world scenarios work correctly.
 
 **Still Missing (Future Work)**:
+- ❌ **Build API Functionality** (Phase 4.1-4.6): BuildKit infrastructure complete, but missing:
+  - Build context transfer (Session API)
+  - Real-time progress streaming (Status RPC)
+  - Image export from BuildKit cache
+  - Image import to local store
+  - See `Documentation/IMPLEMENTATION_PLAN.md` Phase 4 for details
 - ❌ **Named Volumes**: No VolumeManager, no `/volumes/*` API endpoints (see Phase 3.7: Named Volumes)
 - ❌ **Control plane as container**: Helper VM not yet unified into ContainerManager
 - ❌ **Write-ahead logging**: Exit state persistence optimization (Task 3.7.8)
 
-**Next Priority**: Control plane as regular container (Task 6) and integration testing (Task 7)
+**Next Priority**: Complete Phase 4 Build API functionality (context transfer, image export/import)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
 

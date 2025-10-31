@@ -55,8 +55,9 @@ public struct BuildHandlers: Sendable {
                     stream: "Preparing build context..."
                 )
 
-                // Get BuildKit client
+                // Get BuildKit client and container
                 let client = try await buildKitManager.getClient()
+                let container = try await buildKitManager.getContainer()
 
                 // Build frontend attributes for BuildKit
                 // Pass Dockerfile content inline using the "dockerfile" attribute
@@ -96,15 +97,34 @@ public struct BuildHandlers: Sendable {
                     stream: "Step 1/\(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }.count) : Sending build context to BuildKit\n"
                 )
 
-                // Execute build via BuildKit
+                // Configure OCI exporter to write to BuildKit's filesystem
+                let exportPath = "/tmp/arca-build-\(UUID().uuidString).tar"
+
+                // BuildKit exporters are specified as attributes in the solve request
+                let exporterAttrs: [String: String] = [
+                    "exporter": "oci",
+                    "exporter-opt-dest": exportPath,
+                    "exporter-opt-tar": "true"
+                ]
+
+                // Execute build via BuildKit with OCI exporter
                 // Note: This is a simplified implementation using inline Dockerfile
                 // Full implementation would use BuildKit's session API to transfer build context
                 do {
-                    let _ = try await client.solve(
+                    logger.info("Starting BuildKit solve with OCI exporter", metadata: [
+                        "exportPath": "\(exportPath)"
+                    ])
+
+                    let response = try await client.solve(
                         definition: nil,  // Let BuildKit frontend create the definition
                         frontend: "dockerfile.v0",
-                        frontendAttrs: frontendAttrs
+                        frontendAttrs: frontendAttrs,
+                        exporters: exporterAttrs
                     )
+
+                    logger.info("BuildKit solve completed", metadata: [
+                        "exporterResponse": "\(response.exporterResponse)"
+                    ])
 
                     // Send build progress steps
                     var step = 2
@@ -119,21 +139,53 @@ public struct BuildHandlers: Sendable {
                         }
                     }
 
-                    // Send build completion status
+                    // Send export status
                     try await self.sendBuildStatus(
                         writer: writer,
-                        stream: "Successfully built image\n"
+                        stream: "Exporting image to OCI format...\n"
                     )
+
+                    // Extract the OCI tar from BuildKit container
+                    logger.info("Extracting OCI tar from BuildKit container")
+                    let tarData = try await client.extractImageTar(path: exportPath, container: container)
+
+                    logger.info("Extracted OCI tar", metadata: [
+                        "size": "\(tarData.count) bytes"
+                    ])
+
+                    // Import the OCI tar into image store
+                    try await self.sendBuildStatus(
+                        writer: writer,
+                        stream: "Importing image to local store...\n"
+                    )
+
+                    let imageId = try await self.importOCITar(tarData: tarData)
+
+                    logger.info("Image imported successfully", metadata: [
+                        "imageId": "\(imageId)"
+                    ])
 
                     // Tag the image if tags were provided
                     if !parameters.tags.isEmpty {
                         for tag in parameters.tags {
+                            logger.info("Tagging image", metadata: [
+                                "imageId": "\(imageId)",
+                                "tag": "\(tag)"
+                            ])
+                            try await self.imageManager.tagImage(source: imageId, target: tag)
                             try await self.sendBuildStatus(
                                 writer: writer,
                                 stream: "Successfully tagged \(tag)\n"
                             )
                         }
                     }
+
+                    // Send build completion status with image ID
+                    try await self.sendBuildStatus(
+                        writer: writer,
+                        stream: "Successfully built \(imageId)\n",
+                        aux: BuildStatus.AuxData(ID: imageId)
+                    )
 
                 } catch {
                     throw BuildError.buildFailed("BuildKit solve failed: \(error)")
@@ -216,6 +268,87 @@ public struct BuildHandlers: Sendable {
         dataWithNewline.append(contentsOf: "\n".utf8)
 
         try await writer.write(dataWithNewline)
+    }
+
+    /// Import OCI tar into local image store
+    ///
+    /// - Parameter tarData: OCI tar archive data
+    /// - Returns: Image ID of the imported image
+    private func importOCITar(tarData: Data) async throws -> String {
+        // Create temporary directory for OCI layout extraction
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("arca-build-\(UUID().uuidString)")
+
+        logger.info("Creating temporary OCI layout directory", metadata: [
+            "path": "\(tempDir.path)"
+        ])
+
+        try FileManager.default.createDirectory(
+            at: tempDir,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        defer {
+            // Clean up temporary directory
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        // Write tar data to temporary file
+        let tarFile = tempDir.appendingPathComponent("image.tar")
+        logger.info("Writing OCI tar to temporary file", metadata: [
+            "path": "\(tarFile.path)",
+            "size": "\(tarData.count) bytes"
+        ])
+        try tarData.write(to: tarFile)
+
+        // Extract tar to OCI layout directory
+        logger.info("Extracting OCI tar to layout directory")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-xf", tarFile.path, "-C", tempDir.path]
+
+        let pipe = Pipe()
+        process.standardError = pipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let errorData = try pipe.fileHandleForReading.readToEnd() ?? Data()
+            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+            throw BuildError.buildFailed("Failed to extract OCI tar: \(errorMessage)")
+        }
+
+        logger.info("OCI tar extracted successfully")
+
+        // Check if extraction created expected OCI layout structure
+        // BuildKit's OCI exporter creates the layout directly in the extraction directory
+        let ociLayoutFile = tempDir.appendingPathComponent("oci-layout")
+        let indexFile = tempDir.appendingPathComponent("index.json")
+
+        guard FileManager.default.fileExists(atPath: ociLayoutFile.path),
+              FileManager.default.fileExists(atPath: indexFile.path) else {
+            throw BuildError.buildFailed("Invalid OCI layout: missing oci-layout or index.json")
+        }
+
+        // Import from OCI layout
+        logger.info("Loading image from OCI layout")
+        let images = try await imageManager.loadFromOCILayout(directory: tempDir)
+
+        guard let image = images.first else {
+            throw BuildError.buildFailed("No images found in OCI layout")
+        }
+
+        // Get image digest (this is the image ID)
+        let imageId = image.digest
+
+        logger.info("Image imported from OCI layout", metadata: [
+            "imageId": "\(imageId)"
+        ])
+
+        return imageId
     }
 }
 

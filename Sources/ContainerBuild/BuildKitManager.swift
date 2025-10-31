@@ -7,7 +7,7 @@ import ContainerBridge
 ///
 /// BuildKitManager follows the same pattern as the control plane container:
 /// - BuildKit runs in a regular container (arca-buildkit)
-/// - Uses moby/buildkit:latest image from Docker Hub
+/// - Uses custom arca/buildkit:latest image (includes vsock-to-TCP proxy)
 /// - Communicates via gRPC over vsock (port 8088)
 /// - Has restart policy for automatic recovery
 /// - Labeled with com.arca.role=buildkit for identification
@@ -23,7 +23,7 @@ public actor BuildKitManager {
     private var buildkitClient: BuildKitClient?
 
     // Configuration
-    private let buildkitImage = "moby/buildkit:latest"
+    private let buildkitImage = "arca/buildkit:latest"
     private let containerName = "arca-buildkit"
     private let volumeName = "buildkit-cache"
     private let vsockPort: UInt32 = 8088
@@ -205,7 +205,7 @@ public actor BuildKitManager {
         let dockerID = try await containerManager.createContainer(
             image: buildkitImage,
             name: containerName,
-            command: ["/usr/bin/buildkitd", "--addr", "vsock://\(vsockPort)"],
+            command: ["/usr/local/bin/entrypoint.sh"],  // Explicitly run entrypoint (Apple Containerization doesn't respect image ENTRYPOINT with nil command)
             env: nil,
             workingDir: nil,
             labels: [
@@ -217,7 +217,7 @@ public actor BuildKitManager {
             attachStderr: false,
             tty: false,
             openStdin: false,
-            networkMode: nil,  // No network needed for BuildKit (uses vsock)
+            networkMode: "none",  // No network needed for BuildKit (uses vsock)
             restartPolicy: RestartPolicy(name: "always", maximumRetryCount: 0),
             binds: ["\(volumeName):/var/lib/buildkit"]  // Named volume for cache
         )
@@ -241,6 +241,14 @@ public actor BuildKitManager {
             throw BuildKitManagerError.buildkitNotReady
         }
         return client
+    }
+
+    /// Get the BuildKit container for filesystem operations (e.g., extracting exported images)
+    public func getContainer() throws -> Containerization.LinuxContainer {
+        guard let container = buildkitContainer else {
+            throw BuildKitManagerError.buildkitNotReady
+        }
+        return container
     }
 
     /// Perform health check on BuildKit container

@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm kernel install-grpc-plugin test tap-forwarder vminit gen-grpc
+.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm buildkit kernel install-grpc-plugin test tap-forwarder vminit gen-grpc
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -89,6 +89,11 @@ run-release:
 helpervm:
 	@echo "Building helper VM image..."
 	@./scripts/build-helper-vm.sh
+
+# Build BuildKit image with vsock proxy
+buildkit:
+	@echo "Building BuildKit image with vsock proxy..."
+	@./scripts/build-buildkit-image.sh
 
 # Build kernel with TUN support
 kernel:
