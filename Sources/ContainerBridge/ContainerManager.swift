@@ -41,7 +41,7 @@ public actor ContainerManager {
     // Optional VolumeManager reference for named volume resolution
     private var volumeManager: VolumeManager?
 
-    // Shared vmnet network for Layer 2 connectivity (VLAN networking)
+    // Shared vmnet network for NAT networking with internet access
     private var sharedNetwork: SharedVmnetNetwork?
 
     // State persistence
@@ -71,6 +71,8 @@ public actor ContainerManager {
         let stderrWriter: Writer
         let stdinReader: ChannelReader?
         let mounts: [Containerization.Mount]
+        let networkMode: String?  // "vmnet" or "bridge"/nil
+        let labels: [String: String]  // Container labels for configuration
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -97,15 +99,13 @@ public actor ContainerManager {
         imageManager: ImageManager,
         kernelPath: String,
         stateStore: StateStore,
-        logger: Logger,
-        sharedNetwork: SharedVmnetNetwork? = nil
+        logger: Logger
     ) {
         self.imageManager = imageManager
         self.kernelPath = kernelPath
         self.stateStore = stateStore
         self.logger = logger
         self.logManager = ContainerLogManager(logger: logger)
-        self.sharedNetwork = sharedNetwork
     }
 
     /// Set the NetworkManager (called after NetworkManager is initialized)
@@ -116,6 +116,11 @@ public actor ContainerManager {
     /// Set the VolumeManager (called after VolumeManager is initialized)
     public func setVolumeManager(_ manager: VolumeManager) {
         self.volumeManager = manager
+    }
+
+    /// Set the SharedVmnetNetwork (called after network is initialized)
+    public func setSharedVmnetNetwork(_ network: SharedVmnetNetwork) {
+        self.sharedNetwork = network
     }
 
     /// Initialize the Containerization manager
@@ -141,12 +146,15 @@ public actor ContainerManager {
             "platform": "\(kernel.platform.os)/\(kernel.platform.architecture)"
         ])
 
-        // Initialize the native container manager with kernel and initfs
+        // Initialize the native container manager with kernel, initfs, and vmnet network
         // Note: Custom vminit is loaded centrally in ArcaDaemon before any ContainerManagers are created
         // The custom vminit is tagged as "arca-vminit:latest"
+        // VmnetNetwork provides NAT with internet access - used by containers with NATInterface
+        // Using default subnet (let vmnet framework choose) to ensure gateway/NAT routing works
         nativeManager = try await Containerization.ContainerManager(
             kernel: kernel,
-            initfsReference: "arca-vminit:latest"  // Custom vminit loaded and tagged by ArcaDaemon
+            initfsReference: "arca-vminit:latest",  // Custom vminit loaded and tagged by ArcaDaemon
+            network: try Containerization.ContainerManager.VmnetNetwork()
         )
 
         logger.info("ContainerManager initialized successfully")
@@ -436,6 +444,51 @@ public actor ContainerManager {
             return nil
         }
 
+        // Build NetworkSettings from current network attachments
+        var networks: [String: EndpointSettings] = [:]
+        if let networkManager = networkManager {
+            for (networkID, attachment) in info.networkAttachments {
+                // Get full network metadata (includes subnet, gateway)
+                if let networkMeta = await networkManager.getNetwork(id: networkID) {
+                    // Parse prefix length from subnet CIDR (e.g., "172.18.0.0/16" -> 16)
+                    let prefixLen: Int
+                    if let slashIndex = networkMeta.subnet.firstIndex(of: "/"),
+                       let prefix = Int(networkMeta.subnet[networkMeta.subnet.index(after: slashIndex)...]) {
+                        prefixLen = prefix
+                    } else {
+                        prefixLen = 16  // Default fallback
+                    }
+
+                    networks[networkMeta.name] = EndpointSettings(
+                        ipamConfig: nil,
+                        links: [],
+                        aliases: attachment.aliases,
+                        networkID: networkID,
+                        endpointID: "",
+                        gateway: networkMeta.gateway,
+                        ipAddress: attachment.ip,
+                        ipPrefixLen: prefixLen,
+                        macAddress: attachment.mac
+                    )
+                }
+            }
+        }
+
+        let networkSettings = NetworkSettings(
+            bridge: "",
+            sandboxID: "",
+            hairpinMode: false,
+            linkLocalIPv6Address: "",
+            linkLocalIPv6PrefixLen: 0,
+            ports: [:],
+            sandboxKey: "",
+            ipAddress: networks.values.first?.ipAddress ?? "",
+            ipPrefixLen: networks.values.first?.ipPrefixLen ?? 0,
+            gateway: networks.values.first?.gateway ?? "",
+            macAddress: networks.values.first?.macAddress ?? "",
+            networks: networks
+        )
+
         return Container(
             id: dockerID,
             nativeID: info.nativeID,
@@ -460,7 +513,7 @@ public actor ContainerManager {
             restartCount: 0,
             hostConfig: info.hostConfig,
             config: info.config,
-            networkSettings: info.networkSettings
+            networkSettings: networkSettings
         )
     }
 
@@ -481,12 +534,13 @@ public actor ContainerManager {
 
         // Capture values for @Sendable closure
         let dockerID = config.dockerID
-        let network = self.sharedNetwork
+        let useVmnetMode = config.networkMode == "vmnet"
         let configLogger = self.logger
         let tty = config.tty
         let stdoutWriter = config.stdoutWriter
         let stderrWriter = config.stderrWriter
         let stdinReader = config.stdinReader
+        let skipEmbeddedDNS = config.labels["com.arca.skip-embedded-dns"] == "true"
 
         logger.info("Creating LinuxContainer with Containerization API", metadata: [
             "docker_id": "\(dockerID)",
@@ -512,7 +566,13 @@ public actor ContainerManager {
             }
 
             // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
-            containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
+            // Skip for containers with com.arca.skip-embedded-dns label (like BuildKit)
+            if !skipEmbeddedDNS {
+                containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
+                configLogger.debug("Embedded-DNS enabled for container", metadata: ["docker_id": "\(dockerID)"])
+            } else {
+                configLogger.debug("Embedded-DNS skipped for container (using system DNS)", metadata: ["docker_id": "\(dockerID)"])
+            }
 
             if let workingDir = config.workingDir {
                 containerConfig.process.workingDirectory = workingDir
@@ -521,34 +581,25 @@ public actor ContainerManager {
             // Set hostname (OCI spec field)
             containerConfig.hostname = config.hostname
 
-            // Network interface configuration depends on backend:
-            // - vmnet backend: Attach shared vmnet interface at creation time
-            // - OVS backend: No interface at creation - TAP devices added dynamically via arca-tap-forwarder
-            if let net = network {
-                // vmnet backend: Create interface from shared network
-                if let sharedInterface = try? net.createInterface(dockerID) {
-                    containerConfig.interfaces = [sharedInterface]
-                    configLogger.debug("Container using shared vmnet", metadata: [
-                        "container_id": "\(dockerID)",
-                        "ip": "\(sharedInterface.address)"
-                    ])
-                } else {
-                    // Fallback to NAT if allocation fails
-                    let natInterface = NATInterface(
-                        address: "192.168.64.10/24",
-                        gateway: "192.168.64.1",
-                        macAddress: nil
-                    )
-                    containerConfig.interfaces = [natInterface]
-                    configLogger.warning("Failed to allocate shared vmnet IP, using NAT fallback", metadata: [
-                        "container_id": "\(dockerID)"
-                    ])
-                }
+            // Network interface configuration depends on networkMode:
+            // - "vmnet": Apple's VmnetNetwork handles interface creation automatically
+            //   ContainerManager's create() calls network?.create(id) and sets config.interfaces
+            //   before our closure runs. We should NOT override it.
+            // - "bridge"/"default"/nil: OVS backend (TAP devices added dynamically after start)
+            if useVmnetMode {
+                // vmnet mode: Do NOT set containerConfig.interfaces
+                // The ContainerManager.create() method automatically calls network?.create(dockerID)
+                // which allocates an IP and creates a VmnetNetwork.Interface
+                // This happens BEFORE our configuration closure runs
+                // See Apple's ContainerManager.swift:415-417
+                configLogger.info("Container using vmnet NAT mode (automatic framework-managed interface)", metadata: [
+                    "container_id": "\(dockerID)"
+                ])
             } else {
-                // OVS backend: No interface at creation time
+                // Bridge mode (OVS backend): No interface at creation time
                 // TAP devices will be created dynamically by arca-tap-forwarder after container starts
                 containerConfig.interfaces = []
-                configLogger.debug("Using OVS backend - no interface at creation", metadata: [
+                configLogger.debug("Container using bridge mode (OVS) - no interface at creation", metadata: [
                     "container_id": "\(dockerID)"
                 ])
             }
@@ -733,7 +784,9 @@ public actor ContainerManager {
                     stdoutWriter: stdoutWriter,
                     stderrWriter: stderrWriter,
                     stdinReader: nil,  // Not attached
-                    mounts: mounts
+                    mounts: mounts,
+                    networkMode: networkMode,
+                    labels: labels ?? [:]
                 )
             )
 
@@ -939,7 +992,9 @@ public actor ContainerManager {
                     stdoutWriter: stdoutWriter,
                     stderrWriter: stderrWriter,
                     stdinReader: attachInfo?.handles.stdin,  // Include stdin if attached
-                    mounts: config.mounts
+                    mounts: config.mounts,
+                    networkMode: info.hostConfig.networkMode,
+                    labels: info.config.labels
                 )
             )
 
@@ -1025,7 +1080,9 @@ public actor ContainerManager {
                         stdoutWriter: stdoutLogWriter,
                         stderrWriter: stderrLogWriter,
                         stdinReader: nil,  // No stdin for recreated containers
-                        mounts: recreatedMounts
+                        mounts: recreatedMounts,
+                        networkMode: info.hostConfig.networkMode,
+                        labels: info.config.labels
                     )
                 )
 
