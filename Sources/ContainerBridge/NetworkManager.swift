@@ -171,14 +171,15 @@ public actor NetworkManager {
             workingDir: nil,
             labels: [
                 "com.arca.internal": "true",
-                "com.arca.role": "control-plane"
+                "com.arca.role": "control-plane",
+                "com.arca.skip-embedded-dns": "true"  // vmnet containers use gateway DNS, not embedded-DNS
             ],
             attachStdin: false,
             attachStdout: false,
             attachStderr: false,
             tty: false,
             openStdin: false,
-            networkMode: nil,  // No network needed for control plane
+            networkMode: "vmnet",  // Use Apple NATInterface for internet access
             restartPolicy: RestartPolicy(name: "always", maximumRetryCount: 0),
             binds: ["\(volumePath):/etc/ovn"]
         )
