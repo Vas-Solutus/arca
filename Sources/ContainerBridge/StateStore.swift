@@ -33,6 +33,7 @@ public actor StateStore {
     private nonisolated(unsafe) let startedAt = Expression<String?>("started_at")
     private nonisolated(unsafe) let finishedAt = Expression<String?>("finished_at")
     private nonisolated(unsafe) let stoppedByUser = Expression<Bool>("stopped_by_user")
+    private nonisolated(unsafe) let entrypointJSON = Expression<String?>("entrypoint_json")
     private nonisolated(unsafe) let configJSON = Expression<String>("config_json")
     private nonisolated(unsafe) let hostConfigJSON = Expression<String>("host_config_json")
 
@@ -180,6 +181,7 @@ public actor StateStore {
                 t.column(startedAt)
                 t.column(finishedAt)
                 t.column(stoppedByUser, defaultValue: false)
+                t.column(entrypointJSON)
                 t.column(configJSON)
                 t.column(hostConfigJSON)
 
@@ -305,9 +307,19 @@ public actor StateStore {
         startedAt: Date?,
         finishedAt: Date?,
         stoppedByUser: Bool,
+        entrypoint: [String]?,
         configJSON: String,
         hostConfigJSON: String
     ) throws {
+        // Serialize entrypoint to JSON if provided
+        let entrypointString: String?
+        if let entrypoint = entrypoint {
+            let data = try JSONEncoder().encode(entrypoint)
+            entrypointString = String(data: data, encoding: .utf8)
+        } else {
+            entrypointString = nil
+        }
+
         try db.run(containers.insert(or: .replace,
             self.id <- id,
             self.name <- name,
@@ -323,6 +335,7 @@ public actor StateStore {
             self.startedAt <- startedAt?.iso8601String,
             self.finishedAt <- finishedAt?.iso8601String,
             self.stoppedByUser <- stoppedByUser,
+            self.entrypointJSON <- entrypointString,
             self.configJSON <- configJSON,
             self.hostConfigJSON <- hostConfigJSON
         ))
@@ -389,6 +402,7 @@ public actor StateStore {
         startedAt: Date?,
         finishedAt: Date?,
         stoppedByUser: Bool,
+        entrypoint: [String]?,
         configJSON: String,
         hostConfigJSON: String
     )] {
@@ -396,14 +410,22 @@ public actor StateStore {
             id: String, name: String, image: String, imageID: String,
             createdAt: Date, status: String, running: Bool, paused: Bool,
             restarting: Bool, pid: Int, exitCode: Int, startedAt: Date?,
-            finishedAt: Date?, stoppedByUser: Bool, configJSON: String,
-            hostConfigJSON: String
+            finishedAt: Date?, stoppedByUser: Bool, entrypoint: [String]?,
+            configJSON: String, hostConfigJSON: String
         )] = []
 
         for row in try db.prepare(containers) {
             let createdDate = Date(iso8601String: row[createdAt]) ?? Date()
             let startedDate = row[startedAt].flatMap { Date(iso8601String: $0) }
             let finishedDate = row[finishedAt].flatMap { Date(iso8601String: $0) }
+
+            // Deserialize entrypoint from JSON
+            let entrypoint: [String]?
+            if let entrypointData = row[entrypointJSON]?.data(using: .utf8) {
+                entrypoint = try? JSONDecoder().decode([String].self, from: entrypointData)
+            } else {
+                entrypoint = nil
+            }
 
             result.append((
                 id: row[id],
@@ -420,6 +442,7 @@ public actor StateStore {
                 startedAt: startedDate,
                 finishedAt: finishedDate,
                 stoppedByUser: row[stoppedByUser],
+                entrypoint: entrypoint,
                 configJSON: row[configJSON],
                 hostConfigJSON: row[hostConfigJSON]
             ))

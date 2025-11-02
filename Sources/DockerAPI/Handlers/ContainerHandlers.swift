@@ -146,6 +146,7 @@ public struct ContainerHandlers: Sendable {
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
+                entrypoint: request.entrypoint,
                 command: request.cmd,
                 env: request.env,
                 workingDir: request.workingDir,

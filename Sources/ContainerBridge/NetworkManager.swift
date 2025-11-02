@@ -166,7 +166,8 @@ public actor NetworkManager {
         let dockerID = try await containerManager.createContainer(
             image: "arca-control-plane:latest",
             name: "arca-control-plane",
-            command: ["/usr/local/bin/startup.sh"],  // Must be explicit for restart policy to work
+            entrypoint: nil,  // Use image default entrypoint (["/usr/local/bin/startup.sh"])
+            command: nil,  // Use image default cmd (empty)
             env: nil,
             workingDir: nil,
             labels: [

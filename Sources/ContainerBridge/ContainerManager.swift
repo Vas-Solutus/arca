@@ -50,6 +50,7 @@ public actor ContainerManager {
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
         let image: Containerization.Image
+        let entrypoint: [String]?
         let command: [String]?
         let env: [String]?
         let workingDir: String?
@@ -62,6 +63,7 @@ public actor ContainerManager {
     private struct NativeContainerConfig {
         let dockerID: String
         let image: Containerization.Image
+        let entrypoint: [String]?
         let command: [String]?
         let env: [String]?
         let workingDir: String?
@@ -581,18 +583,34 @@ public actor ContainerManager {
             "hostname": "\(config.hostname)"
         ])
 
+        // Get image config to properly handle entrypoint/cmd overrides
+        let systemPlatform = detectSystemPlatform()
+        let imagePlatform = systemPlatform.ociPlatform()
+        let imageConfig = try await config.image.config(for: imagePlatform)
+        let imageEntrypoint = imageConfig.config?.entrypoint ?? []
+        let imageCmd = imageConfig.config?.cmd ?? []
+
         let container = try await manager.create(
             dockerID,
             image: config.image,
             rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
         ) { @Sendable containerConfig in
             // Configure the container process (OCI-compliant)
-            // Note: containerConfig.process is already initialized from image config
+            // Implement proper Docker entrypoint/cmd semantics:
+            // - effectiveEntrypoint = request.entrypoint ?? image.entrypoint
+            // - effectiveCmd = request.cmd ?? image.cmd
+            // - process.arguments = effectiveEntrypoint + effectiveCmd
 
-            // Override with Docker API parameters if provided
-            if let command = config.command {
-                containerConfig.process.arguments = command
-            }
+            let effectiveEntrypoint = config.entrypoint ?? imageEntrypoint
+            let effectiveCmd = config.command ?? imageCmd
+            containerConfig.process.arguments = effectiveEntrypoint + effectiveCmd
+
+            configLogger.debug("Container command", metadata: [
+                "docker_id": "\(dockerID)",
+                "entrypoint": "\(effectiveEntrypoint.joined(separator: " "))",
+                "cmd": "\(effectiveCmd.joined(separator: " "))",
+                "full_command": "\(containerConfig.process.arguments.joined(separator: " "))"
+            ])
 
             if let env = config.env {
                 // Merge with existing env from image, Docker CLI behavior
@@ -682,6 +700,7 @@ public actor ContainerManager {
     public func createContainer(
         image: String,
         name: String?,
+        entrypoint: [String]?,
         command: [String]?,
         env: [String]?,
         workingDir: String?,
@@ -793,6 +812,7 @@ public actor ContainerManager {
             // Store deferred config for later use during start
             deferredConfigs[dockerID] = DeferredContainerConfig(
                 image: containerImage,
+                entrypoint: entrypoint,
                 command: command,
                 env: env,
                 workingDir: workingDir,
@@ -810,6 +830,7 @@ public actor ContainerManager {
                 config: NativeContainerConfig(
                     dockerID: dockerID,
                     image: containerImage,
+                    entrypoint: entrypoint,
                     command: command,
                     env: env,
                     workingDir: workingDir,
@@ -1018,6 +1039,7 @@ public actor ContainerManager {
                 config: NativeContainerConfig(
                     dockerID: dockerID,
                     image: config.image,
+                    entrypoint: config.entrypoint,
                     command: config.command,
                     env: config.env,
                     workingDir: config.workingDir,
@@ -1101,15 +1123,17 @@ public actor ContainerManager {
                 // Parse volume mounts from persisted binds (includes both bind mounts and named volumes)
                 let recreatedMounts = try await parseVolumeMounts(info.hostConfig.binds)
 
-                // Resolve command: use persisted command if provided, otherwise use image defaults
+                // Resolve command and entrypoint: use persisted if provided, otherwise use image defaults
                 // Empty array means "no override, use image defaults" in Docker semantics
                 let resolvedCommand: [String]? = info.command.isEmpty ? nil : info.command
+                let resolvedEntrypoint: [String]? = info.config.entrypoint
 
                 // Recreate the LinuxContainer with the persisted configuration
                 let container = try await createNativeContainer(
                     config: NativeContainerConfig(
                         dockerID: dockerID,
                         image: containerImage,
+                        entrypoint: resolvedEntrypoint,
                         command: resolvedCommand,
                         env: info.env,
                         workingDir: info.workingDir,
@@ -2314,6 +2338,7 @@ public actor ContainerManager {
             startedAt: info.startedAt,
             finishedAt: info.finishedAt,
             stoppedByUser: stoppedByUser,
+            entrypoint: info.config.entrypoint,
             configJSON: configJSON,
             hostConfigJSON: hostConfigJSON
         )
