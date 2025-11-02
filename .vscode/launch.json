@@ -6,8 +6,9 @@
             "args": [],
             "cwd": "${workspaceFolder:arca}",
             "name": "Debug Arca",
-            "program": "${workspaceFolder:arca}/.build/debug/Arca",
-            "preLaunchTask": "swift: Build Debug Arca"
+            "preLaunchTask": "swift: Build Debug Arca",
+            "target": "Arca",
+            "configuration": "debug"
         },
         {
             "type": "swift",
@@ -15,8 +16,9 @@
             "args": [],
             "cwd": "${workspaceFolder:arca}",
             "name": "Release Arca",
-            "program": "${workspaceFolder:arca}/.build/release/Arca",
-            "preLaunchTask": "swift: Build Release Arca"
+            "preLaunchTask": "swift: Build Release Arca",
+            "target": "Arca",
+            "configuration": "release"
         },
         {
             "type": "swift",
@@ -24,8 +26,9 @@
             "args": [],
             "cwd": "${workspaceFolder:arca}",
             "name": "Debug ArcaTestHelper",
-            "program": "${workspaceFolder:arca}/.build/debug/ArcaTestHelper",
-            "preLaunchTask": "swift: Build Debug ArcaTestHelper"
+            "preLaunchTask": "swift: Build Debug ArcaTestHelper",
+            "target": "ArcaTestHelper",
+            "configuration": "debug"
         },
         {
             "type": "swift",
@@ -33,8 +36,9 @@
             "args": [],
             "cwd": "${workspaceFolder:arca}",
             "name": "Release ArcaTestHelper",
-            "program": "${workspaceFolder:arca}/.build/release/ArcaTestHelper",
-            "preLaunchTask": "swift: Build Release ArcaTestHelper"
+            "preLaunchTask": "swift: Build Release ArcaTestHelper",
+            "target": "ArcaTestHelper",
+            "configuration": "release"
         }
     ]
 }

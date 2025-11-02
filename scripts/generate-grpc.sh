@@ -91,6 +91,21 @@ else
     echo "  ⚠ Skipping - proto file not found: $TAP_FORWARDER_PROTO"
 fi
 
+# Generate Swift code for Builder API (Apple's container-builder-shim protocol)
+echo ""
+echo "→ Generating Swift code for Builder API..."
+BUILDER_PROTO="$PROJECT_ROOT/Sources/ContainerBuild/Proto/Builder.proto"
+BUILDER_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBuild/Generated"
+if [ -f "$BUILDER_PROTO" ]; then
+    protoc "$BUILDER_PROTO" \
+        --proto_path="$(dirname "$BUILDER_PROTO")" \
+        --swift_out=Visibility=Public:"$BUILDER_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$BUILDER_OUTPUT_DIR"
+    echo "  ✓ Generated Swift code: Builder.{pb,grpc}.swift"
+else
+    echo "  ⚠ Skipping - proto file not found: $BUILDER_PROTO"
+fi
+
 # Generate Swift code for BuildKit Control API
 echo ""
 echo "→ Generating Swift code for BuildKit Control API..."

@@ -32,6 +32,35 @@
 
 ---
 
+## IP Address Space Allocation
+
+Arca uses distinct IP address spaces for different network types:
+
+### **vmnet Networks** (192.168.0.0/16 - Dynamically Assigned by Apple)
+- **Allocation**: Apple's vmnet.framework assigns IPs dynamically
+- **Examples**: 192.168.81.2, 192.168.81.3, 192.168.64.x, etc.
+- **Usage**:
+  - System containers (BuildKit, control plane)
+  - User containers on `--driver vmnet` networks
+- **Internet Access**: ✅ Built-in NAT gateway provided by vmnet
+- **Performance**: ~0.5ms latency (native kernel networking)
+
+### **OVS Bridge Networks** (172.17.0.0/16 - 172.250.0.0/16)
+- **Allocation**: Configurable per network
+- **Default Bridge**: 172.17.0.0/16 (matches Docker default)
+- **Custom Networks**: User-specified subnets (e.g., 172.18.0.0/16, 10.0.0.0/24)
+- **Usage**: User containers on default bridge or custom OVS networks
+- **Internet Access**: ✅ SNAT via OVS helper VM
+- **Performance**: ~3ms latency (TAP-over-vsock architecture)
+
+**Key Points**:
+- vmnet and OVS networks are completely separate
+- BuildKit and control plane use vmnet for simplicity + internet access
+- Users can choose either backend per network via `--driver` flag
+- No IP conflicts: vmnet uses 192.168.x.x, OVS uses 172.x.x.x (or custom)
+
+---
+
 ## Executive Summary
 
 Arca provides **two network backends** that users can choose between via configuration:

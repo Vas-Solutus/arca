@@ -1535,7 +1535,13 @@ public struct ContainerHandlers: Sendable {
     }
 
     /// Extract an archive to a directory in a container (PUT /containers/{id}/archive)
-    /// TODO: Implement file injection to container VM filesystem
+    ///
+    /// Implementation notes:
+    /// - Uses exec + tar for extraction (requires tar in container)
+    /// - Temporarily starts containers in "created" state for injection
+    /// - Returns container to original state after injection
+    ///
+    /// TODO: Implement generic file transfer via vminitd RPCs for containers without tar
     public func handlePutArchive(id: String, path: String, tarData: Data) async -> Result<Void, ContainerError> {
         logger.info("Putting archive to container", metadata: [
             "container_id": "\(id)",
@@ -1543,17 +1549,114 @@ public struct ContainerHandlers: Sendable {
             "size": "\(tarData.count)"
         ])
 
-        // Resolve container ID
-        guard let _ = await containerManager.resolveContainer(idOrName: id) else {
+        // Resolve container
+        guard let containerID = await containerManager.resolveContainer(idOrName: id) else {
             return .failure(.notFound(id))
         }
 
-        // TODO: Implement file injection
-        // Options:
-        // 1. Extend vminitd tap-forwarder with WriteFile RPC
-        // 2. Use temporary VirtioFS share
-        // 3. Use vsock file transfer protocol
-        return .failure(.invalidRequest("Archive injection not yet implemented"))
+        // Get container state to check if we need to start it
+        guard let containerState = try? await containerManager.getContainer(id: containerID) else {
+            return .failure(.notFound(id))
+        }
+
+        // Check container state - start if not running
+        let wasCreated = containerState.state.status == "created" && !containerState.state.running
+        if wasCreated {
+            logger.info("Container in created state, temporarily starting for archive injection", metadata: [
+                "container_id": "\(id)"
+            ])
+
+            do {
+                try await containerManager.startContainer(id: containerID)
+            } catch {
+                return .failure(.startFailed("Failed to start container for archive injection: \(error.localizedDescription)"))
+            }
+
+            // Wait a moment for container to fully start
+            try? await Task.sleep(for: .seconds(1))
+        }
+
+        // Create exec instance for tar extraction
+        let execId: String
+        do {
+            execId = try await execManager.createExec(
+                containerID: containerID,
+                cmd: ["tar", "-xf", "-", "-C", path],
+                env: nil,
+                workingDir: nil,
+                user: nil,
+                tty: false,
+                attachStdin: true,
+                attachStdout: true,
+                attachStderr: true
+            )
+        } catch {
+            // If we started the container, stop it before returning error
+            if wasCreated {
+                try? await containerManager.stopContainer(id: containerID, timeout: 5)
+            }
+            return .failure(.invalidRequest("Failed to create exec for tar extraction: \(error.localizedDescription)"))
+        }
+
+        logger.debug("Created exec instance for tar extraction", metadata: [
+            "exec_id": "\(execId)",
+            "container_id": "\(id)"
+        ])
+
+        // Create a ReaderStream from the tar data
+        let stdinReader = DataReaderStream(data: tarData)
+        let stdoutWriter = DataWriter()
+        let stderrWriter = DataWriter()
+
+        // Start exec and stream tar data to stdin
+        do {
+            try await execManager.startExec(
+                execID: execId,
+                detach: false,
+                tty: false,
+                stdin: stdinReader,
+                stdout: stdoutWriter,
+                stderr: stderrWriter
+            )
+        } catch {
+            // If we started the container, stop it before returning error
+            if wasCreated {
+                try? await containerManager.stopContainer(id: containerID, timeout: 5)
+            }
+
+            // Log stderr if tar command failed
+            if !stderrWriter.data.isEmpty {
+                logger.error("Tar extraction failed", metadata: [
+                    "stderr": "\(String(data: stderrWriter.data, encoding: .utf8) ?? "<binary>")"
+                ])
+            }
+
+            return .failure(.invalidRequest("Failed to extract tar archive: \(error.localizedDescription)"))
+        }
+
+        logger.info("Archive extracted successfully", metadata: [
+            "container_id": "\(id)",
+            "path": "\(path)"
+        ])
+
+        // If we started the container, stop it to return to created state
+        if wasCreated {
+            logger.info("Stopping container to return to created state", metadata: [
+                "container_id": "\(id)"
+            ])
+
+            do {
+                try await containerManager.stopContainer(id: containerID, timeout: 5)
+            } catch {
+                logger.warning("Failed to stop container after archive injection", metadata: [
+                    "container_id": "\(id)",
+                    "error": "\(error.localizedDescription)"
+                ])
+                // Don't fail the whole operation - archive was successfully injected
+            }
+        }
+
+        return .success(())
     }
 }
 

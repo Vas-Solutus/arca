@@ -52,6 +52,66 @@ public actor ImageManager {
         return loadedImages
     }
 
+    /// Load images from a tar archive (OCI or Docker format)
+    /// - Parameter tarData: The tar archive data
+    /// - Returns: Array of loaded images
+    public func loadImageFromTar(_ tarData: Data) async throws -> [Containerization.Image] {
+        logger.info("Loading images from tar archive", metadata: [
+            "size_bytes": "\(tarData.count)"
+        ])
+
+        // Create temp directory for extraction
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("arca-image-load-\(UUID().uuidString)")
+
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            logger.debug("Created temp directory", metadata: ["path": "\(tempDir.path)"])
+
+            // Write tar data to temp file
+            let tarPath = tempDir.appendingPathComponent("image.tar")
+            try tarData.write(to: tarPath)
+            logger.debug("Wrote tar archive", metadata: ["path": "\(tarPath.path)"])
+
+            // Extract tar archive
+            let extractDir = tempDir.appendingPathComponent("extracted")
+            try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            process.arguments = ["-xf", tarPath.path, "-C", extractDir.path]
+
+            let pipe = Pipe()
+            process.standardError = pipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus != 0 {
+                let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMsg = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                logger.error("Failed to extract tar", metadata: ["error": "\(errorMsg)"])
+                throw ImageManagerError.tarExtractionFailed(errorMsg)
+            }
+
+            logger.debug("Extracted tar archive", metadata: ["path": "\(extractDir.path)"])
+
+            // Load from OCI layout
+            let loadedImages = try await loadFromOCILayout(directory: extractDir)
+
+            // Clean up temp directory
+            try? FileManager.default.removeItem(at: tempDir)
+            logger.debug("Cleaned up temp directory")
+
+            return loadedImages
+        } catch {
+            // Clean up temp directory on error
+            try? FileManager.default.removeItem(at: tempDir)
+            logger.error("Failed to load image from tar", metadata: ["error": "\(error)"])
+            throw error
+        }
+    }
+
     // MARK: - Image Listing
 
     /// List all images
@@ -612,6 +672,7 @@ public enum ImageManagerError: Error, CustomStringConvertible {
     case invalidReference(String)
     case platformNotFound(String)
     case unsupportedMediaType(String)
+    case tarExtractionFailed(String)
 
     public var description: String {
         switch self {
@@ -633,6 +694,8 @@ public enum ImageManagerError: Error, CustomStringConvertible {
             return "Platform not found: \(msg)"
         case .unsupportedMediaType(let msg):
             return "Unsupported media type: \(msg)"
+        case .tarExtractionFailed(let msg):
+            return "Failed to extract tar archive: \(msg)"
         }
     }
 }

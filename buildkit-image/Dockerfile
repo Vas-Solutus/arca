@@ -23,9 +23,12 @@ FROM moby/buildkit:latest
 # Copy vsock proxy binary
 COPY --from=proxy-builder /build/vsock-proxy /usr/local/bin/vsock-proxy
 
+# Copy buildx binary from official buildx image
+COPY --from=docker/buildx-bin:latest /buildx /usr/local/bin/buildx
+
 # Copy entrypoint script
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/vsock-proxy
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/vsock-proxy /usr/local/bin/buildx
 
 # Use custom entrypoint that starts proxy + buildkitd
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

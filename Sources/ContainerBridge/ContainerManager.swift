@@ -474,6 +474,40 @@ public actor ContainerManager {
             }
         }
 
+        // For vmnet containers, add vmnet network information
+        // vmnet containers use Apple's framework-managed networking and don't have networkAttachments
+        if info.hostConfig.networkMode == "vmnet", let nativeContainer = nativeContainers[dockerID] {
+            // Get all vmnet interfaces from native container
+            // Try to cast each interface to ContainerManager.VmnetNetwork.Interface
+            var vmnetIndex = 0
+            for iface in nativeContainer.interfaces {
+                if let vmnetInterface = iface as? Containerization.ContainerManager.VmnetNetwork.Interface {
+                    // Parse address string "192.168.81.2/24" into IP and prefix
+                    let addressComponents = vmnetInterface.address.split(separator: "/")
+                    let ipString = String(addressComponents[0])  // "192.168.81.2"
+                    let prefixLen = addressComponents.count > 1 ? Int(addressComponents[1]) ?? 24 : 24
+
+                    let gatewayString = vmnetInterface.gateway
+
+                    // Use "vmnet" for the first interface, "vmnet1", "vmnet2" for additional ones
+                    let networkName = vmnetIndex == 0 ? "vmnet" : "vmnet\(vmnetIndex)"
+
+                    networks[networkName] = EndpointSettings(
+                        ipamConfig: nil,
+                        links: [],
+                        aliases: [],
+                        networkID: networkName,
+                        endpointID: "",
+                        gateway: gatewayString ?? "",
+                        ipAddress: ipString,
+                        ipPrefixLen: prefixLen,
+                        macAddress: ""
+                    )
+                    vmnetIndex += 1
+                }
+            }
+        }
+
         let networkSettings = NetworkSettings(
             bridge: "",
             sandboxID: "",
@@ -1067,12 +1101,16 @@ public actor ContainerManager {
                 // Parse volume mounts from persisted binds (includes both bind mounts and named volumes)
                 let recreatedMounts = try await parseVolumeMounts(info.hostConfig.binds)
 
+                // Resolve command: use persisted command if provided, otherwise use image defaults
+                // Empty array means "no override, use image defaults" in Docker semantics
+                let resolvedCommand: [String]? = info.command.isEmpty ? nil : info.command
+
                 // Recreate the LinuxContainer with the persisted configuration
                 let container = try await createNativeContainer(
                     config: NativeContainerConfig(
                         dockerID: dockerID,
                         image: containerImage,
-                        command: info.command,
+                        command: resolvedCommand,
                         env: info.env,
                         workingDir: info.workingDir,
                         hostname: info.config.hostname,

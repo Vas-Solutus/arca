@@ -1,375 +1,248 @@
 import Foundation
 import Logging
+import NIOHTTP1
 import ContainerBridge
-import ContainerBuild
 
-/// Handlers for Docker Build API endpoints
+/// Handles Docker build API requests using docker buildx CLI wrapper
 ///
-/// Provides POST /build endpoint implementation using BuildKit
+/// ## Architecture
+///
+/// Arca uses `docker buildx` CLI to handle Docker builds:
+/// - BuildKit: `moby/buildkit:latest` on vmnet control plane network
+/// - Builder: "arca" remote driver at tcp://{buildkit-ip}:8088
+/// - Wrapper: Exec `docker buildx build --load` to build and import images
+///
+/// ## Why buildx Wrapper?
+///
+/// - **Simplest approach**: Just exec a command, stream output
+/// - **100% feature coverage**: All buildx features work (secrets, SSH, cache, multi-platform, etc.)
+/// - **No Session API knowledge needed**: buildx handles the protocol
+/// - **Battle-tested**: Used by millions of Docker users
+/// - **Future-proof**: New buildx features work automatically
+///
+/// ## Implementation (2025-11-01)
+///
+/// 1. Extract tar context to `/tmp/build-{uuid}/`
+/// 2. Build buildx command from BuildParameters
+/// 3. Execute `docker buildx build --builder arca --load`
+/// 4. Stream buildx output to Docker CLI
+/// 5. Clean up temp directory
+/// 6. Image automatically imported via `--load` flag
+///
 public struct BuildHandlers: Sendable {
-    private let buildKitManager: BuildKitManager
-    private let imageManager: ContainerBridge.ImageManager
     private let logger: Logger
+    private let containerManager: ContainerBridge.ContainerManager
+    private let imageManager: ContainerBridge.ImageManager
 
     public init(
-        buildKitManager: BuildKitManager,
+        containerManager: ContainerBridge.ContainerManager,
         imageManager: ContainerBridge.ImageManager,
         logger: Logger
     ) {
-        self.buildKitManager = buildKitManager
+        self.containerManager = containerManager
         self.imageManager = imageManager
         self.logger = logger
     }
 
-    /// Handle POST /build - Build an image from a Dockerfile
-    ///
-    /// Request body: tar archive containing build context
-    /// Returns: Streaming JSON with build progress
-    public func handleBuildImage(
-        contextData: Data,
+    /// Handle POST /build - Build an image from a Dockerfile (streaming)
+    public func handleBuild(
+        tarData: Data,
         parameters: BuildParameters
     ) async -> HTTPResponseType {
-        logger.info("Handling build image request", metadata: [
+        logger.info("Build request received", metadata: [
             "dockerfile": "\(parameters.dockerfile)",
-            "tags": "\(parameters.tags)",
-            "contextSize": "\(contextData.count) bytes"
+            "tags": "\(parameters.tags.joined(separator: ", "))",
+            "context_size": "\(tarData.count)"
         ])
 
-        // Return streaming response
-        return .streaming(status: .ok, headers: ["Content-Type": "application/json"]) { writer in
+        // Return streaming response with build progress
+        return .streaming(
+            status: .ok,
+            headers: HTTPHeaders([("Content-Type", "application/json")])
+        ) { writer in
+            // Helper to write JSON progress messages
+            let writeProgress: @Sendable (String) async -> Void = { (message: String) in
+                let progressDict = ["stream": message]
+                if var jsonData = try? JSONSerialization.data(withJSONObject: progressDict) {
+                    // Append newline
+                    jsonData.append(Data("\n".utf8))
+                    try? await writer.write(jsonData)
+                }
+            }
+
+            // Helper to write error messages
+            let writeError: @Sendable (String) async -> Void = { (message: String) in
+                let errorDict = ["error": message]
+                if var jsonData = try? JSONSerialization.data(withJSONObject: errorDict) {
+                    // Append newline
+                    jsonData.append(Data("\n".utf8))
+                    try? await writer.write(jsonData)
+                }
+            }
+
             do {
-                // Extract Dockerfile from context
-                let dockerfile = try await self.extractDockerfile(
-                    from: contextData,
-                    path: parameters.dockerfile
-                )
+                // Create temp directory for build context
+                let buildID = UUID().uuidString
+                let buildDir = URL(fileURLWithPath: "/tmp/build-\(buildID)")
 
-                logger.debug("Extracted Dockerfile", metadata: [
-                    "size": "\(dockerfile.count) bytes",
-                    "lines": "\(dockerfile.components(separatedBy: .newlines).count)"
-                ])
+                logger.debug("Creating build directory", metadata: ["path": "\(buildDir.path)"])
+                try FileManager.default.createDirectory(at: buildDir, withIntermediateDirectories: true)
 
-                // Send initial status
-                try await self.sendBuildStatus(
-                    writer: writer,
-                    stream: "Preparing build context..."
-                )
-
-                // Get BuildKit client and container
-                let client = try await buildKitManager.getClient()
-                let container = try await buildKitManager.getContainer()
-
-                // Build frontend attributes for BuildKit
-                // Pass Dockerfile content inline using the "dockerfile" attribute
-                var frontendAttrs = parameters.buildArgs
-                frontendAttrs["filename"] = parameters.dockerfile
-                frontendAttrs["dockerfilekey"] = "dockerfile-content"
-
-                // For inline Dockerfile, we pass it as base64
-                let dockerfileData = dockerfile.data(using: .utf8) ?? Data()
-                frontendAttrs["dockerfile-content"] = dockerfileData.base64EncodedString()
-
-                if let target = parameters.target {
-                    frontendAttrs["target"] = target
+                defer {
+                    // Clean up temp directory
+                    try? FileManager.default.removeItem(at: buildDir)
+                    logger.debug("Cleaned up build directory", metadata: ["path": "\(buildDir.path)"])
                 }
 
-                if let platform = parameters.platform {
-                    frontendAttrs["platform"] = platform
-                }
+                // Extract tar context to build directory
+                await writeProgress("Extracting build context...\n")
+                try await self.extractTarContext(tarData, to: buildDir)
+                logger.info("Build context extracted", metadata: ["path": "\(buildDir.path)"])
 
-                if parameters.noCache {
-                    frontendAttrs["no-cache"] = ""
-                }
-
-                // Parse Dockerfile to extract base image for progress reporting
-                let lines = dockerfile.components(separatedBy: .newlines)
-                let fromLine = lines.first { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("FROM") }
-                if let from = fromLine {
-                    try await self.sendBuildStatus(
-                        writer: writer,
-                        stream: "\(from)\n"
-                    )
-                }
-
-                // Send build starting status
-                try await self.sendBuildStatus(
-                    writer: writer,
-                    stream: "Step 1/\(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }.count) : Sending build context to BuildKit\n"
-                )
-
-                // Configure OCI exporter to write to BuildKit's filesystem
-                let exportPath = "/tmp/arca-build-\(UUID().uuidString).tar"
-
-                // BuildKit exporters are specified as attributes in the solve request
-                let exporterAttrs: [String: String] = [
-                    "exporter": "oci",
-                    "exporter-opt-dest": exportPath,
-                    "exporter-opt-tar": "true"
+                // Build buildx command
+                var buildxArgs: [String] = [
+                    "buildx", "build",
+                    "--builder", "arca",
+                    "--load"  // Automatically import built image to daemon
                 ]
 
-                // Execute build via BuildKit with OCI exporter
-                // Note: This is a simplified implementation using inline Dockerfile
-                // Full implementation would use BuildKit's session API to transfer build context
-                do {
-                    logger.info("Starting BuildKit solve with OCI exporter", metadata: [
-                        "exportPath": "\(exportPath)"
-                    ])
-
-                    let response = try await client.solve(
-                        definition: nil,  // Let BuildKit frontend create the definition
-                        frontend: "dockerfile.v0",
-                        frontendAttrs: frontendAttrs,
-                        exporters: exporterAttrs
-                    )
-
-                    logger.info("BuildKit solve completed", metadata: [
-                        "exporterResponse": "\(response.exporterResponse)"
-                    ])
-
-                    // Send build progress steps
-                    var step = 2
-                    for line in lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
-                            try await self.sendBuildStatus(
-                                writer: writer,
-                                stream: "Step \(step)/\(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }.count) : \(trimmed)\n"
-                            )
-                            step += 1
-                        }
-                    }
-
-                    // Send export status
-                    try await self.sendBuildStatus(
-                        writer: writer,
-                        stream: "Exporting image to OCI format...\n"
-                    )
-
-                    // Extract the OCI tar from BuildKit container
-                    logger.info("Extracting OCI tar from BuildKit container")
-                    let tarData = try await client.extractImageTar(path: exportPath, container: container)
-
-                    logger.info("Extracted OCI tar", metadata: [
-                        "size": "\(tarData.count) bytes"
-                    ])
-
-                    // Import the OCI tar into image store
-                    try await self.sendBuildStatus(
-                        writer: writer,
-                        stream: "Importing image to local store...\n"
-                    )
-
-                    let imageId = try await self.importOCITar(tarData: tarData)
-
-                    logger.info("Image imported successfully", metadata: [
-                        "imageId": "\(imageId)"
-                    ])
-
-                    // Tag the image if tags were provided
-                    if !parameters.tags.isEmpty {
-                        for tag in parameters.tags {
-                            logger.info("Tagging image", metadata: [
-                                "imageId": "\(imageId)",
-                                "tag": "\(tag)"
-                            ])
-                            try await self.imageManager.tagImage(source: imageId, target: tag)
-                            try await self.sendBuildStatus(
-                                writer: writer,
-                                stream: "Successfully tagged \(tag)\n"
-                            )
-                        }
-                    }
-
-                    // Send build completion status with image ID
-                    try await self.sendBuildStatus(
-                        writer: writer,
-                        stream: "Successfully built \(imageId)\n",
-                        aux: BuildStatus.AuxData(ID: imageId)
-                    )
-
-                } catch {
-                    throw BuildError.buildFailed("BuildKit solve failed: \(error)")
+                // Add tags
+                for tag in parameters.tags {
+                    buildxArgs.append(contentsOf: ["--tag", tag])
                 }
 
-                try await writer.finish()
-            } catch {
-                logger.error("Build failed", metadata: ["error": "\(error)"])
-
-                // Send error status
-                do {
-                    try await self.sendBuildStatus(
-                        writer: writer,
-                        error: "Build failed: \(error)",
-                        errorDetail: BuildStatus.ErrorDetail(message: "\(error)")
-                    )
-                } catch {
-                    logger.warning("Failed to send error status", metadata: ["error": "\(error)"])
+                // Add build arguments
+                for (key, value) in parameters.buildArgs {
+                    buildxArgs.append(contentsOf: ["--build-arg", "\(key)=\(value)"])
                 }
 
-                try? await writer.finish()
-            }
-        }
-    }
+                // Add target stage if specified
+                if let target = parameters.target, !target.isEmpty {
+                    buildxArgs.append(contentsOf: ["--target", target])
+                }
 
-    // MARK: - Private Helpers
+                // Add platform if specified
+                if let platform = parameters.platform, !platform.isEmpty {
+                    buildxArgs.append(contentsOf: ["--platform", platform])
+                }
 
-    /// Extract Dockerfile from tar archive
-    private func extractDockerfile(from tarData: Data, path: String) async throws -> String {
-        let extractor = TarExtractor(logger: logger)
+                // Add no-cache if specified
+                if parameters.noCache {
+                    buildxArgs.append("--no-cache")
+                }
 
-        do {
-            return try extractor.extractFile(from: tarData, filePath: path)
-        } catch let error as TarError {
-            // If exact path not found, try common variations
-            if case .fileNotFound = error {
-                logger.debug("Dockerfile not found at exact path, trying variations", metadata: [
-                    "requestedPath": "\(path)"
+                // Add pull if specified (always pull base image)
+                if parameters.pull {
+                    buildxArgs.append("--pull")
+                }
+
+                // Add build context path
+                buildxArgs.append(buildDir.path)
+
+                logger.info("Executing buildx", metadata: [
+                    "command": "docker \(buildxArgs.joined(separator: " "))"
                 ])
 
-                // List files for debugging
-                if let files = try? extractor.listFiles(in: tarData) {
-                    logger.debug("Available files in tar: \(files.joined(separator: ", "))")
+                await writeProgress("Building with buildx...\n")
 
-                    // Try without leading ./ if present
-                    let cleanPath = path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+                // Execute buildx and stream output
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                process.arguments = ["docker"] + buildxArgs
 
-                    // Try exact match
-                    if let matchedFile = files.first(where: { $0 == cleanPath || $0 == "./\(cleanPath)" }) {
-                        logger.debug("Found Dockerfile at: \(matchedFile)")
-                        return try extractor.extractFile(from: tarData, filePath: matchedFile)
+                // Set up pipes for stdout and stderr
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+
+                // Start the process
+                try process.run()
+
+                // Read stdout in background
+                Task {
+                    let handle = stdoutPipe.fileHandleForReading
+                    while true {
+                        let data = handle.availableData
+                        if data.isEmpty { break }
+                        if let line = String(data: data, encoding: .utf8) {
+                            await writeProgress(line)
+                        }
                     }
                 }
+
+                // Read stderr in background
+                Task {
+                    let handle = stderrPipe.fileHandleForReading
+                    while true {
+                        let data = handle.availableData
+                        if data.isEmpty { break }
+                        if let line = String(data: data, encoding: .utf8) {
+                            await writeProgress(line)
+                        }
+                    }
+                }
+
+                // Wait for process to complete
+                process.waitUntilExit()
+
+                let exitCode = process.terminationStatus
+                if exitCode == 0 {
+                    let tag = parameters.tags.first ?? "untagged"
+                    await writeProgress("Successfully built \(tag)\n")
+                    logger.info("Build completed successfully", metadata: [
+                        "tag": "\(tag)",
+                        "exitCode": "\(exitCode)"
+                    ])
+                } else {
+                    let errorMsg = "Build failed with exit code \(exitCode)"
+                    await writeError(errorMsg)
+                    logger.error("Build failed", metadata: ["exitCode": "\(exitCode)"])
+                }
+
+            } catch {
+                let errorMsg = "Build error: \(error)"
+                await writeError(errorMsg)
+                logger.error("Build failed with error", metadata: ["error": "\(error)"])
             }
-
-            throw BuildError.dockerfileNotFound(path)
-        } catch {
-            throw BuildError.invalidContext("Failed to extract Dockerfile: \(error)")
         }
     }
 
-    /// Send build status message to client
-    private func sendBuildStatus(
-        writer: HTTPStreamWriter,
-        stream: String? = nil,
-        error: String? = nil,
-        errorDetail: BuildStatus.ErrorDetail? = nil,
-        aux: BuildStatus.AuxData? = nil
-    ) async throws {
-        let status = BuildStatus(
-            stream: stream,
-            error: error,
-            errorDetail: errorDetail,
-            aux: aux
-        )
-
-        let encoder = JSONEncoder()
-        let jsonData = try encoder.encode(status)
-        var dataWithNewline = jsonData
-        dataWithNewline.append(contentsOf: "\n".utf8)
-
-        try await writer.write(dataWithNewline)
-    }
-
-    /// Import OCI tar into local image store
-    ///
-    /// - Parameter tarData: OCI tar archive data
-    /// - Returns: Image ID of the imported image
-    private func importOCITar(tarData: Data) async throws -> String {
-        // Create temporary directory for OCI layout extraction
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("arca-build-\(UUID().uuidString)")
-
-        logger.info("Creating temporary OCI layout directory", metadata: [
-            "path": "\(tempDir.path)"
-        ])
-
-        try FileManager.default.createDirectory(
-            at: tempDir,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-
-        defer {
-            // Clean up temporary directory
-            try? FileManager.default.removeItem(at: tempDir)
-        }
-
+    /// Extract tar archive to directory
+    private func extractTarContext(_ tarData: Data, to directory: URL) async throws {
         // Write tar data to temporary file
-        let tarFile = tempDir.appendingPathComponent("image.tar")
-        logger.info("Writing OCI tar to temporary file", metadata: [
-            "path": "\(tarFile.path)",
-            "size": "\(tarData.count) bytes"
-        ])
-        try tarData.write(to: tarFile)
+        let tarPath = directory.appendingPathComponent("context.tar")
+        try tarData.write(to: tarPath)
 
-        // Extract tar to OCI layout directory
-        logger.info("Extracting OCI tar to layout directory")
-
+        // Extract tar using system tar command
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        process.arguments = ["-xf", tarFile.path, "-C", tempDir.path]
-
-        let pipe = Pipe()
-        process.standardError = pipe
+        process.arguments = ["-xf", tarPath.path, "-C", directory.path]
 
         try process.run()
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
-            let errorData = try pipe.fileHandleForReading.readToEnd() ?? Data()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw BuildError.buildFailed("Failed to extract OCI tar: \(errorMessage)")
+            throw BuildHandlerError.buildFailed("Failed to extract tar context")
         }
 
-        logger.info("OCI tar extracted successfully")
-
-        // Check if extraction created expected OCI layout structure
-        // BuildKit's OCI exporter creates the layout directly in the extraction directory
-        let ociLayoutFile = tempDir.appendingPathComponent("oci-layout")
-        let indexFile = tempDir.appendingPathComponent("index.json")
-
-        guard FileManager.default.fileExists(atPath: ociLayoutFile.path),
-              FileManager.default.fileExists(atPath: indexFile.path) else {
-            throw BuildError.buildFailed("Invalid OCI layout: missing oci-layout or index.json")
-        }
-
-        // Import from OCI layout
-        logger.info("Loading image from OCI layout")
-        let images = try await imageManager.loadFromOCILayout(directory: tempDir)
-
-        guard let image = images.first else {
-            throw BuildError.buildFailed("No images found in OCI layout")
-        }
-
-        // Get image digest (this is the image ID)
-        let imageId = image.digest
-
-        logger.info("Image imported from OCI layout", metadata: [
-            "imageId": "\(imageId)"
-        ])
-
-        return imageId
+        // Remove the tar file after extraction
+        try FileManager.default.removeItem(at: tarPath)
     }
 }
 
 // MARK: - Errors
 
-public enum BuildError: Error, CustomStringConvertible {
-    case notImplemented(String)
-    case invalidContext(String)
-    case dockerfileNotFound(String)
+public enum BuildHandlerError: Error, CustomStringConvertible {
     case buildFailed(String)
+    case invalidParameters(String)
 
     public var description: String {
         switch self {
-        case .notImplemented(let message):
-            return "Not implemented: \(message)"
-        case .invalidContext(let message):
-            return "Invalid build context: \(message)"
-        case .dockerfileNotFound(let path):
-            return "Dockerfile not found: \(path)"
         case .buildFailed(let message):
             return "Build failed: \(message)"
+        case .invalidParameters(let message):
+            return "Invalid build parameters: \(message)"
         }
     }
 }

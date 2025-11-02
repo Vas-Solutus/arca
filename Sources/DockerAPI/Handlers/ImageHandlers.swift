@@ -466,6 +466,37 @@ public struct ImageHandlers: Sendable {
         }
     }
 
+    /// Handle POST /images/load
+    /// Load images from a tar archive
+    ///
+    /// Request body: tar archive (application/x-tar or application/octet-stream)
+    ///
+    /// Response: JSON stream of load progress (similar to pull progress)
+    public func handleLoadImage(tarData: Data) async -> Result<ImageLoadResponse, ImageHandlerError> {
+        logger.info("Handling load image request", metadata: [
+            "tar_size_bytes": "\(tarData.count)"
+        ])
+
+        do {
+            let loadedImages = try await imageManager.loadImageFromTar(tarData)
+
+            // Build response with loaded image references
+            let loadedRefs = loadedImages.map { $0.reference }
+
+            logger.info("Successfully loaded images from tar", metadata: [
+                "count": "\(loadedImages.count)",
+                "images": "\(loadedRefs.joined(separator: ", "))"
+            ])
+
+            return .success(ImageLoadResponse(
+                stream: "Loaded images: \(loadedRefs.joined(separator: ", "))\n"
+            ))
+        } catch {
+            logger.error("Failed to load image from tar", metadata: ["error": "\(error)"])
+            return .failure(.loadFailed(errorDescription(error)))
+        }
+    }
+
     // MARK: - Helper Methods
 
     /// Map ImageContainerConfig to ImageConfig
@@ -523,6 +554,15 @@ public struct ImagePullResponse: Codable {
     }
 }
 
+/// Response for image load operation
+public struct ImageLoadResponse: Codable, Sendable {
+    public let stream: String
+
+    public init(stream: String) {
+        self.stream = stream
+    }
+}
+
 // MARK: - Error Types
 
 public enum ImageHandlerError: Error, CustomStringConvertible {
@@ -532,6 +572,7 @@ public enum ImageHandlerError: Error, CustomStringConvertible {
     case pruneFailed(String)
     case imageNotFound(String)
     case invalidRequest(String)
+    case loadFailed(String)
 
     public var description: String {
         switch self {
@@ -547,6 +588,8 @@ public enum ImageHandlerError: Error, CustomStringConvertible {
             return "No such image: \(name)"
         case .invalidRequest(let msg):
             return "Invalid request: \(msg)"
+        case .loadFailed(let msg):
+            return "Failed to load image: \(msg)"
         }
     }
 }
