@@ -1510,6 +1510,51 @@ public struct ContainerHandlers: Sendable {
             return .failure(ContainerError.invalidRequest("Failed to list containers: \(error)"))
         }
     }
+
+    // MARK: - Archive Operations
+
+    /// Get an archive of a filesystem resource in a container (GET /containers/{id}/archive)
+    /// TODO: Implement file extraction from container VM filesystem
+    public func handleGetArchive(id: String, path: String) async -> Result<Data, ContainerError> {
+        logger.info("Getting archive from container", metadata: [
+            "container_id": "\(id)",
+            "path": "\(path)"
+        ])
+
+        // Resolve container ID
+        guard let _ = await containerManager.resolveContainer(idOrName: id) else {
+            return .failure(.notFound(id))
+        }
+
+        // TODO: Implement file extraction
+        // Options:
+        // 1. Extend vminitd tap-forwarder with ReadFile RPC
+        // 2. Use temporary VirtioFS share
+        // 3. Use vsock file transfer protocol
+        return .failure(.invalidRequest("Archive extraction not yet implemented"))
+    }
+
+    /// Extract an archive to a directory in a container (PUT /containers/{id}/archive)
+    /// TODO: Implement file injection to container VM filesystem
+    public func handlePutArchive(id: String, path: String, tarData: Data) async -> Result<Void, ContainerError> {
+        logger.info("Putting archive to container", metadata: [
+            "container_id": "\(id)",
+            "path": "\(path)",
+            "size": "\(tarData.count)"
+        ])
+
+        // Resolve container ID
+        guard let _ = await containerManager.resolveContainer(idOrName: id) else {
+            return .failure(.notFound(id))
+        }
+
+        // TODO: Implement file injection
+        // Options:
+        // 1. Extend vminitd tap-forwarder with WriteFile RPC
+        // 2. Use temporary VirtioFS share
+        // 3. Use vsock file transfer protocol
+        return .failure(.invalidRequest("Archive injection not yet implemented"))
+    }
 }
 
 // MARK: - Response Types

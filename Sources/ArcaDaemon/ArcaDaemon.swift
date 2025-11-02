@@ -827,8 +827,64 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
-        // Build endpoint - TODO: Implement GET/PUT /containers/{id}/archive for buildx docker-container driver
-        // See IMPLEMENTATION_PLAN.md Phase 4.1 for details
+        // Container archive endpoints - for buildx docker-container driver
+        _ = builder.get("/containers/{id}/archive") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            guard let path = request.queryString("path") else {
+                return .standard(HTTPResponse.badRequest("Missing path parameter"))
+            }
+
+            let result = await containerHandlers.handleGetArchive(id: id, path: path)
+            switch result {
+            case .success(let tarData):
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: "application/x-tar")
+                return .standard(HTTPResponse(
+                    status: .ok,
+                    headers: headers,
+                    body: tarData
+                ))
+            case .failure(let error):
+                let status: HTTPResponseStatus
+                if case .notFound = error {
+                    status = .notFound
+                } else {
+                    status = .internalServerError
+                }
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
+        _ = builder.put("/containers/{id}/archive") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            guard let path = request.queryString("path") else {
+                return .standard(HTTPResponse.badRequest("Missing path parameter"))
+            }
+
+            guard let tarData = request.body else {
+                return .standard(HTTPResponse.badRequest("Missing request body (tar archive)"))
+            }
+
+            let result = await containerHandlers.handlePutArchive(id: id, path: path, tarData: tarData)
+            switch result {
+            case .success:
+                return .standard(HTTPResponse(status: .ok, headers: HTTPHeaders(), body: nil))
+            case .failure(let error):
+                let status: HTTPResponseStatus
+                if case .notFound = error {
+                    status = .notFound
+                } else {
+                    status = .internalServerError
+                }
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
 
         // Image endpoints
         _ = builder.get("/images/json") { request in
