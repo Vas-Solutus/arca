@@ -16,7 +16,6 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var networkManager: NetworkManager?
     private var volumeManager: VolumeManager?
     private var buildKitManager: BuildKitManager?
-    private var sharedNetwork: SharedVmnetNetwork?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -166,77 +165,7 @@ public final class ArcaDaemon: @unchecked Sendable {
             logger.warning("Build it with: make helpervm")
         }
 
-        // Load BuildKit image (only if changed or missing)
-        let buildkitPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".arca")
-            .appendingPathComponent("buildkit")
-            .appendingPathComponent("oci-layout")
-
-        if FileManager.default.fileExists(atPath: buildkitPath.path) {
-            // Check if we need to reload by comparing digests
-            var shouldReload = true
-
-            if await imageManager.imageExists(nameOrId: "arca/buildkit:latest") {
-                // Get digest from OCI layout
-                let indexPath = buildkitPath.appendingPathComponent("index.json")
-                if let indexData = try? Data(contentsOf: indexPath),
-                   let indexJson = try? JSONSerialization.jsonObject(with: indexData) as? [String: Any],
-                   let manifests = indexJson["manifests"] as? [[String: Any]],
-                   let firstManifest = manifests.first,
-                   let ociDigest = firstManifest["digest"] as? String {
-
-                    // Get digest of currently loaded image
-                    do {
-                        let images = try await imageManager.listImages()
-                        if let currentImage = images.first(where: { $0.repoTags.contains("arca/buildkit:latest") }) {
-                            // Compare digests (id is sha256:abc123... format, ociDigest is from manifest)
-                            if currentImage.id.hasSuffix(ociDigest.replacingOccurrences(of: "sha256:", with: "")) {
-                                logger.debug("BuildKit image unchanged, skipping reload", metadata: [
-                                    "digest": "\(ociDigest)"
-                                ])
-                                shouldReload = false
-                            } else {
-                                logger.info("BuildKit image changed, will reload", metadata: [
-                                    "old": "\(currentImage.id)",
-                                    "new": "\(ociDigest)"
-                                ])
-                            }
-                        }
-                    } catch {
-                        logger.debug("Could not check current image digest, will reload: \(error)")
-                    }
-                }
-            }
-
-            if shouldReload {
-                logger.info("Loading BuildKit image from OCI layout", metadata: [
-                    "path": "\(buildkitPath.path)"
-                ])
-
-                // Delete existing image if present
-                if await imageManager.imageExists(nameOrId: "arca/buildkit:latest") {
-                    logger.debug("Deleting existing arca/buildkit:latest for reload")
-                    _ = try? await imageManager.deleteImage(nameOrId: "arca/buildkit:latest", force: true)
-                }
-
-                // Load the OCI layout into ImageStore
-                do {
-                    let loadedImages = try await imageManager.loadFromOCILayout(directory: buildkitPath)
-                    logger.info("BuildKit image loaded successfully", metadata: [
-                        "count": "\(loadedImages.count)",
-                        "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
-                    ])
-                } catch {
-                    logger.error("Failed to load BuildKit image", metadata: [
-                        "error": "\(error)"
-                    ])
-                    logger.warning("Build features will be disabled - build BuildKit image with: make buildkit")
-                }
-            }
-        } else {
-            logger.warning("BuildKit image not found at \(buildkitPath.path)")
-            logger.warning("Build it with: make buildkit")
-        }
+        // BuildKit image loading removed - BuildKitManager will pull moby/buildkit:latest automatically
 
         // OVS backend no longer needs separate NetworkHelperVM actor
         // Control plane is now a regular container managed by ContainerManager
@@ -258,8 +187,7 @@ public final class ArcaDaemon: @unchecked Sendable {
             imageManager: imageManager,
             kernelPath: config.kernelPath,
             stateStore: stateStore,
-            logger: logger,
-            sharedNetwork: nil  // No longer using shared vmnet for networking
+            logger: logger
         )
         self.containerManager = containerManager
 
@@ -339,27 +267,20 @@ public final class ArcaDaemon: @unchecked Sendable {
             volumeManager = nil
         }
 
-        // Initialize BuildKitManager
+        // Create BuildKitManager (simplified - just creates buildx_buildkit_default container)
         let bkm = BuildKitManager(
             containerManager: containerManager,
             imageManager: imageManager,
-            volumeManager: vm,
             logger: logger
         )
         self.buildKitManager = bkm
-        var buildKitManager: BuildKitManager? = bkm
 
+        // Initialize BuildKit container at startup (creates buildx_buildkit_default)
         do {
             try await bkm.initialize()
-            logger.info("BuildKit manager initialized successfully")
+            logger.info("BuildKit container ready for docker buildx")
         } catch {
-            logger.error("Failed to initialize BuildKit manager", metadata: [
-                "error": "\(error)"
-            ])
-            // Continue without BuildKit - build features won't be available
-            logger.warning("Daemon will continue without BuildKit - build features disabled")
-            self.buildKitManager = nil
-            buildKitManager = nil
+            logger.warning("Failed to initialize BuildKit container", metadata: ["error": "\(error)"])
         }
 
         // Create router builder, register middlewares and routes
@@ -372,8 +293,7 @@ public final class ArcaDaemon: @unchecked Sendable {
             imageManager: imageManager,
             execManager: execManager,
             networkManager: networkManager,
-            volumeManager: volumeManager,
-            buildKitManager: buildKitManager
+            volumeManager: volumeManager
         )
         let router = builder.build()
 
@@ -416,8 +336,7 @@ public final class ArcaDaemon: @unchecked Sendable {
         imageManager: ImageManager,
         execManager: ExecManager,
         networkManager: NetworkManager?,
-        volumeManager: VolumeManager?,
-        buildKitManager: BuildKitManager?
+        volumeManager: VolumeManager?
     ) {
         logger.info("Registering API routes")
 
@@ -427,7 +346,11 @@ public final class ArcaDaemon: @unchecked Sendable {
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
         let volumeHandlers = volumeManager.map { VolumeHandlers(volumeManager: $0, logger: logger) }
-        let buildHandlers = buildKitManager.map { BuildHandlers(buildKitManager: $0, imageManager: imageManager, logger: logger) }
+        let buildHandlers = BuildHandlers(
+            containerManager: containerManager,
+            imageManager: imageManager,
+            logger: logger
+        )
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -736,7 +659,13 @@ public final class ArcaDaemon: @unchecked Sendable {
             case .success(let inspect):
                 return .standard(HTTPResponse.json(inspect))
             case .failure(let error):
-                let status: HTTPResponseStatus = error.description.contains("not found") ? .notFound : .internalServerError
+                // Return 404 for .notFound errors, 500 for everything else
+                let status: HTTPResponseStatus
+                if case .notFound = error {
+                    status = .notFound
+                } else {
+                    status = .internalServerError
+                }
                 return .standard(HTTPResponse.error(error.description, status: status))
             }
         }
@@ -921,6 +850,60 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Build endpoint - Build image from Dockerfile
+        _ = builder.post("/build") { request in
+            // Read tar data from request body
+            guard let tarData = request.body else {
+                return .standard(HTTPResponse.badRequest("Missing request body (tar archive with build context required)"))
+            }
+
+            // Parse build parameters from query string
+            let dockerfile = request.queryString("dockerfile") ?? "Dockerfile"
+            let tags = request.queryParameters["t"]?.components(separatedBy: ",").filter { !$0.isEmpty } ?? []
+            let noCache = request.queryBool("nocache", default: false)
+            let pull = request.queryBool("pull", default: false)
+            let remove = request.queryBool("rm", default: true)
+            let forceRemove = request.queryBool("forcerm", default: false)
+            let quiet = request.queryBool("q", default: false)
+            let target = request.queryString("target")
+            let platform = request.queryString("platform")
+            let networkMode = request.queryString("networkmode")
+
+            // Parse build args (buildargs JSON object)
+            var buildArgs: [String: String] = [:]
+            if let buildArgsJSON = request.queryString("buildargs"),
+               let data = buildArgsJSON.data(using: .utf8),
+               let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+                buildArgs = dict
+            }
+
+            // Parse labels (labels JSON object)
+            var labels: [String: String] = [:]
+            if let labelsJSON = request.queryString("labels"),
+               let data = labelsJSON.data(using: .utf8),
+               let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+                labels = dict
+            }
+
+            let params = BuildParameters(
+                dockerfile: dockerfile,
+                tags: tags,
+                buildArgs: buildArgs,
+                noCache: noCache,
+                pull: pull,
+                remove: remove,
+                forceRemove: forceRemove,
+                quiet: quiet,
+                labels: labels,
+                networkMode: networkMode,
+                target: target,
+                platform: platform
+            )
+
+            // Return streaming response from build handler
+            return await buildHandlers.handleBuild(tarData: tarData, parameters: params)
+        }
+
         // Image endpoints
         _ = builder.get("/images/json") { request in
             // Validate and parse query parameters
@@ -1029,70 +1012,30 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
-        // Build endpoint
-        if let buildHandlers = buildHandlers {
-            _ = builder.post("/build") { request in
-                // Parse build parameters from query string
-                let dockerfile = request.queryString("dockerfile") ?? "Dockerfile"
+        // Image load endpoint - Load images from tar archive
+        _ = builder.post("/images/load") { request in
+            // Read tar data from request body
+            guard let tarData = request.body else {
+                return .standard(HTTPResponse.badRequest("Missing request body (tar archive required)"))
+            }
 
-                // Parse tags - Docker allows multiple t= parameters, for now we handle single tag
-                // TODO: Support multiple t= parameters in query string
-                let tags = request.queryString("t").map { [$0] } ?? []
+            let result = await imageHandlers.handleLoadImage(tarData: tarData)
 
-                let noCache = request.queryBool("nocache", default: false)
-                let pull = request.queryBool("pull", default: false)
-                let rm = request.queryBool("rm", default: true)
-                let forcerm = request.queryBool("forcerm", default: false)
-                let quiet = request.queryBool("q", default: false)
-                let target = request.queryString("target")
-                let platform = request.queryString("platform")
-
-                // Parse buildargs (JSON object)
-                var buildArgs: [String: String] = [:]
-                if let buildArgsStr = request.queryString("buildargs") {
-                    if let data = buildArgsStr.data(using: .utf8),
-                       let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-                        buildArgs = decoded
-                    }
+            switch result {
+            case .success(let response):
+                // Return streaming response (newline-delimited JSON like pull)
+                let jsonData: Data
+                do {
+                    jsonData = try JSONEncoder().encode(response)
+                } catch {
+                    return .standard(HTTPResponse.internalServerError("Failed to encode response"))
                 }
 
-                // Parse labels (JSON object)
-                var labels: [String: String] = [:]
-                if let labelsStr = request.queryString("labels") {
-                    if let data = labelsStr.data(using: .utf8),
-                       let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-                        labels = decoded
-                    }
-                }
-
-                let networkMode = request.queryString("networkmode")
-
-                // Create build parameters
-                let params = BuildParameters(
-                    dockerfile: dockerfile,
-                    tags: Array(tags),
-                    buildArgs: buildArgs,
-                    noCache: noCache,
-                    pull: pull,
-                    remove: rm,
-                    forceRemove: forcerm,
-                    quiet: quiet,
-                    labels: labels,
-                    networkMode: networkMode,
-                    target: target,
-                    platform: platform
-                )
-
-                // Get build context from request body
-                guard let contextData = request.body else {
-                    return .standard(HTTPResponse.badRequest("Build context (tar archive) is required"))
-                }
-
-                // Call build handler (returns streaming response)
-                return await buildHandlers.handleBuildImage(
-                    contextData: contextData,
-                    parameters: params
-                )
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: "application/json")
+                return .standard(HTTPResponse(status: .ok, headers: headers, body: jsonData))
+            case .failure(let error):
+                return .standard(HTTPResponse.internalServerError(error.description))
             }
         }
 
@@ -1356,11 +1299,14 @@ public final class ArcaDaemon: @unchecked Sendable {
 
 public enum DaemonError: Error, CustomStringConvertible {
     case socketAlreadyExists(String)
+    case vmnetInitializationFailed(String)
 
     public var description: String {
         switch self {
         case .socketAlreadyExists(let path):
             return "Socket already exists at \(path). Is the daemon already running?"
+        case .vmnetInitializationFailed(let message):
+            return "Failed to initialize vmnet network: \(message)"
         }
     }
 }

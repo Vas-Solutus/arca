@@ -2892,14 +2892,41 @@ Simple endpoint returning layer information from OCI image config.
 
 #### POST /build - BuildKit Integration (Direct API)
 
-**Architecture Decision:** Use BuildKit's official gRPC API directly (not Apple's shim).
+**Architecture Decision:** Use `moby/buildkit:latest` with buildx wrapper (not Apple's container-builder-shim).
 
-**Why BuildKit Direct:**
-- Same API Docker buildx uses - maximum compatibility
-- Less code than wrapper approach (~650 vs ~1200 lines)
-- Well-documented official protocol
-- No vendor lock-in to Apple's CLI tool
-- Simpler mental model (no translation layer)
+**⚠️ container-builder-shim Investigation (2025-11-01):**
+
+We initially attempted to use Apple's `container-builder-shim` (`ghcr.io/apple/container-builder-shim/builder:0.6.3`) but discovered it's **fundamentally incompatible** with Docker's `POST /build` API:
+
+**Protocol Incompatibility Discovered:**
+1. **No CreateBuild RPC** - Apple's CLI never calls it, returns empty buildID
+2. **gRPC headers config** - All build config passed via HPACKHeaders, not request body
+3. **On-demand file serving** - Expects server-initiated file requests, not tar upload
+4. **Base64 Dockerfile** - Dockerfile sent as base64 in headers, not in tar
+
+**Evidence from Apple's source** (`/tmp/apple-container/Sources/ContainerBuild/Builder.swift`):
+```swift
+// Apple skips CreateBuild entirely - goes straight to PerformBuild:
+let respStream = self.clientAsync.performBuild(reqStream, callOptions: try CallOptions(config))
+
+// Config in gRPC headers, not request body:
+var headers: [(String, String)] = [
+    ("build-id", config.buildID),  // Client-generated UUID
+    ("dockerfile", config.dockerfile.base64EncodedString()),  // Base64!
+    ...
+]
+```
+
+**Conclusion**: container-builder-shim is designed for Apple's `container` CLI protocol, NOT Docker API. Using it would require completely rewriting Docker's build protocol.
+
+**See**: `Documentation/BUILD_API_STATUS.md` for full investigation details.
+
+**Why buildx Wrapper:**
+- Same API Docker buildx uses - 100% compatibility
+- Less code than implementing Session API (~100 vs ~650 lines)
+- Well-documented, battle-tested by millions
+- No vendor lock-in to any specific tool
+- Zero maintenance burden (Docker maintains buildx)
 
 **BuildKit Container Setup:**
 ```
@@ -2982,118 +3009,103 @@ Network: Attached to default network
 ❌ Tags NOT actually applied to images
 ❌ NOT Docker-compatible for real builds
 
-**Phase 4: Build API with BuildKit Integration** ✅ INFRASTRUCTURE COMPLETE (2025-10-31) / ⚠️ FUNCTIONALITY IN PROGRESS
+**Phase 4: Build API with docker-container Driver** ⚠️ IN PROGRESS (2025-11-01)
 
-This phase implements `docker build` functionality using BuildKit with **vsock-based secure communication**.
+This phase implements `docker build` functionality by letting **buildx's docker-container driver** manage BuildKit for us. We eliminated ~500 lines of BuildKit management code by implementing just 2 endpoints.
 
-**4.0: BuildKit Infrastructure** ✅ COMPLETE (2025-10-31)
-- [x] Custom BuildKit image with vsock proxy (`arca/buildkit:latest`)
-- [x] vsock-to-TCP proxy using mdlayher/vsock library
-- [x] BuildKit container with `networkMode: "none"` (complete network isolation)
-- [x] BuildKitManager with smart image loading (digest-based reload)
-- [x] BuildKitClient with vsock connection (10-attempt retry with exponential backoff)
-- [x] gRPC communication over vsock:8088
-- [x] Build infrastructure (`make buildkit`, OCI layout at `~/.arca/buildkit/oci-layout/`)
-- [x] BuildKit container persists with `restart: always` policy
-- [x] Buildkit cache volume (`buildkit-cache`) for layer caching
-- [x] Documentation: `Documentation/BUILDKIT_ARCHITECTURE.md`
+**Current Status (2025-11-01)**:
+- ✅ Fixed HTTP 404 response for container inspect (buildx compatibility)
+- ✅ Verified buildx docker-container driver can create BuildKit container
+- ⚠️ **Missing**: GET/PUT `/containers/{id}/archive` endpoints (buildx needs these to configure BuildKit)
+- 🔧 **Next**: Implement archive endpoints (~200 lines Swift, ~1 day)
 
-**Architecture**: `Host (Swift gRPC) → vsock:8088 → vsock-proxy (Go) → localhost:8088 → buildkitd`
+**Key Architecture Decision (2025-11-01)**:
+**Use buildx's docker-container driver instead of managing BuildKit ourselves.**
 
-**Security**: BuildKit has NO network access - communication ONLY via virtio-vsock
+After discovering buildx can create and manage BuildKit via the Docker API, we realized we were making it harder than necessary. The docker-container driver:
+- Creates BuildKit container automatically via our Docker API
+- Manages container lifecycle (start, stop, restart)
+- Configures BuildKit by copying files via `/archive` endpoint
+- Handles ALL BuildKit communication (Session API, gRPC, everything)
+- No IP management, no BuildKitManager, no static IPs needed
 
-**4.1: BuildKit Session API - Context Transfer** (REQUIRED for COPY/ADD)
-- [ ] Implement bidirectional gRPC streaming for Session RPC
-- [ ] Create session manager to handle build sessions
-- [ ] Implement file sync protocol to transfer build context
-- [ ] Support context diff for incremental transfers
-- [ ] Handle .dockerignore file processing
-- [ ] Transfer entire build context to BuildKit
-- [ ] Verify COPY and ADD instructions work correctly
+**Code Deleted**: ~500 lines of BuildKit infrastructure we don't need anymore!
 
-**4.2: Real-time Progress Streaming** (REQUIRED for accurate progress)
-- [ ] Subscribe to BuildKit Status RPC during build
-- [ ] Stream vertex updates in real-time
-- [ ] Parse vertex status (started, completed, error)
-- [ ] Map BuildKit vertex IDs to Dockerfile steps
-- [ ] Convert vertex updates to Docker-compatible progress messages
-- [ ] Stream log output from RUN commands
-- [ ] Handle build warnings and errors
-- [ ] Report actual build timings
+**4.1: Implement Container Archive API** ⚠️ IN PROGRESS (2025-11-01)
 
-**4.3: Image Export from BuildKit** (REQUIRED to use built images)
-- [ ] Configure BuildKit exporter in solve() call
-- [ ] Use BuildKit's OCI exporter to create tar
-- [ ] Handle multi-platform image exports
-- [ ] Stream export progress
-- [ ] Extract OCI tar from BuildKit container filesystem
-- [ ] Verify OCI tar format correctness
+The docker-container driver needs two endpoints to configure BuildKit by copying files into/out of containers.
 
-**4.4: Image Import to Local Store** (REQUIRED for docker images/docker run)
-- [ ] Import OCI tar into ImageManager
-- [ ] Extract layers from OCI tar
-- [ ] Decompress layers (gzip/zstd)
-- [ ] Store layers in image store
-- [ ] Create image manifest
-- [ ] Calculate uncompressed sizes
-- [ ] Update image metadata
+**What We Need**:
+```
+GET /containers/{id}/archive?path={path}  - Extract tar from container filesystem
+PUT /containers/{id}/archive?path={path}  - Write tar to container filesystem
+```
 
-**4.5: Image Tagging** (REQUIRED for docker run <tag>)
-- [ ] Tag imported image with requested tags
-- [ ] Support multiple tags per build
-- [ ] Handle tag conflicts (force/no-force)
-- [ ] Update image store metadata
-- [ ] Verify tags appear in docker images
+**Why This Matters**:
+These are the ONLY two endpoints buildx docker-container driver needs to manage BuildKit. Everything else (builder creation, lifecycle, communication) is handled by buildx automatically.
 
-**4.6: Integration Testing** (REQUIRED to verify everything works)
-- [ ] Test simple Dockerfile (FROM, RUN, CMD)
-- [ ] Test COPY instruction with local files
-- [ ] Test ADD instruction with URLs
-- [ ] Test multi-stage builds
-- [ ] Test build arguments
-- [ ] Test .dockerignore
-- [ ] Test docker run with built images
-- [ ] Test docker images shows built images
-- [ ] Test docker history shows layers
+**Implementation Tasks**:
 
-**Success Criteria for Phase 4 Completion:**
-- [ ] Basic Dockerfile builds work (FROM, RUN, CMD) - currently broken
-- [ ] COPY instruction works with local files - NOT IMPLEMENTED
-- [ ] ADD instruction works with URLs - NOT IMPLEMENTED
-- [ ] Build progress streams from BuildKit in real-time - currently simulated
-- [ ] Built images appear in `docker images` - NOT IMPLEMENTED
-- [ ] `docker run` works with built images - NOT IMPLEMENTED
-- [ ] Multi-stage builds work - NOT TESTED
-- [ ] Build arguments work (--build-arg) - parsed but needs testing
-- [ ] .dockerignore is respected - NOT IMPLEMENTED
-- [ ] `docker history` shows correct layers - NOT IMPLEMENTED
+- [ ] **Task 1**: Implement GET /containers/{id}/archive
+  - Extract path parameter from query string
+  - Validate container exists and is running
+  - Use Container's VirtioFS to read filesystem
+  - Create tar archive from requested path (file or directory)
+  - Return tar stream with proper headers
+  - Handle errors: not found, permission denied, etc.
+  - **Estimated**: ~100 lines Swift, ~0.5 days
 
-**Current Reality Check:**
-The Build API currently has:
-✅ Route infrastructure
-✅ Parameter parsing
-✅ Tar extraction
-✅ BuildKit connection
-❌ Actual build functionality
-❌ Image output
-❌ Docker compatibility
+- [ ] **Task 2**: Implement PUT /containers/{id}/archive
+  - Extract path parameter from query string
+  - Validate container exists and is running
+  - Read tar archive from request body
+  - Use Container's VirtioFS to write to filesystem
+  - Extract tar to requested path in container
+  - Handle errors: not found, permission denied, disk full, etc.
+  - **Estimated**: ~100 lines Swift, ~0.5 days
 
-**Phase 4 is CRITICAL** - without it, the Build API is non-functional infrastructure.
+- [ ] **Task 3**: Integration testing with buildx
+  - Create buildx builder: `docker buildx create --name arca --driver docker-container --driver-opt network=vmnet`
+  - Verify buildx creates BuildKit container via Arca
+  - Verify buildx configures BuildKit via /archive endpoints
+  - Test simple build: `docker buildx build --builder arca -t test .`
+  - Verify image loads automatically with `--driver-opt default-load=true`
+  - **Estimated**: ~0.25 days
 
-**Estimated Total Effort:** 3 days
-- Day 1: Proto setup and gRPC generation
-- Day 2: BuildKit manager + Build handler
-- Day 3: Progress streaming + Context handling
+**Success Criteria**:
+- [ ] GET /archive returns tar of requested path
+- [ ] PUT /archive extracts tar to container filesystem
+- [ ] buildx docker-container driver successfully creates builder
+- [ ] buildx successfully builds images
+- [ ] Built images automatically appear in `docker images` (with default-load=true)
 
-**Dependencies:**
-- moby/buildkit:latest image (~150MB, pulled on first build)
-- grpc-swift (already have it)
-- protoc (already have it for other protos)
+**What We Get FOR FREE from buildx**:
+- ✅ BuildKit container creation and lifecycle management
+- ✅ Builder configuration and persistence
+- ✅ All BuildKit Session API communication
+- ✅ Progress streaming in Docker format
+- ✅ Context transfer to BuildKit
+- ✅ Image export and import (with --load flag)
+- ✅ All buildx features: secrets, SSH, cache, multi-platform, etc.
+- ✅ Future buildx features automatically
 
-**No New Repository Dependencies:**
-- ❌ NOT depending on Apple's container CLI repo
-- ✅ Only vendoring BuildKit's .proto files (protocol spec)
-- ✅ Using official moby/buildkit image from Docker Hub
+**Total Estimated Effort**: ~200 lines Swift, ~1 day
+
+**Files to Create**:
+- Add route handlers in `Sources/ArcaDaemon/ArcaDaemon.swift` (GET/PUT /containers/{id}/archive)
+- Extend `Sources/DockerAPI/Handlers/ContainerHandlers.swift` with archive methods
+- Use existing VirtioFS integration from ContainerBridge
+
+**Files to DELETE** (in Step 3):
+- ❌ `Sources/ContainerBuild/BuildKitManager.swift` (~120 lines)
+- ❌ `Sources/ContainerBuild/BuildKitClient.swift`
+- ❌ `Sources/ContainerBuild/BuilderClient.swift`
+- ❌ `Sources/DockerAPI/Handlers/BuildHandlers.swift` (~249 lines)
+- ❌ `Sources/ContainerBuild/Proto/` (all proto files)
+- ❌ `Documentation/BUILDKIT_ARCHITECTURE.md`
+- ❌ `Documentation/BUILD_API_STATUS.md`
+
+**Total Code Deleted**: ~500 lines we don't need anymore!
 
 #### Image Size Tracking (TODO)
 **Problem**: Arca currently reports compressed (OCI blob) sizes instead of uncompressed (extracted) sizes like Docker.

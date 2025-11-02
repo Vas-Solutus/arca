@@ -89,6 +89,51 @@ swift run Arca daemon start --socket-path /var/run/arca.sock --log-level debug
 arca daemon start
 ```
 
+### Using Docker CLI with Arca
+
+Once the daemon is running, configure your Docker CLI to use Arca:
+
+```bash
+# For development (daemon running at /tmp/arca.sock)
+export DOCKER_HOST=unix:///tmp/arca.sock
+
+# For production (daemon running at /var/run/arca.sock)
+export DOCKER_HOST=unix:///var/run/arca.sock
+
+# Verify connection
+docker version
+docker ps
+```
+
+**Coexistence with Docker Desktop:**
+The `DOCKER_HOST` environment variable allows you to switch between Arca and Docker Desktop without conflicts:
+```bash
+# Use Arca
+export DOCKER_HOST=unix:///var/run/arca.sock
+
+# Switch back to Docker Desktop
+unset DOCKER_HOST
+```
+
+**Using Docker Build with Arca:**
+Arca configures a buildx builder named "arca" with `default-load=true` on daemon startup. To use it, make it the default builder:
+
+```bash
+# Switch to Arca builder (one-time setup)
+./scripts/use-arca-builder.sh
+
+# Now docker build automatically loads images - no --load flag needed
+docker build -t myimage .  # Image automatically available in 'docker images'
+
+# Switch back to Docker Desktop/Colima builder when needed
+./scripts/use-default-builder.sh
+```
+
+**Why a separate builder?**
+- The "arca" builder is configured with `default-load=true` so built images are automatically imported
+- You can switch between Arca and Docker Desktop builders independently of which daemon you're using
+- No daemon restart needed when switching builders
+
 ### Testing
 ```bash
 swift test                     # Run all tests
@@ -330,18 +375,24 @@ All behaviors must follow these specs for:
 - Bidirectional mapping maintained in `idMapping` and `reverseMapping` dictionaries
 - IDs generated via `generateDockerID()` by duplicating UUID hex to reach 64 chars
 
-**Networking Architecture** (Phase 3 - OVS Backend):
-- **Control Plane Container**: Lightweight Linux VM running OVN/OVS (named `arca-control-plane`)
-- **Unified Management**: Control plane is a regular container with special labels:
-  - `com.arca.internal=true` - Hidden from `docker ps` (unless showing internal containers)
-  - `com.arca.role=control-plane` - Identifies role for internal use
-  - `--restart always` - Auto-restarts on daemon startup and crashes
-  - Volume mount for OVN data: `~/.arca/control-plane/ovn-data` → `/etc/ovn` (persistent across restarts)
-- **TAP-over-vsock**: Container VMs connect to OVS bridges via virtio-vsock packet relay
-- **MQTT Pub/Sub**: MQTT 5.0 broker in Arca daemon distributes network topology updates via vsock
+**Networking Architecture** (Phase 3 - Dual Network Topology):
+- **Control Plane Network** (vmnet, 192.168.0.0/16):
+  - BuildKit container (`buildx_buildkit_default`) - internet access for image pulls
+  - OVS Helper VM (`arca-control-plane`) - manages user container networks
+  - IP addresses dynamically assigned by Apple's vmnet.framework
+  - NAT gateway for internet connectivity (critical for `docker build`)
+  - Isolated from user container networks (security)
+- **User Container Networks** (OVS, 172.17.0.0/16-172.250.0.0/16):
+  - Full Docker Network API compatibility
+  - Dynamic attach/detach, multi-network containers, port mapping
+  - TAP-over-vsock packet relay architecture
+  - OVN/OVS for L2 isolation and routing
+- **Control Plane Container** (`arca-control-plane`):
+  - Regular container with special labels: `com.arca.internal=true`, `com.arca.role=control-plane`
+  - `--restart always` policy, volume mount for OVN data persistence
+  - Manages user networks via OVS/OVN
 - **Embedded DNS**: Each container runs embedded-DNS at 127.0.0.11:53 for multi-network name resolution
-- **Security**: Control plane isolated via vsock (CID 2) - not accessible from container networks
-- See `Documentation/NETWORK_ARCHITECTURE.md` and `Documentation/MQTT_PUBSUB_ARCHITECTURE.md` for complete design
+- See `Documentation/NETWORK_ARCHITECTURE.md` and `Documentation/BUILDKIT_ARCHITECTURE.md` for complete design
 
 **Unified Container Management** (Phase 3.7 - IN PROGRESS):
 - **Everything is a container**: User containers AND control plane use the same lifecycle
@@ -453,34 +504,36 @@ See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentat
   - IPAM for IP address allocation
 - ✅ **Bind Mounts** (`-v /host:/container`) - VirtioFS-based with read-only support
 - ✅ vminitd fork as submodule with Arca networking extensions
-- ✅ **BuildKit Integration (Phase 4.0) - Infrastructure COMPLETE** (2025-10-31):
-  - Custom BuildKit image with vsock proxy (`arca/buildkit:latest`)
-  - vsock-to-TCP proxy using mdlayher/vsock library
-  - BuildKit container with `networkMode: "none"` (complete network isolation)
-  - gRPC communication over vsock:8088
-  - BuildKitManager with smart image loading (digest-based reload)
-  - BuildKitClient with retry logic (10 attempts, exponential backoff)
-  - Build infrastructure: `make buildkit`, OCI layout at `~/.arca/buildkit/oci-layout/`
-  - BuildKit persists with `restart: always` policy
-  - `buildkit-cache` volume for layer caching
-  - Architecture: `Host (Swift gRPC) → vsock:8088 → proxy (Go) → localhost:8088 → buildkitd`
-  - See `Documentation/BUILDKIT_ARCHITECTURE.md` for complete design
+- ✅ **Empty command fix**: Containers with empty `cmd` arrays fall back to image defaults (critical fix!)
+- ✅ **HTTP 404 Error Handling** (2025-11-01): Fixed pattern matching for proper 404 responses (buildx compatibility)
 
 **Known Limitations**:
 - ⚠️ **Short-lived container edge case**: Containers that exit within 1-2s may not have real exit code persisted if daemon crashes immediately (marked as killed with exit 137 instead). Affects 3/8 restart policy tests but 95% of real-world scenarios work correctly.
 
+**In Progress**:
+- ⚠️ **Build API with docker-container Driver** (Phase 4.1 - IN PROGRESS): Implementing /archive endpoints for buildx compatibility (~1 day):
+  - **MAJOR ARCHITECTURAL PIVOT** (2025-11-01): Use buildx's docker-container driver instead of managing BuildKit ourselves
+  - **What Changed**: We investigated manual BuildKit management (BuildKitManager, IP discovery, static IPs) and Apple's container-builder-shim, but realized buildx docker-container driver makes everything simpler
+  - **New Approach**: buildx creates and manages BuildKit containers via our Docker API - we just implement 2 endpoints:
+    - GET `/containers/{id}/archive?path={path}` - Extract tar from container filesystem (~100 lines)
+    - PUT `/containers/{id}/archive?path={path}` - Write tar to container filesystem (~100 lines)
+  - **What buildx Does FOR US**:
+    - Creates BuildKit container automatically
+    - Manages lifecycle (start, stop, restart)
+    - Configures BuildKit via /archive endpoints
+    - Handles ALL BuildKit communication (Session API, gRPC, everything)
+    - No IP management, no BuildKitManager, no static IPs needed
+  - **Code Savings**: Deleting ~500 lines of BuildKit infrastructure we don't need!
+  - **Features We Get FOR FREE**: All buildx features (secrets, SSH, cache, multi-platform, etc.) + future features automatically
+  - **Files to DELETE** (Step 3): BuildKitManager.swift, BuildKitClient.swift, BuilderClient.swift, BuildHandlers.swift, BUILDKIT_ARCHITECTURE.md, BUILD_API_STATUS.md
+  - See `Documentation/IMPLEMENTATION_PLAN.md` Phase 4.1 for details
+
 **Still Missing (Future Work)**:
-- ❌ **Build API Functionality** (Phase 4.1-4.6): BuildKit infrastructure complete, but missing:
-  - Build context transfer (Session API)
-  - Real-time progress streaming (Status RPC)
-  - Image export from BuildKit cache
-  - Image import to local store
-  - See `Documentation/IMPLEMENTATION_PLAN.md` Phase 4 for details
 - ❌ **Named Volumes**: No VolumeManager, no `/volumes/*` API endpoints (see Phase 3.7: Named Volumes)
 - ❌ **Control plane as container**: Helper VM not yet unified into ContainerManager
 - ❌ **Write-ahead logging**: Exit state persistence optimization (Task 3.7.8)
 
-**Next Priority**: Complete Phase 4 Build API functionality (context transfer, image export/import)
+**Next Priority**: Complete Phase 4.1 - Implement /archive endpoints for docker-container driver (~1 day estimated)
 
 **Integration Point**: Most `ContainerManager` and `ImageManager` methods now call the Containerization API. When implementing new features, follow existing patterns in these files.
 
