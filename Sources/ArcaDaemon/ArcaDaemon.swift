@@ -3,7 +3,6 @@ import Logging
 import NIOHTTP1
 import DockerAPI
 import ContainerBridge
-import ContainerBuild
 
 /// The main Arca daemon that implements the Docker Engine API server
 public final class ArcaDaemon: @unchecked Sendable {
@@ -15,7 +14,6 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var execManager: ExecManager?
     private var networkManager: NetworkManager?
     private var volumeManager: VolumeManager?
-    private var buildKitManager: BuildKitManager?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -267,22 +265,6 @@ public final class ArcaDaemon: @unchecked Sendable {
             volumeManager = nil
         }
 
-        // Create BuildKitManager (simplified - just creates buildx_buildkit_default container)
-        let bkm = BuildKitManager(
-            containerManager: containerManager,
-            imageManager: imageManager,
-            logger: logger
-        )
-        self.buildKitManager = bkm
-
-        // Initialize BuildKit container at startup (creates buildx_buildkit_default)
-        do {
-            try await bkm.initialize()
-            logger.info("BuildKit container ready for docker buildx")
-        } catch {
-            logger.warning("Failed to initialize BuildKit container", metadata: ["error": "\(error)"])
-        }
-
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
             .use(RequestLogger(logger: logger))
@@ -346,11 +328,6 @@ public final class ArcaDaemon: @unchecked Sendable {
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
         let volumeHandlers = volumeManager.map { VolumeHandlers(volumeManager: $0, logger: logger) }
-        let buildHandlers = BuildHandlers(
-            containerManager: containerManager,
-            imageManager: imageManager,
-            logger: logger
-        )
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -850,59 +827,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
-        // Build endpoint - Build image from Dockerfile
-        _ = builder.post("/build") { request in
-            // Read tar data from request body
-            guard let tarData = request.body else {
-                return .standard(HTTPResponse.badRequest("Missing request body (tar archive with build context required)"))
-            }
-
-            // Parse build parameters from query string
-            let dockerfile = request.queryString("dockerfile") ?? "Dockerfile"
-            let tags = request.queryParameters["t"]?.components(separatedBy: ",").filter { !$0.isEmpty } ?? []
-            let noCache = request.queryBool("nocache", default: false)
-            let pull = request.queryBool("pull", default: false)
-            let remove = request.queryBool("rm", default: true)
-            let forceRemove = request.queryBool("forcerm", default: false)
-            let quiet = request.queryBool("q", default: false)
-            let target = request.queryString("target")
-            let platform = request.queryString("platform")
-            let networkMode = request.queryString("networkmode")
-
-            // Parse build args (buildargs JSON object)
-            var buildArgs: [String: String] = [:]
-            if let buildArgsJSON = request.queryString("buildargs"),
-               let data = buildArgsJSON.data(using: .utf8),
-               let dict = try? JSONDecoder().decode([String: String].self, from: data) {
-                buildArgs = dict
-            }
-
-            // Parse labels (labels JSON object)
-            var labels: [String: String] = [:]
-            if let labelsJSON = request.queryString("labels"),
-               let data = labelsJSON.data(using: .utf8),
-               let dict = try? JSONDecoder().decode([String: String].self, from: data) {
-                labels = dict
-            }
-
-            let params = BuildParameters(
-                dockerfile: dockerfile,
-                tags: tags,
-                buildArgs: buildArgs,
-                noCache: noCache,
-                pull: pull,
-                remove: remove,
-                forceRemove: forceRemove,
-                quiet: quiet,
-                labels: labels,
-                networkMode: networkMode,
-                target: target,
-                platform: platform
-            )
-
-            // Return streaming response from build handler
-            return await buildHandlers.handleBuild(tarData: tarData, parameters: params)
-        }
+        // Build endpoint - TODO: Implement GET/PUT /containers/{id}/archive for buildx docker-container driver
+        // See IMPLEMENTATION_PLAN.md Phase 4.1 for details
 
         // Image endpoints
         _ = builder.get("/images/json") { request in

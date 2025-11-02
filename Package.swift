@@ -47,7 +47,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "DockerAPI",
                 "ContainerBridge",
-                "ContainerBuild",
             ]
         ),
 
@@ -58,7 +57,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SWCompression", package: "SWCompression"),
                 "ContainerBridge",
-                "ContainerBuild",
             ]
         ),
 
@@ -72,16 +70,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "GRPC", package: "grpc-swift"),
                 .product(name: "SQLite", package: "SQLite.swift"),
-            ]
-        ),
-
-        // BuildKit gRPC client and build operations
-        .target(
-            name: "ContainerBuild",
-            dependencies: [
-                .product(name: "GRPC", package: "grpc-swift"),
-                .product(name: "Logging", package: "swift-log"),
-                "ContainerBridge",
             ]
         ),
 
