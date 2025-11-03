@@ -170,6 +170,12 @@ else
     ovn-sbctl show
 fi
 
+# Initialize NAT for user container internet access
+NAT_INIT_START=$(date +%s)
+/usr/local/bin/nat-init.sh
+NAT_INIT_END=$(date +%s)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] NAT initialization completed in $((NAT_INIT_END - NAT_INIT_START))s"
+
 # Wait for services to be ready
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waiting for all services to stabilize..."
 sleep 2

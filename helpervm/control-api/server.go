@@ -348,29 +348,25 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 	var allocatedIP string
 
 	if req.IpAddress == "" {
-		// Dynamic DHCP allocation
-		// Format: "MAC dynamic" - OVN will allocate IP and populate dynamic_addresses
-		// Note: OVN does NOT support "MAC dynamic hostname" syntax - hostname must be set separately
-		portAddress = fmt.Sprintf("%s dynamic", req.MacAddress)
-		if req.Hostname != "" {
-			log.Printf("Configuring port %s for dynamic DHCP with hostname %s (MAC: %s)", portName, req.Hostname, req.MacAddress)
-		} else {
-			log.Printf("Configuring port %s for dynamic DHCP (MAC: %s)", portName, req.MacAddress)
-		}
+		// Dynamic DHCP allocation - tap-forwarder will use DHCP client to get IP from OVN
+		log.Printf("Configuring port %s for DHCP (MAC: %s, hostname: %s)", portName, req.MacAddress, req.Hostname)
 
-		// Set port addresses - this triggers OVN to allocate an IP
+		// CRITICAL: Use "MAC dynamic" so OVN DHCP server knows to respond to DHCP requests
+		// Without "dynamic", OVN won't serve DHCP even if dhcpv4_options are set
+		portAddress = fmt.Sprintf("%s dynamic", req.MacAddress)
 		if err := runCommand("ovn-nbctl", "lsp-set-addresses", portName, portAddress); err != nil {
 			log.Printf("Warning: Failed to set port addresses: %v", err)
 		}
 
-		// Set port security to allow packets from this MAC
-		// Without port security, OVN drops all packets from the port
-		if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, portAddress); err != nil {
+		// CRITICAL: Set port security to MAC only (no IP restriction)
+		// This allows DHCP discovery packets (source IP 0.0.0.0) to pass through
+		// If we set "MAC dynamic" in port_security, OVN will block DHCP packets
+		// because the port doesn't have an allocated IP yet
+		if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, req.MacAddress); err != nil {
 			log.Printf("Warning: Failed to set port security: %v", err)
 		}
 
-		// Link DHCP options to this port BEFORE querying for allocated IP
-		// OVN requires DHCP options to be linked before it will allocate an IP
+		// Link DHCP options to this port so OVN DHCP server knows what to offer
 		dhcpUUID, err := runCommandWithOutput("ovn-nbctl", "get", "logical_switch", req.NetworkId, "other_config:dhcp_options")
 		if err == nil && dhcpUUID != "" {
 			dhcpUUID = strings.Trim(strings.TrimSpace(dhcpUUID), "\"")
@@ -382,79 +378,9 @@ func (s *NetworkServer) AttachContainer(ctx context.Context, req *pb.AttachConta
 			log.Printf("Warning: No DHCP options found for network %s", req.NetworkId)
 		}
 
-		// Query the dynamically allocated IP from OVN with retry
-		// OVN stores it in the port's dynamic_addresses field
-		// ovn-northd may need a moment to process the allocation
-		var dynamicAddr string
-		for i := 0; i < 5; i++ {
-			time.Sleep(100 * time.Millisecond) // Wait for ovn-northd to process
-
-			dynamicAddr, err = runCommandWithOutput("ovn-nbctl", "get", "logical_switch_port", portName, "dynamic_addresses")
-			if err == nil && dynamicAddr != "" {
-				// Parse dynamic_addresses: "MAC IP"
-				dynamicAddr = strings.Trim(strings.TrimSpace(dynamicAddr), "\"")
-				parts := strings.Fields(dynamicAddr)
-				if len(parts) >= 2 {
-					allocatedIP = parts[1]
-					log.Printf("OVN allocated IP %s for port %s (attempt %d)", allocatedIP, portName, i+1)
-
-					// CRITICAL: Update port_security with the actual allocated IP
-					// OVN doesn't support "dynamic" keyword in port_security - it needs the real IP
-					actualPortSecurity := fmt.Sprintf("%s %s", parts[0], parts[1])
-					if err := runCommand("ovn-nbctl", "lsp-set-port-security", portName, actualPortSecurity); err != nil {
-						log.Printf("Warning: Failed to update port security with allocated IP: %v", err)
-					} else {
-						log.Printf("Updated port security to: %s", actualPortSecurity)
-					}
-
-					break
-				}
-			}
-			if i < 4 {
-				log.Printf("Waiting for OVN to allocate IP (attempt %d/5)", i+1)
-			}
-		}
-
-		if allocatedIP == "" {
-			log.Printf("Warning: Could not retrieve dynamically allocated IP for port %s after 5 attempts", portName)
-
-			// Diagnostic: dump OVN state to understand why allocation failed
-			log.Printf("=== DHCP Allocation Failure Diagnostics ===")
-
-			// Check logical switch configuration
-			lsConfig, err := runCommandWithOutput("ovn-nbctl", "list", "logical_switch", req.NetworkId)
-			if err == nil {
-				log.Printf("Logical switch %s config:\n%s", req.NetworkId, lsConfig)
-			} else {
-				log.Printf("Failed to get logical switch config: %v", err)
-			}
-
-			// Check logical switch port configuration
-			portConfig, err := runCommandWithOutput("ovn-nbctl", "list", "logical_switch_port", portName)
-			if err == nil {
-				log.Printf("Logical switch port %s config:\n%s", portName, portConfig)
-			} else {
-				log.Printf("Failed to get port config: %v", err)
-			}
-
-			// Check DHCP options
-			dhcpList, err := runCommandWithOutput("ovn-nbctl", "list", "dhcp_options")
-			if err == nil {
-				log.Printf("All DHCP options:\n%s", dhcpList)
-			} else {
-				log.Printf("Failed to list DHCP options: %v", err)
-			}
-
-			// Check ovn-northd logs for allocation errors
-			northdLogs, err := runCommandWithOutput("tail", "-50", "/var/log/ovn/ovn-northd.log")
-			if err == nil {
-				log.Printf("ovn-northd recent logs:\n%s", northdLogs)
-			} else {
-				log.Printf("Failed to read ovn-northd logs: %v", err)
-			}
-
-			log.Printf("=== End Diagnostics ===")
-		}
+		// Don't return allocated IP - let tap-forwarder get it via DHCP
+		allocatedIP = "" // Empty signals DHCP mode to daemon
+		log.Printf("Port %s configured for OVN DHCP (addresses=\"%s\", port_security=\"%s\")", portName, portAddress, req.MacAddress)
 	} else {
 		// Static IP reservation
 		portAddress = fmt.Sprintf("%s %s", req.MacAddress, req.IpAddress)

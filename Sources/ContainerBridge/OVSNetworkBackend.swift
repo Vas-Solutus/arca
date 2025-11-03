@@ -380,27 +380,25 @@ public actor OVSNetworkBackend {
 
         // Tell control plane to set up relay listener
         // This must happen BEFORE networkBridge tries to connect
-        // Attach to OVN - this will allocate IP via DHCP and return it
+        // Attach to OVN - configure DHCP-enabled port
         let response = try await ovnClient.attachContainer(
             containerID: containerID,
             networkID: networkID,
-            ipAddress: "", // Empty = dynamic DHCP
+            ipAddress: "", // Empty = enable DHCP on this port
             macAddress: macAddress,
             hostname: containerName,
             aliases: aliases,
             vsockPort: containerPort
         )
 
-        // Get the allocated IP from the response
-        let ipAddress = response.ipAddress
-
         // Attach to network bridge via NetworkBridge
+        // Pass empty IP/gateway so tap-forwarder uses DHCP client to get IP from OVN
         try await networkBridge.attachContainerToNetwork(
             container: container,
             containerID: containerID,
             networkID: networkID,
-            ipAddress: ipAddress,
-            gateway: metadata.gateway,
+            ipAddress: "",  // Empty = tap-forwarder will use DHCP
+            gateway: "",    // Empty = tap-forwarder will get gateway from DHCP
             device: deviceName,
             macAddress: macAddress, // Pass generated MAC to ensure it matches OVN port_security
             containerPort: containerPort
@@ -420,9 +418,10 @@ public actor OVSNetworkBackend {
         if containerAttachments[networkID] == nil {
             containerAttachments[networkID] = [:]
         }
+        // IP will be assigned by DHCP - store empty for now
         let attachment = NetworkAttachment(
             networkID: networkID,
-            ip: ipAddress,
+            ip: "",  // DHCP will assign IP
             mac: macAddress,
             aliases: aliases
         )
@@ -433,7 +432,7 @@ public actor OVSNetworkBackend {
             try await stateStore.saveNetworkAttachment(
                 containerID: containerID,
                 networkID: networkID,
-                ipAddress: ipAddress,
+                ipAddress: "",  // DHCP will assign IP
                 macAddress: macAddress,
                 aliases: aliases
             )
@@ -454,7 +453,7 @@ public actor OVSNetworkBackend {
             "container_id": "\(containerID)",
             "network_id": "\(networkID)",
             "device": "\(deviceName)",
-            "ip": "\(ipAddress)"
+            "ip": "DHCP"
         ])
 
         return attachment

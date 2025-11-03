@@ -5,15 +5,28 @@
 # Arca-specific networking extensions:
 # - arca-tap-forwarder: TAP-over-vsock for overlay networks (legacy)
 # - vlan-service: VLAN configuration service for bridge networks (Phase 3.5.5+)
+#
+# Usage: build-vminit.sh [debug|release]
+#   debug   - Build with DEBUG flag enabled (better logging, runs vminitd as subprocess of pid1)
+#   release - Build optimized release binary (default)
 
 set -e
+
+# Parse build configuration (default: release)
+BUILD_CONFIG="${1:-release}"
+
+if [ "$BUILD_CONFIG" != "debug" ] && [ "$BUILD_CONFIG" != "release" ]; then
+    echo "ERROR: Invalid build configuration: $BUILD_CONFIG"
+    echo "Usage: $0 [debug|release]"
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VMINITD_DIR="$PROJECT_ROOT/containerization"
 
 echo "========================================"
-echo "Building custom vminit:latest"
+echo "Building custom vminit:latest ($BUILD_CONFIG)"
 echo "========================================"
 
 # Check if vminitd submodule is initialized
@@ -84,11 +97,11 @@ echo "  ✓ Embedded DNS built: arca-embedded-dns"
 
 # Build vminitd (Swift cross-compiled to Linux)
 echo ""
-echo "→ Building vminitd (Swift → Linux ARM64)..."
+echo "→ Building vminitd (Swift → Linux ARM64, $BUILD_CONFIG)..."
 cd "$VMINITD_DIR"
 
 # Build using parent Makefile's init target which handles the nested package properly
-BUILD_CONFIGURATION=release make init
+BUILD_CONFIGURATION="$BUILD_CONFIG" make init
 
 # The binaries are placed in vminitd/bin/ by the parent Makefile
 VMINITD_BINARY="$VMINITD_DIR/vminitd/bin/vminitd"

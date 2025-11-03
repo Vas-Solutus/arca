@@ -103,8 +103,13 @@ kernel:
 # Build custom vminit with VLAN and TAP forwarder extensions
 # The build script now builds both extensions from the vminitd submodule
 vminit:
-	@echo "Building custom vminit:latest with networking extensions..."
-	@./scripts/build-vminit.sh
+	@echo "Building custom vminit:latest with networking extensions (release)..."
+	@./scripts/build-vminit.sh release
+
+# Build custom vminit in DEBUG mode (better logging)
+vminit-debug:
+	@echo "Building custom vminit:latest with networking extensions (debug)..."
+	@./scripts/build-vminit.sh debug
 
 # Generate gRPC code from proto files
 gen-grpc:
@@ -174,7 +179,8 @@ help:
 	@echo "  make helpervm     - Build helper VM disk image for networking"
 	@echo "  make kernel       - Build Linux kernel with TUN support (10-15 min)"
 	@echo "  make tap-forwarder - Build arca-tap-forwarder for Linux (container networking)"
-	@echo "  make vminit       - Build custom vminit:latest with arca-tap-forwarder"
+	@echo "  make vminit       - Build custom vminit:latest (release, production use)"
+	@echo "  make vminit-debug - Build custom vminit:latest (debug, better logging)"
 	@echo "  make gen-grpc     - Generate gRPC code from proto files"
 	@echo "  make install-grpc-plugin - Install protoc-gen-grpc-swift v1.27.0"
 	@echo "  make verify-entitlements - Display entitlements of built binary"

@@ -155,18 +155,39 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networ
 		buffer := make([]byte, 65536)
 		packetCount := 0
 		for {
-			n, err := conn.Read(buffer)
-			if err != nil {
+			// Read 4-byte length prefix (network byte order)
+			var lengthBuf [4]byte
+			if _, err := conn.Read(lengthBuf[:]); err != nil {
 				if !isClosedError(err) {
-					log.Printf("Error reading from vsock: %v", err)
+					log.Printf("Error reading packet length from vsock: %v", err)
 				}
 				return
 			}
+
+			// Decode length (big-endian)
+			packetLen := uint32(lengthBuf[0])<<24 | uint32(lengthBuf[1])<<16 |
+			             uint32(lengthBuf[2])<<8 | uint32(lengthBuf[3])
+
+			if packetLen > 65536 {
+				log.Printf("Invalid packet length from vsock: %d (max 65536)", packetLen)
+				return
+			}
+
+			// Read exact packet data
+			packet := buffer[:packetLen]
+			if _, err := conn.Read(packet); err != nil {
+				if !isClosedError(err) {
+					log.Printf("Error reading packet data from vsock: %v", err)
+				}
+				return
+			}
+
 			packetCount++
 			if packetCount <= 5 {
-				log.Printf("vsock->OVS: port=%s bytes=%d packet=%d", portName, n, packetCount)
+				log.Printf("vsock->OVS: port=%s bytes=%d packet=%d", portName, packetLen, packetCount)
 			}
-			if _, err := tapFile.Write(buffer[:n]); err != nil {
+
+			if _, err := tapFile.Write(packet); err != nil {
 				log.Printf("Error writing to TAP: %v", err)
 				return
 			}
@@ -190,8 +211,22 @@ func (m *TAPRelayManager) handleConnection(conn net.Conn, vlanTag uint32, networ
 			if packetCount <= 5 {
 				log.Printf("OVS->vsock: port=%s bytes=%d packet=%d", portName, n, packetCount)
 			}
+
+			// Write 4-byte length prefix (network byte order, big-endian)
+			lengthBuf := [4]byte{
+				byte(n >> 24),
+				byte(n >> 16),
+				byte(n >> 8),
+				byte(n),
+			}
+			if _, err := conn.Write(lengthBuf[:]); err != nil {
+				log.Printf("Error writing packet length to vsock: %v", err)
+				return
+			}
+
+			// Write packet data
 			if _, err := conn.Write(buffer[:n]); err != nil {
-				log.Printf("Error writing to vsock: %v", err)
+				log.Printf("Error writing packet data to vsock: %v", err)
 				return
 			}
 		}

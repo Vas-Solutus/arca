@@ -113,7 +113,8 @@ RUN chmod +x /usr/local/bin/router-service
 # Copy startup scripts
 COPY scripts/startup.sh /usr/local/bin/startup.sh
 COPY scripts/ovs-init.sh /usr/local/bin/ovs-init.sh
-RUN chmod +x /usr/local/bin/startup.sh /usr/local/bin/ovs-init.sh
+COPY scripts/nat-init.sh /usr/local/bin/nat-init.sh
+RUN chmod +x /usr/local/bin/startup.sh /usr/local/bin/ovs-init.sh /usr/local/bin/nat-init.sh
 
 # Create directories for OVS/OVN
 RUN mkdir -p \

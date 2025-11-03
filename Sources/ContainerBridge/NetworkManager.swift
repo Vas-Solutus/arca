@@ -140,6 +140,12 @@ public actor NetworkManager {
                 self.controlPlaneContainer = container
                 logger.info("Control plane container retrieved")
 
+                // Set control plane on network bridge
+                if let bridge = networkBridge {
+                    await bridge.setControlPlane(container)
+                    logger.info("Network bridge configured with control plane container")
+                }
+
                 // Check if it's running
                 if let info = try? await containerManager.getContainer(id: existingID) {
                     if info.state.status == "running" {

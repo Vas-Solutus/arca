@@ -117,7 +117,7 @@ public actor NetworkBridge {
         do {
             let client = try await TAPForwarderClient(container: container, logger: logger)
 
-            // Empty IP means use DHCP - tap-forwarder will skip static IP configuration
+            // Pass IP/gateway from caller (empty triggers DHCP in tap-forwarder)
             let response = try await client.attachNetwork(
                 device: device,
                 vsockPort: containerPort,
