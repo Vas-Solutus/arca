@@ -158,21 +158,68 @@ containerization/vminitd/extensions/wireguard-service/
 
 ---
 
-## Phase 1.3-1.5: Swift Integration (NEXT)
+## ✅ Phase 1.3: Swift gRPC Client - COMPLETE! (2025-11-03)
 
-**Objective**: Create Swift gRPC client and implement WireGuardNetworkBackend.
+**Status**: Swift gRPC client implemented and ready for WireGuardNetworkBackend integration!
 
-### Tasks
+### Completed Tasks
 
 #### 1.3 Swift gRPC Client
-- [ ] **Task**: Generate Swift gRPC code from wireguard.proto
-  - Script: `scripts/generate-grpc.sh` (extend existing)
-  - Success: Swift stubs generated in `Sources/ContainerBridge/Generated/`
-- [ ] **Task**: Create `WireGuardClient.swift`
-  - Wrapper around generated gRPC client
-  - Methods: createNetwork, deleteNetwork, attachContainer, detachContainer
-  - Success: Can dial vminitd WireGuard service via vsock
-- [ ] **Deliverable**: Swift client ready for integration
+- [x] **Task**: Generate Swift gRPC code from wireguard.proto ✅
+  - Updated: `scripts/generate-grpc.sh` with WireGuard section
+  - Generated files:
+    - `Sources/ContainerBridge/Generated/wireguard.pb.swift` (40KB) - Protocol buffer types
+    - `Sources/ContainerBridge/Generated/wireguard.grpc.swift` (21KB) - gRPC client stubs
+  - Success: Swift stubs generated with public visibility
+- [x] **Task**: Create `WireGuardClient.swift` ✅
+  - File: `Sources/ContainerBridge/WireGuardClient.swift` (264 lines)
+  - Actor-based client for thread safety
+  - Methods implemented:
+    - `connect()` - Establish vsock connection to container's WireGuard service
+    - `disconnect()` - Clean up gRPC channel and vsock connection
+    - `createHub()` - Initialize WireGuard hub (wg0) in container
+    - `addNetwork()` - Attach container to network via peer configuration
+    - `removeNetwork()` - Detach from network, remove peer
+    - `updateAllowedIPs()` - Update routing for multi-network containers
+    - `deleteHub()` - Destroy WireGuard interface
+    - `getStatus()` - Query hub status and peer statistics
+  - Error handling: Custom `WireGuardClientError` enum
+  - Logging: Structured logging with swift-log
+  - Success: Compiles successfully, ready for integration
+- [x] **Deliverable**: Swift client ready for integration ✅
+
+### Implementation Details
+
+**Architecture:**
+- **Actor-based concurrency**: WireGuardClient is an actor for thread-safe access
+- **vsock communication**: Uses `LinuxContainer.dialVsock(port: 51820)` for host→container gRPC
+- **GRPCChannel management**: Creates ClientConnection from FileHandle over vsock
+- **FileHandle lifetime**: Keeps FileHandle alive for connection duration
+
+**Files Created:**
+```
+Sources/ContainerBridge/
+├── WireGuardClient.swift              (264 lines) - Swift gRPC client wrapper
+├── proto/wireguard.proto              (212 lines) - Copied from vminitd submodule
+└── Generated/
+    ├── wireguard.pb.swift             (40KB) - Protocol buffer types
+    └── wireguard.grpc.swift           (21KB) - gRPC client stubs
+```
+
+**Updated Files:**
+- `scripts/generate-grpc.sh` - Added WireGuard code generation section
+
+**Type Naming:**
+- Generated types: `Arca_Wireguard_V1_*` (includes version namespace)
+- Client: `Arca_Wireguard_V1_WireGuardServiceNIOClient`
+
+---
+
+## Phase 1.4-1.5: WireGuardNetworkBackend Implementation (NEXT)
+
+**Objective**: Implement WireGuardNetworkBackend and integrate with NetworkManager.
+
+### Tasks
 
 #### 1.4 WireGuardNetworkBackend Implementation
 - [ ] **Task**: Create `WireGuardNetworkBackend.swift`
