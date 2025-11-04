@@ -91,6 +91,20 @@ else
     echo "  ⚠ Skipping - proto file not found: $TAP_FORWARDER_PROTO"
 fi
 
+# Generate Swift code for WireGuard Service (containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto)
+echo ""
+echo "→ Generating Swift code for WireGuard Service..."
+WIREGUARD_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto"
+if [ -f "$WIREGUARD_PROTO" ]; then
+    protoc "$WIREGUARD_PROTO" \
+        --proto_path="$(dirname "$WIREGUARD_PROTO")" \
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+    echo "  ✓ Generated Swift code: wireguard.{pb,grpc}.swift"
+else
+    echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
+fi
+
 # Generate Swift code for Builder API (Apple's container-builder-shim protocol)
 echo ""
 echo "→ Generating Swift code for Builder API..."
