@@ -3,8 +3,9 @@ import Logging
 
 /// Network backend type
 public enum NetworkBackend: String, Codable, Sendable {
-    case ovs = "ovs"      // Full Docker compatibility with OVS/OVN (default)
-    case vmnet = "vmnet"  // High performance native vmnet (limited features)
+    case ovs = "ovs"            // Full Docker compatibility with OVS/OVN (default)
+    case vmnet = "vmnet"        // High performance native vmnet (limited features)
+    case wireguard = "wireguard"  // WireGuard-based overlay (~1ms latency, full features)
 }
 
 /// Configuration for Arca daemon
