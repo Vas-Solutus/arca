@@ -752,6 +752,10 @@ public actor NetworkManager {
             networks.append(contentsOf: await backend.listNetworks())
         }
 
+        if let backend = wireGuardBackend {
+            networks.append(contentsOf: await backend.listNetworks())
+        }
+
         return networks
     }
 
@@ -766,6 +770,10 @@ public actor NetworkManager {
         if vmnetBackend != nil {
             // vmnet backend doesn't track container networks separately
             // (containers are attached at creation time)
+        }
+
+        if let backend = wireGuardBackend {
+            networks.append(contentsOf: await backend.getContainerNetworks(containerID: containerID))
         }
 
         return networks
@@ -805,12 +813,16 @@ public actor NetworkManager {
     /// Clean up in-memory network state for a stopped/exited container
     /// Called when container stops to ensure state is clean for restart
     public func cleanupStoppedContainer(containerID: String) async {
-        // Clean up in both backends (container could be in either)
+        // Clean up in all backends (container could be in any)
         if let backend = ovsBackend {
             await backend.cleanupStoppedContainer(containerID: containerID)
         }
 
         if let backend = vmnetBackend {
+            await backend.cleanupStoppedContainer(containerID: containerID)
+        }
+
+        if let backend = wireGuardBackend {
             await backend.cleanupStoppedContainer(containerID: containerID)
         }
     }
