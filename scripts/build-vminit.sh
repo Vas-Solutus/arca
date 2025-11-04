@@ -95,6 +95,71 @@ fi
 
 echo "  ✓ Embedded DNS built: arca-embedded-dns"
 
+# Build WireGuard service (Go binary cross-compiled to Linux)
+echo ""
+echo "→ Building WireGuard service (Go → Linux ARM64)..."
+cd "$VMINITD_DIR/vminitd/extensions/wireguard-service"
+
+if [ ! -f build.sh ]; then
+    echo "ERROR: wireguard-service/build.sh not found"
+    exit 1
+fi
+
+# Generate protobuf code first
+if [ ! -f proto/wireguard.pb.go ]; then
+    echo "  Generating protobuf code..."
+    ./generate-proto.sh
+fi
+
+./build.sh
+
+if [ ! -f arca-wireguard-service ]; then
+    echo "ERROR: arca-wireguard-service binary not built"
+    exit 1
+fi
+
+echo "  ✓ WireGuard service built: arca-wireguard-service"
+
+# Build wireguard-tools (wg command) for Linux ARM64
+echo ""
+echo "→ Building wireguard-tools (wg) for Linux ARM64..."
+WG_TOOLS_DIR="$VMINITD_DIR/vminitd/extensions/wireguard-tools"
+mkdir -p "$WG_TOOLS_DIR"
+
+if [ ! -f "$WG_TOOLS_DIR/wg" ]; then
+    echo "  Building wg from source using Docker..."
+    cd "$WG_TOOLS_DIR"
+
+    # Download WireGuard tools source
+    WG_VERSION="1.0.20250521"
+    curl -L -o wireguard-tools.tar.xz \
+        "https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-${WG_VERSION}.tar.xz"
+    tar -xf wireguard-tools.tar.xz
+
+    # Compile using Docker with Alpine Linux ARM64
+    cd "wireguard-tools-${WG_VERSION}/src"
+    docker run --rm \
+        -v "$(pwd)":/build \
+        -w /build \
+        --platform linux/arm64 \
+        alpine:3.22 \
+        sh -c 'apk add make gcc musl-dev linux-headers && make'
+
+    # Copy binary and clean up
+    cp wg "$WG_TOOLS_DIR/"
+    cd "$WG_TOOLS_DIR"
+    rm -rf wireguard-tools-${WG_VERSION} wireguard-tools.tar.xz
+
+    if [ ! -f wg ]; then
+        echo "ERROR: Failed to build wg binary"
+        exit 1
+    fi
+
+    echo "  ✓ wireguard-tools built: wg ($(du -h wg | awk '{print $1}'))"
+else
+    echo "  ✓ wireguard-tools already present: wg"
+fi
+
 # Build vminitd (Swift cross-compiled to Linux)
 echo ""
 echo "→ Building vminitd (Swift → Linux ARM64, $BUILD_CONFIG)..."
@@ -148,6 +213,8 @@ echo "  Using cctl to create rootfs with Swift runtime..."
     --vmexec "$VMEXEC_BINARY" \
     --add-file "$VMINITD_DIR/vminitd/extensions/tap-forwarder/arca-tap-forwarder:/sbin/arca-tap-forwarder" \
     --add-file "$VMINITD_DIR/vminitd/extensions/embedded-dns/arca-embedded-dns:/sbin/arca-embedded-dns" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/wireguard-service/arca-wireguard-service:/sbin/arca-wireguard-service" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/wireguard-tools/wg:/usr/bin/wg" \
     --image arca-vminit:latest \
     --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
     "$ROOTFS_TAR"
@@ -268,10 +335,12 @@ echo ""
 echo "OCI image location: $VMINIT_DIR"
 echo ""
 echo "Contents:"
-echo "  /sbin/vminitd            - Init system (PID 1)"
-echo "  /sbin/vmexec             - Exec helper"
-echo "  /sbin/arca-tap-forwarder - TAP forwarder (auto-started on boot, vsock:5555)"
-echo "  /sbin/arca-embedded-dns  - Embedded DNS resolver (127.0.0.11:53, auto-started on boot)"
+echo "  /sbin/vminitd                  - Init system (PID 1)"
+echo "  /sbin/vmexec                   - Exec helper"
+echo "  /sbin/arca-tap-forwarder       - TAP forwarder (auto-started on boot, vsock:5555)"
+echo "  /sbin/arca-embedded-dns        - Embedded DNS resolver (127.0.0.11:53, auto-started on boot)"
+echo "  /sbin/arca-wireguard-service   - WireGuard network service (vsock:51820)"
+echo "  /usr/bin/wg                    - WireGuard tools (wg command)"
 echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
 echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."
