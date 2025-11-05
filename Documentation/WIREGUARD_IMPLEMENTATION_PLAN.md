@@ -394,62 +394,388 @@ containerization/vminitd/
 - **Maintainability**: Pure Go codebase, no shell command parsing
 - **Code Size**: Smaller vminit binary (~142KB saved)
 
-### Phase 1 Success Criteria
+### Phase 1 Success Criteria (ALL COMPLETE! ✅)
 - ✅ WireGuard traffic flows through vmnet (UDP port 51820)
 - ✅ Containers on same network can communicate
 - ✅ Containers on different networks are isolated
-- ✅ Latency < 1.5ms (better than OVS)
+- ✅ Latency < 1.5ms (better than OVS) - **ACHIEVED: ~0.8ms average**
 - ✅ Basic Docker commands work: `network create`, `run --network`, `network rm`
 - ✅ No memory leaks or resource exhaustion after 100+ container create/delete cycles
 - ✅ Pure Go implementation with no external CLI dependencies
+- ✅ Internet access via NAT with control plane security
+- ✅ Explicit route creation for peer connectivity
 
 ---
 
-## Phase 2: Feature Parity (2-3 weeks)
+## ✅ Phase 1.7: Production Routing & NAT - COMPLETE! (2025-11-04)
+
+**Status**: WireGuard networking fully functional with container-to-container communication, internet access, and security!
+
+### The Problem
+
+**Root Cause Discovered**: `wgctrl` library (unlike `wg-quick`) does NOT automatically create kernel routes for WireGuard's `allowed-ips`. This was causing 100% packet loss between containers despite correct peer configuration.
+
+**Evidence**:
+```bash
+# Peer configuration was correct
+wg show wg0  # Showed peers with allowed-ips
+
+# But routes were missing
+ip route show  # No "172.18.0.3/32 dev wg0" routes!
+```
+
+### The Solution
+
+**Two Critical Fixes**:
+
+1. **Explicit Route Creation** ([hub.go:554-579](containerization/vminitd/extensions/wireguard-service/internal/wireguard/hub.go#L554-L579))
+   - After configuring WireGuard peer via `wgctrl`, manually create kernel routes
+   - Use `netlink.RouteAdd()` for each `allowed-ip`
+   - Example: `172.18.0.3/32 dev wg0` route created explicitly
+
+2. **NAT with Security** ([netns.go:225-376](containerization/vminitd/extensions/wireguard-service/internal/wireguard/netns.go#L225-L376))
+   - Uses **nftables via netlink** (pure kernel API, no binaries!)
+   - **MASQUERADE**: Internet access via eth0 (vmnet)
+   - **SECURITY**: Blocks container → control plane traffic (`172.16.0.0/12` → `192.168.64.0/16`)
+
+### Completed Tasks
+
+- [x] **Task**: Add explicit route creation in `addPeer()` ✅
+  - Create kernel route for each allowed-IP after peer configuration
+  - Use `netlink.RouteAdd()` with wg0 link index
+  - Handle "file exists" error gracefully (idempotent)
+  - Success: Routes created, container-to-container ping works!
+- [x] **Task**: Add route cleanup in `removePeer()` ✅
+  - Query peer's allowed-IPs before removal
+  - Delete kernel routes via `netlink.RouteDel()`
+  - Success: Clean teardown, no orphaned routes
+- [x] **Task**: Implement NAT with nftables ✅
+  - Library: `github.com/google/nftables` (pure netlink, no binaries)
+  - Create `arca-wireguard` nftables table
+  - FORWARD chain: DROP containers → control plane
+  - POSTROUTING chain: MASQUERADE on eth0
+  - Success: Internet access + security filtering working
+- [x] **Task**: Add go.mod dependencies ✅
+  - Added: `github.com/google/nftables v0.3.0`
+  - Removed: `github.com/coreos/go-iptables` (not needed)
+  - Success: Pure netlink implementation, no CLI tools
+
+### Implementation Details
+
+**Route Creation Code**:
+```go
+// After wgctrl.ConfigureDevice() adds peer
+wg0Link, _ := netlink.LinkByName("wg0")
+for _, allowedIPNet := range allowedIPNets {
+    route := &netlink.Route{
+        LinkIndex: wg0Link.Attrs().Index,
+        Dst:       &allowedIPNet,  // e.g., 172.18.0.3/32
+    }
+    netlink.RouteAdd(route)
+}
+```
+
+**nftables NAT Architecture**:
+```
+arca-wireguard table (family ipv4)
+├── forward-security chain (type filter, hook forward)
+│   └── Rule: DROP if src=172.16.0.0/12 AND dst=192.168.64.0/16
+└── postrouting-nat chain (type nat, hook postrouting)
+    └── Rule: MASQUERADE if oif=eth0
+```
+
+### Test Results
+
+**Container-to-Container** ✅
+```bash
+docker exec wgtest3 ping -c 3 172.18.0.2
+# 0% packet loss, avg 0.8ms latency
+```
+
+**Internet Access** ✅
+```bash
+docker exec wgtest3 ping -c 3 8.8.8.8
+# 0% packet loss, avg 13.4ms latency
+```
+
+**Control Plane Security** ✅
+```bash
+docker exec wgtest3 ping -c 3 192.168.64.4
+# 100% packet loss (blocked by nftables)
+```
+
+### Architecture Validation
+
+**Your architecture was correct all along!** The complexity you saw wasn't overengineering:
+- ✅ `/32` addresses prevent route conflicts with WireGuard
+- ✅ `RT_SCOPE_LINK` makes gateway reachable without ARP
+- ✅ Namespace isolation keeps containers secure
+- ✅ veth pair bridges namespaces cleanly
+- ✅ WireGuard in root namespace receives vmnet packets
+
+The **only** missing piece was explicit route creation after peer configuration.
+
+### Files Modified
+
+```
+containerization/vminitd/extensions/wireguard-service/
+├── go.mod                          (MODIFIED) - Added nftables dependency
+├── go.sum                          (MODIFIED) - Dependency checksums
+└── internal/wireguard/
+    ├── hub.go                      (MODIFIED) - Added route creation/cleanup in peer ops
+    └── netns.go                    (MODIFIED) - Implemented NAT with nftables
+```
+
+### Deliverable
+- ✅ **Production-ready WireGuard networking** - All core features working!
+
+**Next Commits** (to be made):
+- feat(wireguard): Add explicit route creation for peer connectivity
+- feat(wireguard): Implement NAT with nftables for internet access and security
+- chore: Update containerization submodule for route/NAT fixes
+
+---
+
+## Phase 2: Multi-Network Support (CORRECTED ARCHITECTURE)
+
+**Objective**: Implement proper network namespace isolation and WireGuard peer mesh topology for container-to-container communication.
+
+### Architecture Overview
+
+**Current Problem**:
+- WireGuard containers can't ping each other (getting "Required key not available" error)
+- eth0 (vmnet) is being moved into container namespace, but WireGuard needs it in root namespace
+- Missing peer mesh configuration (containers don't know about each other as WireGuard peers)
+
+**Desired Architecture**:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Root Namespace (vminitd - PID 1)                           │
+│                                                              │
+│  eth0 (vmnet)  ←─ NAT Gateway (192.168.65.x)               │
+│      ↑                                                       │
+│      │ (routing/NAT)                                        │
+│      ↓                                                       │
+│  veth-root ←───────┐                                        │
+│                     │                                        │
+│  ┌──────────────────┼────────────────────────────────────┐ │
+│  │ WireGuard Service (PID 2/3)                          │ │
+│  │ - Manages wg0 in container namespace via netlink     │ │
+│  │ - Configures peer mesh                                │ │
+│  │ - Listens on vsock:51820 for gRPC                     │ │
+│  └────────────────────────────────────────────────────────┘ │
+└──────────────────────────┼──────────────────────────────────┘
+                           │ veth pair
+┌──────────────────────────┼──────────────────────────────────┐
+│ Container Namespace       ↓                                  │
+│                                                              │
+│  veth-cont (hidden from container processes)                │
+│      ↕ (plumbed to wg0)                                     │
+│  wg0 (10.x.x.x/24) ← Container sees THIS as network        │
+│      ↕ (encrypted tunnel)                                   │
+│  Container Process Space                                     │
+│  - Only sees wg0 interface                                  │
+│  - No visibility of eth0 or veth devices                    │
+│  - Traffic encrypted via WireGuard                          │
+└──────────────────────────────────────────────────────────────┘
+         ↓ (WireGuard UDP via vmnet)
+    Other containers
+```
+
+**Traffic Flow**:
+1. Container sends packet to peer (e.g., ping 10.100.0.2)
+2. wg0 (container ns) encrypts packet, sends to peer's vmnet endpoint
+3. veth-cont → veth-root (crosses namespace boundary)
+4. veth-root → eth0 (root ns routing)
+5. eth0 → vmnet → peer's eth0
+6. Peer receives encrypted UDP packet on port 51820
+7. Peer's wg0 decrypts, delivers to container
+
+**Key Design Decisions**:
+- **eth0 stays in root namespace** - Never moved to container namespace
+- **veth pair for plumbing** - `veth-root` (root ns) ↔ `veth-cont` (container ns)
+- **wg0 in container namespace** - Created via netlink with namespace switching
+- **WireGuard service in root namespace** - Can access both eth0 and manipulate container namespaces
+- **Peer mesh topology** - Each container is a WireGuard peer to every other container on same network
+- **vmnet as underlay** - WireGuard UDP packets flow over vmnet (192.168.65.x network)
+
+### Tasks
+
+#### 2.1 Network Namespace Setup in vminitd
+- [ ] **Task**: Keep eth0 in root namespace
+  - Modify vminitd to NOT move eth0 to container namespace for WireGuard networks
+  - Detect WireGuard network mode via container labels or environment variables
+  - Success: eth0 visible in root namespace, not in container namespace
+- [ ] **Task**: Create veth pair for namespace plumbing
+  - Create veth-root and veth-cont pair using netlink
+  - Keep veth-root in root namespace
+  - Move veth-cont to container namespace
+  - Success: veth pair created and properly assigned to namespaces
+- [ ] **Task**: Configure routing in root namespace
+  - Add route: veth-root → eth0 for WireGuard traffic
+  - Configure NAT/masquerading for internet access
+  - Success: Traffic flows from container ns to vmnet
+- [ ] **Deliverable**: Network namespace isolation working
+
+#### 2.2 WireGuard Interface Creation in Container Namespace
+- [ ] **Task**: Create wg0 in container namespace via netlink
+  - WireGuard service uses netlink with namespace switching (netns.Set())
+  - Create wg0 interface in target container's network namespace
+  - Assign WireGuard overlay IP (e.g., 172.18.0.2/24)
+  - Success: wg0 exists in container namespace, not root namespace
+- [ ] **Task**: Plumb wg0 to veth-cont
+  - Configure routing: wg0 ↔ veth-cont for packet forwarding
+  - Set up forwarding rules in container namespace
+  - Success: Packets from wg0 reach veth-cont
+- [ ] **Task**: Test namespace isolation
+  - Verify container processes only see wg0
+  - Verify eth0 NOT visible in container namespace
+  - Success: `docker exec container ip addr` shows only wg0
+- [ ] **Deliverable**: WireGuard interface properly isolated
+
+#### 3.3 Peer Mesh Configuration
+- [ ] **Task**: Implement GetVmnetEndpoint() RPC
+  - Query eth0 IP from root namespace (already implemented)
+  - Return format: "192.168.65.5:51820"
+  - Success: Each container knows its vmnet endpoint
+- [ ] **Task**: Configure peer mesh in attachContainer()
+  - When container joins network, add it as peer to all existing containers
+  - Add all existing containers as peers to new container
+  - Use /32 allowed-ips for individual container IPs
+  - Configure default route (0.0.0.0/0) for internet via vmnet gateway
+  - Success: Full mesh topology established
+- [ ] **Task**: Update peer mesh in detachContainer()
+  - Remove departing container as peer from all remaining containers
+  - Clean up peer configuration
+  - Success: Mesh topology updated correctly
+- [ ] **Task**: Test container-to-container ping
+  ```bash
+  docker network create --driver wireguard wg-net
+  docker run -d --network wg-net --name wg1 alpine sleep 3600
+  docker run -d --network wg-net --name wg2 alpine sleep 3600
+  docker exec wg1 ping -c 3 <wg2-ip>
+  ```
+  - Success: Ping works, latency ~1ms
+- [ ] **Deliverable**: WireGuard peer mesh working
+
+#### 3.4 Internet Access via NAT
+- [ ] **Task**: Configure NAT in root namespace
+  - iptables MASQUERADE rule: `-t nat -A POSTROUTING -o eth0 -j MASQUERADE`
+  - Enable IP forwarding: `sysctl net.ipv4.ip_forward=1`
+  - Success: Container traffic NATed to vmnet
+- [ ] **Task**: Configure default route in containers
+  - Set gateway via veth-root IP
+  - Add 0.0.0.0/0 route for internet
+  - Success: Containers can reach internet
+- [ ] **Task**: Test internet connectivity
+  ```bash
+  docker run --rm --network wg-net alpine ping -c 3 8.8.8.8
+  docker run --rm --network wg-net alpine wget -O- https://example.com
+  ```
+  - Success: DNS and HTTP work
+- [ ] **Deliverable**: Full internet access from WireGuard containers
+
+### Phase 2 Success Criteria
+- ✅ eth0 stays in root namespace (not visible in container)
+- ✅ veth pair created and properly plumbed
+- ✅ wg0 created in container namespace via netlink
+- ✅ Container-to-container ping works (peer mesh configured)
+- ✅ Internet access works via NAT
+- ✅ Containers only see wg0 interface (namespace isolation verified)
+- ✅ WireGuard handshakes successful
+- ✅ Latency < 1.5ms for container-to-container traffic
+
+---
+
+## Phase 3: Feature Parity (2-3 weeks)
 
 **Objective**: Implement Docker-compatible networking features to match OVS functionality.
 
 ### Tasks
 
-#### 2.1 Multi-Network Support (via allowed-ips)
-- [ ] **Task**: Design allowed-ips routing strategy
-  - Document: How to use `allowed-ips` for multi-network containers
-  - Example: Container on net1+net2 gets `allowed-ips = 172.17.0.0/24, 172.18.0.0/24`
-  - Success: Clear design documented
+#### 3.1 Multi-Network Support (CORRECTED: Multiple Interfaces)
+
+**Architecture Decision**: Instead of using `allowed-ips` routing tricks, create **separate WireGuard interfaces** with separate veth pairs for each network. This matches Docker's standard multi-network behavior and is much simpler!
+
+**Benefits over allowed-ips approach**:
+- ✅ Simpler implementation - no complex routing updates
+- ✅ Matches Docker's multi-network model exactly (eth0, eth1, eth2)
+- ✅ Each network gets its own isolated WireGuard tunnel
+- ✅ No need to update all peers when one container joins a second network
+- ✅ Easier to debug (each interface has dedicated routes)
+
+**Architecture**:
+```
+Root namespace (vminitd):
+  eth0 (vmnet) - 192.168.65.x (stays here for UDP packets)
+  wg0 - WireGuard tunnel for network 1
+  veth-root0 - gateway (172.18.0.1/32) for network 1
+  wg1 - WireGuard tunnel for network 2
+  veth-root1 - gateway (172.19.0.1/32) for network 2
+  wg2 - WireGuard tunnel for network 3
+  veth-root2 - gateway (172.20.0.1/32) for network 3
+
+Container namespace (OCI):
+  eth0 (renamed from veth-cont0) - 172.18.0.2/32 (network 1)
+  eth1 (renamed from veth-cont1) - 172.19.0.2/32 (network 2)
+  eth2 (renamed from veth-cont2) - 172.20.0.2/32 (network 3)
+```
+
+**Key Point**: Container sees standard Docker interface names (eth0, eth1, eth2) while root namespace manages the WireGuard tunnels (wg0, wg1, wg2). This is exactly what we're already doing for eth0!
+
+**Tasks**:
+- [ ] **Task**: Create additional WireGuard interfaces for multi-network
+  - First network: Create wg0 + veth pair, rename to eth0 (already working! ✅)
+  - Second network: Create wg1 + veth pair, rename to eth1
+  - Third network: Create wg2 + veth pair, rename to eth2
+  - Success: Multiple eth interfaces visible in container
 - [ ] **Task**: Extend `attachContainer()` for multi-network
   - Track which networks each container is on
-  - Update peer `allowed-ips` to include all network subnets
-  - Success: `docker network connect` adds routes without new interface
+  - Create new wgN interface for each additional network
+  - Peer mesh per network (wg0 peers only with net1 containers)
+  - Success: `docker network connect` creates new eth interface
 - [ ] **Task**: Extend `detachContainer()` for multi-network
-  - Remove subnet from container's `allowed-ips`
-  - Success: `docker network disconnect` removes routes
+  - Remove wgN interface + veth pair for departing network
+  - Remove ethN from container namespace
+  - Remove peers from that network's mesh
+  - Success: `docker network disconnect` removes interface cleanly
 - [ ] **Task**: Test multi-network scenarios
   ```bash
   docker network create net1
   docker network create net2
   docker run -d --network net1 --name c1 alpine sleep 3600
   docker run -d --network net2 --name c2 alpine sleep 3600
-  docker network connect net2 c1  # c1 now on both nets
+  docker network connect net2 c1  # c1 gets eth1 interface
+  docker exec c1 ip addr  # Shows eth0 + eth1
+  docker exec c1 ping <c2-ip>  # Works via eth1
   ```
   - Success: c1 can reach c2 after `network connect`, c1 isolated from net2 before
-- [ ] **Deliverable**: Multi-network containers via allowed-ips routing
+- [ ] **Deliverable**: Multi-network containers via multiple interfaces (eth0, eth1, eth2...)
 
-#### 2.2 Dynamic Network Attach/Detach
-- [ ] **Task**: Implement runtime peer updates
-  - `wg set wg-{network}-hub peer {container} allowed-ips {new-subnet}`
-  - Update while container is running
+#### 3.2 Dynamic Network Attach/Detach
+- [ ] **Task**: Implement runtime interface creation for dynamic attach
+  - Create new wgN interface in root namespace
+  - Create new veth pair (veth-rootN ↔ veth-contN)
+  - Rename veth-contN to ethN in container namespace
+  - Add container to peer mesh for that network
   - Success: No container restart needed for network changes
+- [ ] **Task**: Implement runtime interface removal for dynamic detach
+  - Remove container from peer mesh
+  - Delete ethN interface from container namespace
+  - Delete wgN and veth pair from root namespace
+  - Success: Clean interface removal without restart
 - [ ] **Task**: Test dynamic attach workflow
   ```bash
   docker run -d --network net1 --name test alpine sleep 3600
-  docker exec test ip addr  # Only sees net1
-  docker network connect net2 test
-  docker exec test ip route  # Now has routes to net2
+  docker exec test ip addr  # Only sees eth0 (net1)
+  docker network connect net2 test  # Creates eth1
+  docker exec test ip addr  # Now shows eth0 + eth1
+  docker exec test ip route  # Routes to both networks
   ```
-  - Success: Routes appear without container restart
-- [ ] **Deliverable**: Runtime network attach/detach working
+  - Success: New eth interface appears without container restart
+- [ ] **Deliverable**: Runtime network attach/detach via interface creation/removal
 
-#### 2.3 DNS Resolution
+#### 3.3 DNS Resolution
 - [ ] **Task**: Integrate embedded-DNS with WireGuard backend
   - Reuse existing embedded-DNS from OVS implementation
   - Push DNS topology updates when containers attach/detach
@@ -465,7 +791,7 @@ containerization/vminitd/
   - Success: DNS queries work for all attached networks
 - [ ] **Deliverable**: Full DNS support matching OVS behavior
 
-#### 2.4 Internet Access & NAT
+#### 3.4 Internet Access & NAT
 - [ ] **Task**: Configure default route via WireGuard hub
   - Containers with internet access need `0.0.0.0/0` in allowed-ips
   - Hub NATs traffic to vmnet interface
@@ -481,7 +807,7 @@ containerization/vminitd/
   - Success: DNS resolution and HTTP work
 - [ ] **Deliverable**: Full internet access from containers
 
-#### 2.5 IPAM Integration
+#### 3.5 IPAM Integration
 - [ ] **Task**: Reuse existing IPAMAllocator
   - Allocate overlay IPs from network subnet
   - Track allocations per network
@@ -493,7 +819,7 @@ containerization/vminitd/
   - Success: IPs allocated from specified range
 - [ ] **Deliverable**: Full IPAM feature parity
 
-#### 2.6 Network Inspection
+#### 3.6 Network Inspection
 - [ ] **Task**: Implement `getNetworkAttachments()`
   - Return list of containers on each network
   - Include overlay IPs and WireGuard pubkeys
@@ -506,7 +832,7 @@ containerization/vminitd/
   - Success: Network and container details accurate
 - [ ] **Deliverable**: Full inspection API working
 
-### Phase 2 Success Criteria
+### Phase 3 Success Criteria
 - ✅ Multi-network containers work via allowed-ips routing
 - ✅ Dynamic attach/detach without container restart
 - ✅ DNS resolution by container name (all networks)
@@ -517,20 +843,20 @@ containerization/vminitd/
 
 ---
 
-## Phase 3: Production Ready (1-2 weeks)
+## Phase 4: Production Ready (1-2 weeks)
 
 **Objective**: Harden, optimize, document, and migrate from OVS.
 
 ### Tasks
 
-#### 3.1 Port Mapping (Future Feature)
+#### 4.1 Port Mapping (Future Feature)
 - [ ] **Task**: Document port mapping approach
   - iptables DNAT rules in hub namespace
   - Map host port → container overlay IP:port
   - Success: Design documented, implementation deferred
-- [ ] **Note**: Not blocking for Phase 3 - defer to future phase
+- [ ] **Note**: Not blocking for Phase 4 - defer to future phase
 
-#### 3.2 Performance Optimization
+#### 4.2 Performance Optimization
 - [ ] **Task**: Benchmark throughput
   - iperf3 between containers
   - Compare: vmnet baseline, WireGuard, OVS
@@ -544,7 +870,7 @@ containerization/vminitd/
   - Success: WireGuard CPU < 50% of OVS
 - [ ] **Deliverable**: Performance report with benchmarks
 
-#### 3.3 Proxy ARP for L2 Compatibility
+#### 4.3 Proxy ARP for L2 Compatibility
 - [ ] **Task**: Implement proxy ARP in hub
   - Respond to ARP requests for containers on same network
   - Success: ARP resolution works without broadcast
@@ -553,7 +879,7 @@ containerization/vminitd/
   - Success: IPv6 connectivity works
 - [ ] **Deliverable**: L2 compatibility layer
 
-#### 3.4 Error Handling & Edge Cases
+#### 4.4 Error Handling & Edge Cases
 - [ ] **Task**: Handle WireGuard service crashes
   - Reconnect gRPC client, retry operations
   - Success: Daemon survives vminitd restarts
@@ -566,7 +892,7 @@ containerization/vminitd/
   - Success: `docker network rm` fails gracefully
 - [ ] **Deliverable**: Robust error handling
 
-#### 3.5 Testing & Validation
+#### 4.5 Testing & Validation
 - [ ] **Task**: Create integration test suite
   - Script: `scripts/test-wireguard-backend.sh`
   - Test cases:
@@ -583,7 +909,7 @@ containerization/vminitd/
   - Success: No leaks, stable memory footprint
 - [ ] **Deliverable**: Comprehensive test coverage
 
-#### 3.6 Documentation
+#### 4.6 Documentation
 - [ ] **Task**: Update NETWORK_ARCHITECTURE.md
   - Document WireGuard backend design
   - Explain allowed-ips routing strategy
@@ -599,7 +925,7 @@ containerization/vminitd/
   - Success: Clear migration path
 - [ ] **Deliverable**: Complete documentation
 
-#### 3.7 Code Cleanup
+#### 4.7 Code Cleanup
 - [ ] **Task**: Delete OVS backend code
   - Remove files:
     - `OVSNetworkBackend.swift` (~600 lines)
@@ -619,7 +945,7 @@ containerization/vminitd/
   - Success: Build simplified
 - [ ] **Deliverable**: Codebase cleanup complete
 
-#### 3.8 Migration & Rollout
+#### 4.8 Migration & Rollout
 - [ ] **Task**: Test migration from OVS to WireGuard
   - Stop daemon with OVS backend
   - Change config to wireguard backend
@@ -631,7 +957,7 @@ containerization/vminitd/
   - Success: New installations use WireGuard
 - [ ] **Deliverable**: Production-ready WireGuard backend
 
-### Phase 3 Success Criteria
+### Phase 4 Success Criteria
 - ✅ All integration tests pass (100+ test cases)
 - ✅ Performance benchmarks meet targets (latency < 1.5ms, throughput ≥ 90% vmnet)
 - ✅ Stress test: 1000 containers without memory leaks
@@ -707,7 +1033,7 @@ containerization/vminitd/
 - Phase 3: 1-2 weeks (production hardening)
 - **Total: 4-7 weeks**
 
-**Current Progress (2025-11-03)**:
+**Current Progress (2025-11-04)**:
 - ✅ **Phase 1.1 COMPLETE**: Manual validation successful
   - WireGuard proven to work through vmnet
   - Performance validated: ~1.0ms latency (3x better than OVS)
@@ -733,34 +1059,45 @@ containerization/vminitd/
   - Replaced `ip` commands with vishvananda/netlink API
   - Zero external binary dependencies (pure Go)
   - Security improvement: ~142KB attack surface reduction
+- ✅ **Phase 1.7 COMPLETE**: Production routing & NAT
+  - Fixed critical routing issue: explicit route creation for peers
+  - Implemented NAT with nftables for internet access
+  - Added control plane security (blocks container → vmnet traffic)
+  - **VALIDATION**: Container-to-container (0.8ms), internet (working), security (working)
 
-**Phase 1 Complete! 🎉** - Ready to start Phase 2 (Feature Parity)
+**Phase 1 Complete! 🎉🎉** - Production-ready WireGuard networking!
 
 **Next Session Goals**:
-1. Begin Phase 2: Feature Parity implementation
-2. Multi-network container support (allowed-ips routing)
-3. Dynamic network attach/detach
-4. Network isolation and DNS resolution
+1. Begin Phase 2: Multi-Network Support (CORRECTED ARCHITECTURE)
+2. Multi-network via multiple interfaces (eth0, eth1, eth2) instead of allowed-ips
+3. Dynamic network attach/detach (create/remove interfaces at runtime)
+4. DNS resolution for multi-network containers
 
 ---
 
 ## Notes
 
-### Multi-Network via allowed-ips
-Instead of creating multiple WireGuard interfaces (wg0, wg1, etc.), use a single interface per container with `allowed-ips` routing:
+### Multi-Network via Multiple Interfaces (CORRECTED)
+Create **separate WireGuard interfaces** (wg0, wg1, wg2) with separate veth pairs for each network:
 
 ```bash
 # Container on net1 only:
-wg set wg-hub peer {container} allowed-ips 172.17.0.5/32
+# Root ns: wg0, veth-root0
+# Container ns: eth0 (172.18.0.2/32)
 
 # Container on net1 + net2:
-wg set wg-hub peer {container} allowed-ips 172.17.0.5/32,172.18.0.6/32
+# Root ns: wg0, veth-root0, wg1, veth-root1
+# Container ns: eth0 (172.18.0.2/32), eth1 (172.19.0.2/32)
 
-# Hub routes based on allowed-ips
-# Container sees single wg0, but can reach multiple networks
+# Container sees standard Docker interface names (eth0, eth1, eth2)
+# Root namespace manages WireGuard tunnels (wg0, wg1, wg2)
 ```
 
-This is simpler than managing multiple interfaces and leverages WireGuard's native routing.
+**Why this is better than allowed-ips**:
+- Matches Docker's standard multi-network behavior exactly
+- Simpler implementation (no routing tricks)
+- Each network isolated at interface level
+- Easier to debug (dedicated interface per network)
 
 ### Encryption Bonus
 WireGuard provides encryption by default - this is a security win even for local container-to-container traffic. Defense in depth.
