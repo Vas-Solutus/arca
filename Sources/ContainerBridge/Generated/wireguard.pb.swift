@@ -23,52 +23,6 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
-/// Request to create a WireGuard hub interface
-public struct Arca_Wireguard_V1_CreateHubRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Private key for this container's WireGuard interface
-  /// Base64-encoded Curve25519 key (44 chars)
-  public var privateKey: String = String()
-
-  /// Listen port for WireGuard (default: 51820)
-  public var listenPort: UInt32 = 0
-
-  /// Container's IP address on first network (assigned to wg0)
-  public var ipAddress: String = String()
-
-  /// Network CIDR for the first network (e.g., "172.18.0.0/16")
-  public var networkCidr: String = String()
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-public struct Arca_Wireguard_V1_CreateHubResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Success status
-  public var success: Bool = false
-
-  /// Error message if success = false
-  public var error: String = String()
-
-  /// Public key for this container (for peer configuration)
-  public var publicKey: String = String()
-
-  /// Interface name created (should be "wg0")
-  public var interface: String = String()
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
 /// Request to add a network to the container
 public struct Arca_Wireguard_V1_AddNetworkRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
@@ -78,7 +32,17 @@ public struct Arca_Wireguard_V1_AddNetworkRequest: Sendable {
   /// Network ID (Docker network ID)
   public var networkID: String = String()
 
-  /// Peer endpoint (hub's vmnet IP address, e.g., "192.168.65.5:51820")
+  /// Network index (0 for first network → wg0/eth0, 1 for second → wg1/eth1, etc.)
+  public var networkIndex: UInt32 = 0
+
+  /// Private key for this container's WireGuard interface (Base64-encoded Curve25519 key)
+  /// Each wgN interface gets its own private key
+  public var privateKey: String = String()
+
+  /// Listen port for WireGuard (51820 + network_index)
+  public var listenPort: UInt32 = 0
+
+  /// Peer endpoint (peer's vmnet IP address, e.g., "192.168.65.5:51820")
   public var peerEndpoint: String = String()
 
   /// Peer's public key (Base64-encoded)
@@ -87,10 +51,10 @@ public struct Arca_Wireguard_V1_AddNetworkRequest: Sendable {
   /// IP address for this container on this network
   public var ipAddress: String = String()
 
-  /// Network CIDR for allowed-ips routing (e.g., "172.19.0.0/16")
+  /// Network CIDR for routing (e.g., "172.18.0.0/16")
   public var networkCidr: String = String()
 
-  /// Gateway IP for this network (for routing)
+  /// Gateway IP for this network (e.g., "172.18.0.1")
   public var gateway: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -112,6 +76,15 @@ public struct Arca_Wireguard_V1_AddNetworkResponse: Sendable {
   /// Number of networks now configured
   public var totalNetworks: UInt32 = 0
 
+  /// WireGuard interface name created (wg0, wg1, wg2, etc.)
+  public var wgInterface: String = String()
+
+  /// Container interface name (eth0, eth1, eth2, etc.)
+  public var ethInterface: String = String()
+
+  /// Public key for this interface (for peer configuration)
+  public var publicKey: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -125,6 +98,9 @@ public struct Arca_Wireguard_V1_RemoveNetworkRequest: Sendable {
 
   /// Network ID to remove
   public var networkID: String = String()
+
+  /// Network index (0, 1, 2, etc.) - identifies which wgN/ethN to remove
+  public var networkIndex: UInt32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -144,74 +120,6 @@ public struct Arca_Wireguard_V1_RemoveNetworkResponse: Sendable {
 
   /// Number of networks still configured
   public var remainingNetworks: UInt32 = 0
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-/// Request to update allowed IPs for multi-network routing
-/// Called when containers join/leave networks to update routing table
-public struct Arca_Wireguard_V1_UpdateAllowedIPsRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Complete set of allowed IP ranges for this peer
-  /// Each entry is a CIDR (e.g., "172.18.0.0/16", "172.19.0.0/16")
-  public var allowedCidrs: [String] = []
-
-  /// Peer public key to update (identifies which peer to configure)
-  public var peerPublicKey: String = String()
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-public struct Arca_Wireguard_V1_UpdateAllowedIPsResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Success status
-  public var success: Bool = false
-
-  /// Error message if success = false
-  public var error: String = String()
-
-  /// Number of CIDR ranges now allowed
-  public var totalAllowed: UInt32 = 0
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-/// Request to delete the WireGuard hub
-public struct Arca_Wireguard_V1_DeleteHubRequest: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Force deletion even if there are active networks
-  public var force: Bool = false
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-public struct Arca_Wireguard_V1_DeleteHubResponse: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// Success status
-  public var success: Bool = false
-
-  /// Error message if success = false
-  public var error: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -240,24 +148,15 @@ public struct Arca_Wireguard_V1_GetStatusResponse: Sendable {
   /// Number of networks configured
   public var networkCount: UInt32 = 0
 
-  /// WireGuard interface status
-  public var interface: Arca_Wireguard_V1_InterfaceStatus {
-    get {return _interface ?? Arca_Wireguard_V1_InterfaceStatus()}
-    set {_interface = newValue}
-  }
-  /// Returns true if `interface` has been explicitly set.
-  public var hasInterface: Bool {return self._interface != nil}
-  /// Clears the value of `interface`. Subsequent reads from it will return its default value.
-  public mutating func clearInterface() {self._interface = nil}
+  /// WireGuard interface statuses (one per wgN interface)
+  public var interfaces: [Arca_Wireguard_V1_InterfaceStatus] = []
 
-  /// Peer statistics (one per network)
+  /// Peer statistics (one per peer, grouped by interface)
   public var peers: [Arca_Wireguard_V1_PeerStatus] = []
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
-
-  fileprivate var _interface: Arca_Wireguard_V1_InterfaceStatus? = nil
 }
 
 public struct Arca_Wireguard_V1_InterfaceStatus: Sendable {
@@ -265,10 +164,13 @@ public struct Arca_Wireguard_V1_InterfaceStatus: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Interface name (should be "wg0")
+  /// Network ID this interface represents
+  public var networkID: String = String()
+
+  /// Interface name (wg0, wg1, wg2, etc.)
   public var name: String = String()
 
-  /// Public key
+  /// Public key for this interface
   public var publicKey: String = String()
 
   /// Listen port
@@ -289,6 +191,9 @@ public struct Arca_Wireguard_V1_PeerStatus: Sendable {
 
   /// Network ID this peer represents
   public var networkID: String = String()
+
+  /// Interface name this peer belongs to (wg0, wg1, wg2, etc.)
+  public var interfaceName: String = String()
 
   /// Peer public key
   public var publicKey: String = String()
@@ -338,103 +243,43 @@ public struct Arca_Wireguard_V1_TransferStats: Sendable {
   public init() {}
 }
 
+/// Request for vmnet endpoint information
+public struct Arca_Wireguard_V1_GetVmnetEndpointRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Wireguard_V1_GetVmnetEndpointResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  /// vmnet endpoint (eth0 IP:port, e.g., "192.168.65.5:51820")
+  public var endpoint: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "arca.wireguard.v1"
 
-extension Arca_Wireguard_V1_CreateHubRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".CreateHubRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}private_key\0\u{3}listen_port\0\u{3}ip_address\0\u{3}network_cidr\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.privateKey) }()
-      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.listenPort) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.networkCidr) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.privateKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.privateKey, fieldNumber: 1)
-    }
-    if self.listenPort != 0 {
-      try visitor.visitSingularUInt32Field(value: self.listenPort, fieldNumber: 2)
-    }
-    if !self.ipAddress.isEmpty {
-      try visitor.visitSingularStringField(value: self.ipAddress, fieldNumber: 3)
-    }
-    if !self.networkCidr.isEmpty {
-      try visitor.visitSingularStringField(value: self.networkCidr, fieldNumber: 4)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_CreateHubRequest, rhs: Arca_Wireguard_V1_CreateHubRequest) -> Bool {
-    if lhs.privateKey != rhs.privateKey {return false}
-    if lhs.listenPort != rhs.listenPort {return false}
-    if lhs.ipAddress != rhs.ipAddress {return false}
-    if lhs.networkCidr != rhs.networkCidr {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Arca_Wireguard_V1_CreateHubResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".CreateHubResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}public_key\0\u{1}interface\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.interface) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    if !self.error.isEmpty {
-      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
-    }
-    if !self.publicKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 3)
-    }
-    if !self.interface.isEmpty {
-      try visitor.visitSingularStringField(value: self.interface, fieldNumber: 4)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_CreateHubResponse, rhs: Arca_Wireguard_V1_CreateHubResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs.error != rhs.error {return false}
-    if lhs.publicKey != rhs.publicKey {return false}
-    if lhs.interface != rhs.interface {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
 extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddNetworkRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}peer_endpoint\0\u{3}peer_public_key\0\u{3}ip_address\0\u{3}network_cidr\0\u{1}gateway\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0\u{3}private_key\0\u{3}listen_port\0\u{3}peer_endpoint\0\u{3}peer_public_key\0\u{3}ip_address\0\u{3}network_cidr\0\u{1}gateway\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -443,11 +288,14 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.peerEndpoint) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.peerPublicKey) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
-      case 5: try { try decoder.decodeSingularStringField(value: &self.networkCidr) }()
-      case 6: try { try decoder.decodeSingularStringField(value: &self.gateway) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.networkIndex) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.privateKey) }()
+      case 4: try { try decoder.decodeSingularUInt32Field(value: &self.listenPort) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.peerEndpoint) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.peerPublicKey) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
+      case 8: try { try decoder.decodeSingularStringField(value: &self.networkCidr) }()
+      case 9: try { try decoder.decodeSingularStringField(value: &self.gateway) }()
       default: break
       }
     }
@@ -457,26 +305,38 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
     if !self.networkID.isEmpty {
       try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
     }
+    if self.networkIndex != 0 {
+      try visitor.visitSingularUInt32Field(value: self.networkIndex, fieldNumber: 2)
+    }
+    if !self.privateKey.isEmpty {
+      try visitor.visitSingularStringField(value: self.privateKey, fieldNumber: 3)
+    }
+    if self.listenPort != 0 {
+      try visitor.visitSingularUInt32Field(value: self.listenPort, fieldNumber: 4)
+    }
     if !self.peerEndpoint.isEmpty {
-      try visitor.visitSingularStringField(value: self.peerEndpoint, fieldNumber: 2)
+      try visitor.visitSingularStringField(value: self.peerEndpoint, fieldNumber: 5)
     }
     if !self.peerPublicKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.peerPublicKey, fieldNumber: 3)
+      try visitor.visitSingularStringField(value: self.peerPublicKey, fieldNumber: 6)
     }
     if !self.ipAddress.isEmpty {
-      try visitor.visitSingularStringField(value: self.ipAddress, fieldNumber: 4)
+      try visitor.visitSingularStringField(value: self.ipAddress, fieldNumber: 7)
     }
     if !self.networkCidr.isEmpty {
-      try visitor.visitSingularStringField(value: self.networkCidr, fieldNumber: 5)
+      try visitor.visitSingularStringField(value: self.networkCidr, fieldNumber: 8)
     }
     if !self.gateway.isEmpty {
-      try visitor.visitSingularStringField(value: self.gateway, fieldNumber: 6)
+      try visitor.visitSingularStringField(value: self.gateway, fieldNumber: 9)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Arca_Wireguard_V1_AddNetworkRequest, rhs: Arca_Wireguard_V1_AddNetworkRequest) -> Bool {
     if lhs.networkID != rhs.networkID {return false}
+    if lhs.networkIndex != rhs.networkIndex {return false}
+    if lhs.privateKey != rhs.privateKey {return false}
+    if lhs.listenPort != rhs.listenPort {return false}
     if lhs.peerEndpoint != rhs.peerEndpoint {return false}
     if lhs.peerPublicKey != rhs.peerPublicKey {return false}
     if lhs.ipAddress != rhs.ipAddress {return false}
@@ -489,7 +349,7 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
 
 extension Arca_Wireguard_V1_AddNetworkResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddNetworkResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}total_networks\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}total_networks\0\u{3}wg_interface\0\u{3}eth_interface\0\u{3}public_key\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -500,6 +360,9 @@ extension Arca_Wireguard_V1_AddNetworkResponse: SwiftProtobuf.Message, SwiftProt
       case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
       case 3: try { try decoder.decodeSingularUInt32Field(value: &self.totalNetworks) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.wgInterface) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.ethInterface) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
       default: break
       }
     }
@@ -515,6 +378,15 @@ extension Arca_Wireguard_V1_AddNetworkResponse: SwiftProtobuf.Message, SwiftProt
     if self.totalNetworks != 0 {
       try visitor.visitSingularUInt32Field(value: self.totalNetworks, fieldNumber: 3)
     }
+    if !self.wgInterface.isEmpty {
+      try visitor.visitSingularStringField(value: self.wgInterface, fieldNumber: 4)
+    }
+    if !self.ethInterface.isEmpty {
+      try visitor.visitSingularStringField(value: self.ethInterface, fieldNumber: 5)
+    }
+    if !self.publicKey.isEmpty {
+      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -522,6 +394,9 @@ extension Arca_Wireguard_V1_AddNetworkResponse: SwiftProtobuf.Message, SwiftProt
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.totalNetworks != rhs.totalNetworks {return false}
+    if lhs.wgInterface != rhs.wgInterface {return false}
+    if lhs.ethInterface != rhs.ethInterface {return false}
+    if lhs.publicKey != rhs.publicKey {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -529,7 +404,7 @@ extension Arca_Wireguard_V1_AddNetworkResponse: SwiftProtobuf.Message, SwiftProt
 
 extension Arca_Wireguard_V1_RemoveNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RemoveNetworkRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -538,6 +413,7 @@ extension Arca_Wireguard_V1_RemoveNetworkRequest: SwiftProtobuf.Message, SwiftPr
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.networkIndex) }()
       default: break
       }
     }
@@ -547,11 +423,15 @@ extension Arca_Wireguard_V1_RemoveNetworkRequest: SwiftProtobuf.Message, SwiftPr
     if !self.networkID.isEmpty {
       try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
     }
+    if self.networkIndex != 0 {
+      try visitor.visitSingularUInt32Field(value: self.networkIndex, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Arca_Wireguard_V1_RemoveNetworkRequest, rhs: Arca_Wireguard_V1_RemoveNetworkRequest) -> Bool {
     if lhs.networkID != rhs.networkID {return false}
+    if lhs.networkIndex != rhs.networkIndex {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -597,146 +477,6 @@ extension Arca_Wireguard_V1_RemoveNetworkResponse: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Arca_Wireguard_V1_UpdateAllowedIPsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".UpdateAllowedIPsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}allowed_cidrs\0\u{3}peer_public_key\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedStringField(value: &self.allowedCidrs) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.peerPublicKey) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.allowedCidrs.isEmpty {
-      try visitor.visitRepeatedStringField(value: self.allowedCidrs, fieldNumber: 1)
-    }
-    if !self.peerPublicKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.peerPublicKey, fieldNumber: 2)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_UpdateAllowedIPsRequest, rhs: Arca_Wireguard_V1_UpdateAllowedIPsRequest) -> Bool {
-    if lhs.allowedCidrs != rhs.allowedCidrs {return false}
-    if lhs.peerPublicKey != rhs.peerPublicKey {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Arca_Wireguard_V1_UpdateAllowedIPsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".UpdateAllowedIPsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}total_allowed\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
-      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.totalAllowed) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    if !self.error.isEmpty {
-      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
-    }
-    if self.totalAllowed != 0 {
-      try visitor.visitSingularUInt32Field(value: self.totalAllowed, fieldNumber: 3)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_UpdateAllowedIPsResponse, rhs: Arca_Wireguard_V1_UpdateAllowedIPsResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs.error != rhs.error {return false}
-    if lhs.totalAllowed != rhs.totalAllowed {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Arca_Wireguard_V1_DeleteHubRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".DeleteHubRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}force\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.force) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.force != false {
-      try visitor.visitSingularBoolField(value: self.force, fieldNumber: 1)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_DeleteHubRequest, rhs: Arca_Wireguard_V1_DeleteHubRequest) -> Bool {
-    if lhs.force != rhs.force {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-extension Arca_Wireguard_V1_DeleteHubResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".DeleteHubResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.success != false {
-      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
-    }
-    if !self.error.isEmpty {
-      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Arca_Wireguard_V1_DeleteHubResponse, rhs: Arca_Wireguard_V1_DeleteHubResponse) -> Bool {
-    if lhs.success != rhs.success {return false}
-    if lhs.error != rhs.error {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
 extension Arca_Wireguard_V1_GetStatusRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetStatusRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
@@ -758,7 +498,7 @@ extension Arca_Wireguard_V1_GetStatusRequest: SwiftProtobuf.Message, SwiftProtob
 
 extension Arca_Wireguard_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetStatusResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}network_count\0\u{1}interface\0\u{1}peers\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{3}network_count\0\u{1}interfaces\0\u{1}peers\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -768,7 +508,7 @@ extension Arca_Wireguard_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProto
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.version) }()
       case 2: try { try decoder.decodeSingularUInt32Field(value: &self.networkCount) }()
-      case 3: try { try decoder.decodeSingularMessageField(value: &self._interface) }()
+      case 3: try { try decoder.decodeRepeatedMessageField(value: &self.interfaces) }()
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.peers) }()
       default: break
       }
@@ -776,19 +516,15 @@ extension Arca_Wireguard_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProto
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
     if !self.version.isEmpty {
       try visitor.visitSingularStringField(value: self.version, fieldNumber: 1)
     }
     if self.networkCount != 0 {
       try visitor.visitSingularUInt32Field(value: self.networkCount, fieldNumber: 2)
     }
-    try { if let v = self._interface {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    } }()
+    if !self.interfaces.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.interfaces, fieldNumber: 3)
+    }
     if !self.peers.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.peers, fieldNumber: 4)
     }
@@ -798,7 +534,7 @@ extension Arca_Wireguard_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProto
   public static func ==(lhs: Arca_Wireguard_V1_GetStatusResponse, rhs: Arca_Wireguard_V1_GetStatusResponse) -> Bool {
     if lhs.version != rhs.version {return false}
     if lhs.networkCount != rhs.networkCount {return false}
-    if lhs._interface != rhs._interface {return false}
+    if lhs.interfaces != rhs.interfaces {return false}
     if lhs.peers != rhs.peers {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
@@ -807,7 +543,7 @@ extension Arca_Wireguard_V1_GetStatusResponse: SwiftProtobuf.Message, SwiftProto
 
 extension Arca_Wireguard_V1_InterfaceStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".InterfaceStatus"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{3}public_key\0\u{3}listen_port\0\u{3}ip_addresses\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{1}name\0\u{3}public_key\0\u{3}listen_port\0\u{3}ip_addresses\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -815,32 +551,37 @@ extension Arca_Wireguard_V1_InterfaceStatus: SwiftProtobuf.Message, SwiftProtobu
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.name) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
-      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.listenPort) }()
-      case 4: try { try decoder.decodeRepeatedStringField(value: &self.ipAddresses) }()
+      case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
+      case 4: try { try decoder.decodeSingularUInt32Field(value: &self.listenPort) }()
+      case 5: try { try decoder.decodeRepeatedStringField(value: &self.ipAddresses) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.networkID.isEmpty {
+      try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
+    }
     if !self.name.isEmpty {
-      try visitor.visitSingularStringField(value: self.name, fieldNumber: 1)
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 2)
     }
     if !self.publicKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 2)
+      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 3)
     }
     if self.listenPort != 0 {
-      try visitor.visitSingularUInt32Field(value: self.listenPort, fieldNumber: 3)
+      try visitor.visitSingularUInt32Field(value: self.listenPort, fieldNumber: 4)
     }
     if !self.ipAddresses.isEmpty {
-      try visitor.visitRepeatedStringField(value: self.ipAddresses, fieldNumber: 4)
+      try visitor.visitRepeatedStringField(value: self.ipAddresses, fieldNumber: 5)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Arca_Wireguard_V1_InterfaceStatus, rhs: Arca_Wireguard_V1_InterfaceStatus) -> Bool {
+    if lhs.networkID != rhs.networkID {return false}
     if lhs.name != rhs.name {return false}
     if lhs.publicKey != rhs.publicKey {return false}
     if lhs.listenPort != rhs.listenPort {return false}
@@ -852,7 +593,7 @@ extension Arca_Wireguard_V1_InterfaceStatus: SwiftProtobuf.Message, SwiftProtobu
 
 extension Arca_Wireguard_V1_PeerStatus: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".PeerStatus"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}public_key\0\u{1}endpoint\0\u{3}allowed_ips\0\u{3}latest_handshake\0\u{1}stats\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}interface_name\0\u{3}public_key\0\u{1}endpoint\0\u{3}allowed_ips\0\u{3}latest_handshake\0\u{1}stats\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -861,11 +602,12 @@ extension Arca_Wireguard_V1_PeerStatus: SwiftProtobuf.Message, SwiftProtobuf._Me
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.endpoint) }()
-      case 4: try { try decoder.decodeRepeatedStringField(value: &self.allowedIps) }()
-      case 5: try { try decoder.decodeSingularUInt64Field(value: &self.latestHandshake) }()
-      case 6: try { try decoder.decodeSingularMessageField(value: &self._stats) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.interfaceName) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.publicKey) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.endpoint) }()
+      case 5: try { try decoder.decodeRepeatedStringField(value: &self.allowedIps) }()
+      case 6: try { try decoder.decodeSingularUInt64Field(value: &self.latestHandshake) }()
+      case 7: try { try decoder.decodeSingularMessageField(value: &self._stats) }()
       default: break
       }
     }
@@ -879,26 +621,30 @@ extension Arca_Wireguard_V1_PeerStatus: SwiftProtobuf.Message, SwiftProtobuf._Me
     if !self.networkID.isEmpty {
       try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
     }
+    if !self.interfaceName.isEmpty {
+      try visitor.visitSingularStringField(value: self.interfaceName, fieldNumber: 2)
+    }
     if !self.publicKey.isEmpty {
-      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 2)
+      try visitor.visitSingularStringField(value: self.publicKey, fieldNumber: 3)
     }
     if !self.endpoint.isEmpty {
-      try visitor.visitSingularStringField(value: self.endpoint, fieldNumber: 3)
+      try visitor.visitSingularStringField(value: self.endpoint, fieldNumber: 4)
     }
     if !self.allowedIps.isEmpty {
-      try visitor.visitRepeatedStringField(value: self.allowedIps, fieldNumber: 4)
+      try visitor.visitRepeatedStringField(value: self.allowedIps, fieldNumber: 5)
     }
     if self.latestHandshake != 0 {
-      try visitor.visitSingularUInt64Field(value: self.latestHandshake, fieldNumber: 5)
+      try visitor.visitSingularUInt64Field(value: self.latestHandshake, fieldNumber: 6)
     }
     try { if let v = self._stats {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
     } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Arca_Wireguard_V1_PeerStatus, rhs: Arca_Wireguard_V1_PeerStatus) -> Bool {
     if lhs.networkID != rhs.networkID {return false}
+    if lhs.interfaceName != rhs.interfaceName {return false}
     if lhs.publicKey != rhs.publicKey {return false}
     if lhs.endpoint != rhs.endpoint {return false}
     if lhs.allowedIps != rhs.allowedIps {return false}
@@ -944,6 +690,65 @@ extension Arca_Wireguard_V1_TransferStats: SwiftProtobuf.Message, SwiftProtobuf.
     if lhs.bytesReceived != rhs.bytesReceived {return false}
     if lhs.bytesSent != rhs.bytesSent {return false}
     if lhs.persistentKeepalive != rhs.persistentKeepalive {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_GetVmnetEndpointRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".GetVmnetEndpointRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_GetVmnetEndpointRequest, rhs: Arca_Wireguard_V1_GetVmnetEndpointRequest) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_GetVmnetEndpointResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".GetVmnetEndpointResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{1}endpoint\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.endpoint) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    if !self.endpoint.isEmpty {
+      try visitor.visitSingularStringField(value: self.endpoint, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_GetVmnetEndpointResponse, rhs: Arca_Wireguard_V1_GetVmnetEndpointResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.endpoint != rhs.endpoint {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

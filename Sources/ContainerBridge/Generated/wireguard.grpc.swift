@@ -19,11 +19,6 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
   var serviceName: String { get }
   var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? { get }
 
-  func createHub(
-    _ request: Arca_Wireguard_V1_CreateHubRequest,
-    callOptions: CallOptions?
-  ) -> UnaryCall<Arca_Wireguard_V1_CreateHubRequest, Arca_Wireguard_V1_CreateHubResponse>
-
   func addNetwork(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions?
@@ -34,20 +29,15 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>
 
-  func updateAllowedIPs(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions?
-  ) -> UnaryCall<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse>
-
-  func deleteHub(
-    _ request: Arca_Wireguard_V1_DeleteHubRequest,
-    callOptions: CallOptions?
-  ) -> UnaryCall<Arca_Wireguard_V1_DeleteHubRequest, Arca_Wireguard_V1_DeleteHubResponse>
-
   func getStatus(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_GetStatusRequest, Arca_Wireguard_V1_GetStatusResponse>
+
+  func getVmnetEndpoint(
+    _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>
 }
 
 extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
@@ -55,25 +45,8 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
     return "arca.wireguard.v1.WireGuardService"
   }
 
-  /// Create a new WireGuard hub (called once per container, creates wg0 interface)
-  ///
-  /// - Parameters:
-  ///   - request: Request to send to CreateHub.
-  ///   - callOptions: Call options.
-  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  public func createHub(
-    _ request: Arca_Wireguard_V1_CreateHubRequest,
-    callOptions: CallOptions? = nil
-  ) -> UnaryCall<Arca_Wireguard_V1_CreateHubRequest, Arca_Wireguard_V1_CreateHubResponse> {
-    return self.makeUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.createHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeCreateHubInterceptors() ?? []
-    )
-  }
-
-  /// Add a network to this container's WireGuard hub (configures allowed-ips routing)
+  /// Add a network to this container (creates wgN interface + veth pair, renames to ethN)
+  /// For multi-network: network_index=0 → wg0/eth0, network_index=1 → wg1/eth1, etc.
   ///
   /// - Parameters:
   ///   - request: Request to send to AddNetwork.
@@ -91,7 +64,7 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
     )
   }
 
-  /// Remove a network from this container's WireGuard hub
+  /// Remove a network from this container (deletes wgN interface and ethN)
   ///
   /// - Parameters:
   ///   - request: Request to send to RemoveNetwork.
@@ -106,42 +79,6 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeRemoveNetworkInterceptors() ?? []
-    )
-  }
-
-  /// Update allowed IPs for multi-network routing (called when topology changes)
-  ///
-  /// - Parameters:
-  ///   - request: Request to send to UpdateAllowedIPs.
-  ///   - callOptions: Call options.
-  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  public func updateAllowedIPs(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions? = nil
-  ) -> UnaryCall<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse> {
-    return self.makeUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.updateAllowedIPs.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeUpdateAllowedIPsInterceptors() ?? []
-    )
-  }
-
-  /// Delete the WireGuard hub (called during container removal)
-  ///
-  /// - Parameters:
-  ///   - request: Request to send to DeleteHub.
-  ///   - callOptions: Call options.
-  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
-  public func deleteHub(
-    _ request: Arca_Wireguard_V1_DeleteHubRequest,
-    callOptions: CallOptions? = nil
-  ) -> UnaryCall<Arca_Wireguard_V1_DeleteHubRequest, Arca_Wireguard_V1_DeleteHubResponse> {
-    return self.makeUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.deleteHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeDeleteHubInterceptors() ?? []
     )
   }
 
@@ -160,6 +97,24 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
+    )
+  }
+
+  /// Get container's vmnet endpoint (eth0 IP:port) for peer configuration
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to GetVmnetEndpoint.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func getVmnetEndpoint(
+    _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
     )
   }
 }
@@ -228,11 +183,6 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
   static var serviceDescriptor: GRPCServiceDescriptor { get }
   var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? { get }
 
-  func makeCreateHubCall(
-    _ request: Arca_Wireguard_V1_CreateHubRequest,
-    callOptions: CallOptions?
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_CreateHubRequest, Arca_Wireguard_V1_CreateHubResponse>
-
   func makeAddNetworkCall(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions?
@@ -243,20 +193,15 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>
 
-  func makeUpdateAllowedIpsCall(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions?
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse>
-
-  func makeDeleteHubCall(
-    _ request: Arca_Wireguard_V1_DeleteHubRequest,
-    callOptions: CallOptions?
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_DeleteHubRequest, Arca_Wireguard_V1_DeleteHubResponse>
-
   func makeGetStatusCall(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_GetStatusRequest, Arca_Wireguard_V1_GetStatusResponse>
+
+  func makeGetVmnetEndpointCall(
+    _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -267,18 +212,6 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
 
   public var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? {
     return nil
-  }
-
-  public func makeCreateHubCall(
-    _ request: Arca_Wireguard_V1_CreateHubRequest,
-    callOptions: CallOptions? = nil
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_CreateHubRequest, Arca_Wireguard_V1_CreateHubResponse> {
-    return self.makeAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.createHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeCreateHubInterceptors() ?? []
-    )
   }
 
   public func makeAddNetworkCall(
@@ -305,40 +238,6 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
     )
   }
 
-  public func makeUpdateAllowedIpsCall(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions? = nil
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse> {
-    return self.makeAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.updateAllowedIPs.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeUpdateAllowedIPsInterceptors() ?? []
-    )
-  }
-
-  public func makeUpdateAllowedIPsCall(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions? = nil
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse> {
-    return self.makeUpdateAllowedIpsCall(
-      request,
-      callOptions: callOptions
-    )
-  }
-
-  public func makeDeleteHubCall(
-    _ request: Arca_Wireguard_V1_DeleteHubRequest,
-    callOptions: CallOptions? = nil
-  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_DeleteHubRequest, Arca_Wireguard_V1_DeleteHubResponse> {
-    return self.makeAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.deleteHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeDeleteHubInterceptors() ?? []
-    )
-  }
-
   public func makeGetStatusCall(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
@@ -350,22 +249,22 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
     )
   }
+
+  public func makeGetVmnetEndpointCall(
+    _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
-  public func createHub(
-    _ request: Arca_Wireguard_V1_CreateHubRequest,
-    callOptions: CallOptions? = nil
-  ) async throws -> Arca_Wireguard_V1_CreateHubResponse {
-    return try await self.performAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.createHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeCreateHubInterceptors() ?? []
-    )
-  }
-
   public func addNetwork(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions? = nil
@@ -390,30 +289,6 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
     )
   }
 
-  public func updateAllowedIPs(
-    _ request: Arca_Wireguard_V1_UpdateAllowedIPsRequest,
-    callOptions: CallOptions? = nil
-  ) async throws -> Arca_Wireguard_V1_UpdateAllowedIPsResponse {
-    return try await self.performAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.updateAllowedIPs.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeUpdateAllowedIPsInterceptors() ?? []
-    )
-  }
-
-  public func deleteHub(
-    _ request: Arca_Wireguard_V1_DeleteHubRequest,
-    callOptions: CallOptions? = nil
-  ) async throws -> Arca_Wireguard_V1_DeleteHubResponse {
-    return try await self.performAsyncUnaryCall(
-      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.deleteHub.path,
-      request: request,
-      callOptions: callOptions ?? self.defaultCallOptions,
-      interceptors: self.interceptors?.makeDeleteHubInterceptors() ?? []
-    )
-  }
-
   public func getStatus(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
@@ -423,6 +298,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeGetStatusInterceptors() ?? []
+    )
+  }
+
+  public func getVmnetEndpoint(
+    _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_GetVmnetEndpointResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
     )
   }
 }
@@ -446,23 +333,17 @@ public struct Arca_Wireguard_V1_WireGuardServiceAsyncClient: Arca_Wireguard_V1_W
 
 public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol: Sendable {
 
-  /// - Returns: Interceptors to use when invoking 'createHub'.
-  func makeCreateHubInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_CreateHubRequest, Arca_Wireguard_V1_CreateHubResponse>]
-
   /// - Returns: Interceptors to use when invoking 'addNetwork'.
   func makeAddNetworkInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_AddNetworkRequest, Arca_Wireguard_V1_AddNetworkResponse>]
 
   /// - Returns: Interceptors to use when invoking 'removeNetwork'.
   func makeRemoveNetworkInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>]
 
-  /// - Returns: Interceptors to use when invoking 'updateAllowedIPs'.
-  func makeUpdateAllowedIPsInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_UpdateAllowedIPsRequest, Arca_Wireguard_V1_UpdateAllowedIPsResponse>]
-
-  /// - Returns: Interceptors to use when invoking 'deleteHub'.
-  func makeDeleteHubInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_DeleteHubRequest, Arca_Wireguard_V1_DeleteHubResponse>]
-
   /// - Returns: Interceptors to use when invoking 'getStatus'.
   func makeGetStatusInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_GetStatusRequest, Arca_Wireguard_V1_GetStatusResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'getVmnetEndpoint'.
+  func makeGetVmnetEndpointInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>]
 }
 
 public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
@@ -470,22 +351,14 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     name: "WireGuardService",
     fullName: "arca.wireguard.v1.WireGuardService",
     methods: [
-      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.createHub,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addNetwork,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removeNetwork,
-      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.updateAllowedIPs,
-      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.deleteHub,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getStatus,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint,
     ]
   )
 
   public enum Methods {
-    public static let createHub = GRPCMethodDescriptor(
-      name: "CreateHub",
-      path: "/arca.wireguard.v1.WireGuardService/CreateHub",
-      type: GRPCCallType.unary
-    )
-
     public static let addNetwork = GRPCMethodDescriptor(
       name: "AddNetwork",
       path: "/arca.wireguard.v1.WireGuardService/AddNetwork",
@@ -498,21 +371,15 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
       type: GRPCCallType.unary
     )
 
-    public static let updateAllowedIPs = GRPCMethodDescriptor(
-      name: "UpdateAllowedIPs",
-      path: "/arca.wireguard.v1.WireGuardService/UpdateAllowedIPs",
-      type: GRPCCallType.unary
-    )
-
-    public static let deleteHub = GRPCMethodDescriptor(
-      name: "DeleteHub",
-      path: "/arca.wireguard.v1.WireGuardService/DeleteHub",
-      type: GRPCCallType.unary
-    )
-
     public static let getStatus = GRPCMethodDescriptor(
       name: "GetStatus",
       path: "/arca.wireguard.v1.WireGuardService/GetStatus",
+      type: GRPCCallType.unary
+    )
+
+    public static let getVmnetEndpoint = GRPCMethodDescriptor(
+      name: "GetVmnetEndpoint",
+      path: "/arca.wireguard.v1.WireGuardService/GetVmnetEndpoint",
       type: GRPCCallType.unary
     )
   }
