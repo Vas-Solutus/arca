@@ -583,18 +583,26 @@ Container namespace (OCI):
 
 ### Tasks
 
-#### 2.1 gRPC API Extensions for Multi-Network
-- [ ] **Task**: Update wireguard.proto with network indexing
-  - Add `network_index` field to `AddNetworkRequest` (0, 1, 2...)
-  - Response should include assigned interface name (wg0, wg1, wg2...)
-  - Success: Proto updated, code regenerated
-- [ ] **Task**: Extend hub.go to track multiple interfaces
-  - Change `interfaceName` from single string to map `[networkID]interfaceName`
-  - Track interface index per network (0 → wg0, 1 → wg1, 2 → wg2)
-  - Success: Hub can manage multiple WireGuard interfaces
-- [ ] **Deliverable**: gRPC API ready for multi-network
+#### 2.1 gRPC API Extensions for Multi-Network ✅ COMPLETE
+- [x] **Task**: Update wireguard.proto with network indexing ✅
+  - Added `network_index` field to `AddNetworkRequest` (0, 1, 2...)
+  - Response includes `wg_interface`, `eth_interface`, `public_key`
+  - Removed obsolete RPCs: CreateHub, UpdateAllowedIPs, DeleteHub
+  - Success: Proto updated, code regenerated for Go and Swift
+- [x] **Task**: Refactor Hub struct for multiple interfaces ✅
+  - Changed to `interfaces map[string]*Interface` (networkID → Interface)
+  - Created new `Interface` and `Peer` structs
+  - Success: Data structures ready for multi-interface management
+- [x] **Deliverable**: gRPC API ready for multi-network ✅
 
-#### 2.2 WireGuard Service Multi-Interface Support
+**Commits**:
+- `6bc2746` - containerization: feat(wireguard): Update proto API
+- `18f19f7` - main: feat(wireguard): Update Swift generated code
+- `2fc6e42` - main: chore: Update submodule pointer
+
+**See**: [PHASE_2_2_IMPLEMENTATION_PLAN.md](PHASE_2_2_IMPLEMENTATION_PLAN.md) for detailed Go implementation guide (~550 lines)
+
+#### 2.2 WireGuard Service Multi-Interface Support (IN PROGRESS)
 - [ ] **Task**: Modify `AddNetwork()` to create additional interfaces
   - First network (index 0): Create wg0 + veth-root0/veth-cont0 (already working!)
   - Second network (index 1): Create wg1 + veth-root1/veth-cont1
