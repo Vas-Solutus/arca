@@ -57,6 +57,81 @@ public actor WireGuardNetworkBackend {
         self.stateStore = stateStore
     }
 
+    /// Restore networks from database on daemon startup
+    /// This populates the in-memory networks dictionary with persisted network metadata
+    public func restoreNetworks() async throws {
+        let persistedNetworks = try await stateStore.loadAllNetworks()
+
+        for networkData in persistedNetworks {
+            // Only restore WireGuard/bridge networks
+            guard networkData.driver == "bridge" || networkData.driver == "wireguard" else {
+                continue
+            }
+
+            // Decode options and labels from JSON
+            let options: [String: String]
+            if let optionsJSON = networkData.optionsJSON,
+               let data = optionsJSON.data(using: .utf8) {
+                options = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            } else {
+                options = [:]
+            }
+
+            let labels: [String: String]
+            if let labelsJSON = networkData.labelsJSON,
+               let data = labelsJSON.data(using: .utf8) {
+                labels = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            } else {
+                labels = [:]
+            }
+
+            // Create NetworkMetadata and restore to in-memory state
+            let metadata = NetworkMetadata(
+                id: networkData.id,
+                name: networkData.name,
+                driver: networkData.driver,
+                subnet: networkData.subnet,
+                gateway: networkData.gateway,
+                ipRange: networkData.ipRange,
+                containers: [],  // Containers will be reattached when they start
+                created: networkData.createdAt,
+                options: options,
+                labels: labels,
+                isDefault: networkData.isDefault
+            )
+
+            networks[networkData.id] = metadata
+            networksByName[networkData.name] = networkData.id
+
+            // Initialize IP allocation state
+            // If ipRange is specified, calculate starting octet from it
+            // Otherwise start at .2 (.1 is gateway)
+            if let ipRange = networkData.ipRange {
+                // Parse ipRange to get starting IP
+                // Example: "172.18.0.128/25" -> start at .128
+                let rangeComponents = ipRange.split(separator: "/")[0].split(separator: ".")
+                if rangeComponents.count == 4, let startOctet = UInt8(rangeComponents[3]) {
+                    nextIPOctet[networkData.id] = startOctet
+                } else {
+                    nextIPOctet[networkData.id] = 2  // Fallback
+                }
+            } else {
+                nextIPOctet[networkData.id] = 2
+            }
+
+            logger.debug("Restored network from database", metadata: [
+                "network_id": "\(networkData.id)",
+                "name": "\(networkData.name)",
+                "subnet": "\(networkData.subnet)",
+                "gateway": "\(networkData.gateway)"
+            ])
+        }
+
+        logger.info("Restored WireGuard networks from database", metadata: [
+            "count": "\(networks.count)"
+        ])
+    }
+
     // MARK: - Network Management
 
     /// Create a new bridge network using WireGuard

@@ -62,6 +62,10 @@ public actor NetworkManager {
             // Continue - backends will still work, just without persisted mappings
         }
 
+        // Restore persisted networks into backend's in-memory state
+        // This ensures networks created before daemon restart are available
+        try await backend.restoreNetworks()
+
         // Create default networks (idempotent - only creates if they don't exist)
         try await createDefaultNetworks()
 
