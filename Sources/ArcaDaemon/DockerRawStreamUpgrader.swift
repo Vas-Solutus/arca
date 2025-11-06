@@ -290,13 +290,15 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                                 "chunk": "\(count)"
                             ])
                         } catch {
-                            self.logger.error("Failed to write stdout to channel", metadata: [
+                            // Client disconnected - stop forwarding to avoid log spam
+                            self.logger.info("Client disconnected, stopping stdout forwarding", metadata: [
                                 "container_id": "\(containerID)",
-                                "error": "\(error)"
+                                "chunks_sent": "\(count)"
                             ])
+                            break
                         }
                     }
-                    self.logger.debug("Stdout stream finished", metadata: [
+                    self.logger.debug("Stdout forwarding finished", metadata: [
                         "container_id": "\(containerID)",
                         "chunks": "\(count)"
                     ])
@@ -315,13 +317,15 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                                 "chunk": "\(count)"
                             ])
                         } catch {
-                            self.logger.error("Failed to write stderr to channel", metadata: [
+                            // Client disconnected - stop forwarding
+                            self.logger.info("Client disconnected, stopping stderr forwarding", metadata: [
                                 "container_id": "\(containerID)",
-                                "error": "\(error)"
+                                "chunks_sent": "\(count)"
                             ])
+                            break
                         }
                     }
-                    self.logger.debug("Stderr stream finished", metadata: [
+                    self.logger.debug("Stderr forwarding finished", metadata: [
                         "container_id": "\(containerID)",
                         "chunks": "\(count)"
                     ])
@@ -415,13 +419,18 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                                 "chunk": "\(count)"
                             ])
                         } catch {
-                            self.logger.error("Failed to write stdout to channel", metadata: [
+                            // Client disconnected (Ctrl+C, connection loss, etc.)
+                            // Stop forwarding output to avoid log spam
+                            // Note: The exec process continues running (Docker behavior)
+                            // For non-TTY exec, Ctrl+C just closes the client, doesn't signal the process
+                            self.logger.info("Client disconnected, stopping stdout forwarding", metadata: [
                                 "exec_id": "\(execID)",
-                                "error": "\(error)"
+                                "chunks_sent": "\(count)"
                             ])
+                            break
                         }
                     }
-                    self.logger.debug("Stdout stream finished", metadata: [
+                    self.logger.debug("Stdout forwarding finished", metadata: [
                         "exec_id": "\(execID)",
                         "chunks": "\(count)"
                     ])
@@ -440,13 +449,15 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                                 "chunk": "\(count)"
                             ])
                         } catch {
-                            self.logger.error("Failed to write stderr to channel", metadata: [
+                            // Client disconnected - stop forwarding
+                            self.logger.info("Client disconnected, stopping stderr forwarding", metadata: [
                                 "exec_id": "\(execID)",
-                                "error": "\(error)"
+                                "chunks_sent": "\(count)"
                             ])
+                            break
                         }
                     }
-                    self.logger.debug("Stderr stream finished", metadata: [
+                    self.logger.debug("Stderr forwarding finished", metadata: [
                         "exec_id": "\(execID)",
                         "chunks": "\(count)"
                     ])
