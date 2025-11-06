@@ -570,13 +570,49 @@ public actor ContainerManager {
 
         // Capture values for @Sendable closure
         let dockerID = config.dockerID
-        let useVmnetMode = config.networkMode == "vmnet"
         let configLogger = self.logger
         let tty = config.tty
         let stdoutWriter = config.stdoutWriter
         let stderrWriter = config.stderrWriter
         let stdinReader = config.stdinReader
         let skipEmbeddedDNS = config.labels["com.arca.skip-embedded-dns"] == "true"
+
+        // Normalize networkMode BEFORE network lookup and capture for closure
+
+        // Normalize networkMode: empty, "default", or "bridge" all mean the default bridge network
+        // This must happen BEFORE network lookup to ensure correct network namespace configuration
+        var normalizedNetworkMode: String? = config.networkMode
+        if let mode = config.networkMode, (mode.isEmpty || mode == "default") {
+            normalizedNetworkMode = "bridge"
+            logger.debug("Normalized networkMode", metadata: [
+                "docker_id": "\(dockerID)",
+                "original": "\(mode)",
+                "normalized": "bridge"
+            ])
+        }
+
+        // Determine if network namespace is needed by checking network driver
+        var tempNeedsNetworkNamespace = false
+        if let networkMode = normalizedNetworkMode, networkMode != "vmnet" && networkMode != "none" {
+            // Look up network to check its driver
+            if let network = await networkManager?.getNetworkByName(name: networkMode) {
+                tempNeedsNetworkNamespace = (network.driver == "wireguard" || network.driver == "bridge")
+                logger.debug("Network driver check", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "network": "\(networkMode)",
+                    "driver": "\(network.driver)",
+                    "needsNetworkNamespace": "\(tempNeedsNetworkNamespace)"
+                ])
+            } else {
+                logger.warning("Network not found during namespace check", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "network": "\(networkMode)"
+                ])
+            }
+        }
+        // Capture as immutable for @Sendable closure
+        let needsNetworkNamespace = tempNeedsNetworkNamespace
+        let effectiveNetworkMode = normalizedNetworkMode
 
         logger.info("Creating LinuxContainer with Containerization API", metadata: [
             "docker_id": "\(dockerID)",
@@ -633,28 +669,32 @@ public actor ContainerManager {
             // Set hostname (OCI spec field)
             containerConfig.hostname = config.hostname
 
-            // Network interface configuration depends on networkMode:
-            // - "vmnet": Apple's VmnetNetwork handles interface creation automatically
-            //   ContainerManager's create() calls network?.create(id) and sets config.interfaces
-            //   before our closure runs. We should NOT override it.
-            // - "bridge"/"default"/nil: OVS backend (TAP devices added dynamically after start)
-            if useVmnetMode {
-                // vmnet mode: Do NOT set containerConfig.interfaces
-                // The ContainerManager.create() method automatically calls network?.create(dockerID)
-                // which allocates an IP and creates a VmnetNetwork.Interface
-                // This happens BEFORE our configuration closure runs
-                // See Apple's ContainerManager.swift:415-417
-                configLogger.info("Container using vmnet NAT mode (automatic framework-managed interface)", metadata: [
-                    "container_id": "\(dockerID)"
-                ])
-            } else {
-                // Bridge mode (OVS backend): No interface at creation time
-                // TAP devices will be created dynamically by arca-tap-forwarder after container starts
-                containerConfig.interfaces = []
-                configLogger.debug("Container using bridge mode (OVS) - no interface at creation", metadata: [
-                    "container_id": "\(dockerID)"
-                ])
-            }
+            // Enable network namespace for WireGuard/bridge containers
+            // vmnet and none containers stay in root namespace
+            containerConfig.useNetworkNamespace = needsNetworkNamespace
+            configLogger.debug("Network namespace configuration", metadata: [
+                "docker_id": "\(dockerID)",
+                "networkMode": "\(effectiveNetworkMode ?? "none")",
+                "useNetworkNamespace": "\(needsNetworkNamespace)"
+            ])
+
+            // Network interface configuration:
+            // The ContainerManager is initialized with VmnetNetwork (see initialize()),
+            // which automatically creates eth0 for ALL containers via network?.create(id).
+            // This happens BEFORE our configuration closure runs.
+            //
+            // For ALL network backends (vmnet, bridge/OVS, WireGuard):
+            // - eth0 is created in the VM's root namespace (where vminitd lives)
+            // - The network backend determines what happens next:
+            //   - vmnet: eth0 is the container's only interface (direct NAT access)
+            //   - bridge/OVS: eth0 stays in root ns, TAP devices added dynamically
+            //   - WireGuard: eth0 stays in root ns, veth pair + wg0 created for container
+            //
+            // We do NOT override containerConfig.interfaces, allowing the framework to create eth0.
+            configLogger.info("Container using framework-managed eth0 interface", metadata: [
+                "container_id": "\(dockerID)",
+                "networkMode": "\(effectiveNetworkMode ?? "none")"
+            ])
 
             // Configure TTY mode
             containerConfig.process.terminal = tty
@@ -2366,147 +2406,22 @@ public actor ContainerManager {
     /// Push DNS topology update to a specific container
     /// Called when network topology changes (container start/stop/attach/detach)
     private func pushDNSTopologyUpdate(to dockerID: String) async {
-        // Get container info
-        guard let containerInfo = containers[dockerID] else {
-            logger.warning("Cannot push DNS topology: container not found", metadata: [
-                "container": "\(dockerID)"
-            ])
-            return
-        }
+        // TODO(Phase 3.1): Implement DNS push via WireGuard gRPC (UpdateDNSMappings RPC)
+        // This will replace the tap-forwarder DNS push with a WireGuard-based implementation
+        // See Documentation/WIREGUARD_IMPLEMENTATION_PLAN.md Phase 3.1 for details
 
-        // Only push to running containers
-        guard containerInfo.state == "running" else {
-            logger.debug("Skipping DNS push: container not running", metadata: [
-                "container": "\(dockerID)",
-                "state": "\(containerInfo.state)"
-            ])
-            return
-        }
-
-        // Get native container
-        guard let nativeContainer = nativeContainers[dockerID] else {
-            logger.warning("Cannot push DNS topology: native container not found", metadata: [
-                "container": "\(dockerID)"
-            ])
-            return
-        }
-
-        // Build topology snapshot for this container's networks
-        let networkAttachments = containerInfo.networkAttachments
-        guard !networkAttachments.isEmpty else {
-            logger.debug("Skipping DNS push: container has no network attachments", metadata: [
-                "container": "\(dockerID)"
-            ])
-            return
-        }
-
-        // Build protobuf mappings
-        var mappings: [String: Arca_Tapforwarder_V1_NetworkPeers] = [:]
-
-        for (networkID, _) in networkAttachments {
-            // Get network name from NetworkManager
-            guard let networkManager = networkManager else {
-                logger.warning("Cannot build topology: NetworkManager not available")
-                continue
-            }
-
-            guard let networkName = await networkManager.getNetworkName(networkID: networkID) else {
-                logger.warning("Cannot build topology: network name not found", metadata: [
-                    "network_id": "\(networkID)"
-                ])
-                continue
-            }
-
-            // Get all containers on this network
-            let containersOnNetwork = await getContainersOnNetwork(networkID: networkID)
-
-            // Build NetworkPeers
-            var peers = Arca_Tapforwarder_V1_NetworkPeers()
-            peers.containers = containersOnNetwork.map { peer in
-                var dnsInfo = Arca_Tapforwarder_V1_ContainerDNSInfo()
-                dnsInfo.name = peer.name
-                dnsInfo.id = peer.dockerID
-                dnsInfo.ipAddress = peer.ipAddress
-                dnsInfo.aliases = peer.aliases
-                return dnsInfo
-            }
-
-            mappings[networkName] = peers
-        }
-
-        // Check if we have any mappings to push
-        guard !mappings.isEmpty else {
-            logger.warning("Skipping DNS push: no network mappings built", metadata: [
-                "container": "\(dockerID)",
-                "networkAttachments": "\(networkAttachments.count)",
-                "hasNetworkManager": "\(networkManager != nil)"
-            ])
-            return
-        }
-
-        logger.debug("Building DNS topology push", metadata: [
-            "container": "\(dockerID)",
-            "networks": "\(mappings.keys.joined(separator: ", "))",
-            "totalPeers": "\(mappings.values.map { $0.containers.count }.reduce(0, +))"
-        ])
-
-        // Dial container and push topology
-        do {
-            let client = try await TAPForwarderClient(
-                container: nativeContainer,
-                logger: logger
-            )
-
-            let response = try await client.updateDNSMappings(networks: mappings)
-
-            // Close client before processing response
-            await client.close()
-
-            if response.success {
-                logger.info("DNS topology pushed successfully", metadata: [
-                    "container": "\(dockerID)",
-                    "networks": "\(mappings.keys.joined(separator: ", "))",
-                    "records": "\(response.recordsUpdated)"
-                ])
-            } else {
-                logger.error("DNS topology push failed", metadata: [
-                    "container": "\(dockerID)",
-                    "error": "\(response.error)"
-                ])
-            }
-        } catch {
-            logger.error("Failed to push DNS topology", metadata: [
-                "container": "\(dockerID)",
-                "error": "\(error)"
-            ])
-        }
+        // For now, DNS resolution is not implemented - this will be added in Phase 3.1
+        // when embedded-DNS is integrated into arca-wireguard-service
+        return
     }
 
     /// Push DNS topology updates to all containers on a specific network
     /// Called when a container joins/leaves a network or starts/stops
     private func pushDNSTopologyToNetwork(networkID: String) async {
-        logger.debug("Pushing DNS topology to all containers on network", metadata: [
-            "network_id": "\(networkID)"
-        ])
-
-        // Get all running containers on this network
-        let containersOnNetwork = containers.values.filter { containerInfo in
-            containerInfo.state == "running" &&
-            containerInfo.networkAttachments.keys.contains(networkID)
-        }
-
-        logger.debug("Found containers on network", metadata: [
-            "network_id": "\(networkID)",
-            "count": "\(containersOnNetwork.count)"
-        ])
-
-        // Push to each container
-        for containerInfo in containersOnNetwork {
-            // Find Docker ID for this container
-            if let dockerID = containers.first(where: { $0.value.nativeID == containerInfo.nativeID })?.key {
-                await pushDNSTopologyUpdate(to: dockerID)
-            }
-        }
+        // TODO(Phase 3.1): Implement DNS push via WireGuard gRPC (UpdateDNSMappings RPC)
+        // This will push DNS topology updates to all containers on a network
+        // See Documentation/WIREGUARD_IMPLEMENTATION_PLAN.md Phase 3.1 for details
+        return
     }
 
     /// Helper to get all containers on a specific network
