@@ -438,27 +438,28 @@ public actor WireGuardNetworkBackend {
             throw NetworkManagerError.notConnected(containerID, metadata.name)
         }
 
-        // Get WireGuard client
-        guard let wgClient = wireGuardClients[containerID] else {
-            throw NetworkManagerError.containerNotFound(containerID)
-        }
+        // Get WireGuard client (may be nil if container is already stopped)
+        // When a container is stopped, cleanupStoppedContainer() removes the client
+        // but we still need to update metadata.containers to track detachment
+        let wgClient = wireGuardClients[containerID]
 
         // Get network index for this network
-        guard let indices = containerNetworkIndices[containerID],
-              let networkIndex = indices[networkID] else {
-            throw NetworkManagerError.notConnected(containerID, metadata.name)
-        }
+        // May be nil if container was already cleaned up
+        let indices = containerNetworkIndices[containerID]
+        let networkIndex = indices?[networkID]
 
-        logger.info("Removing WireGuard interface", metadata: [
-            "container_id": "\(containerID)",
-            "network_id": "\(networkID)",
-            "network_index": "\(networkIndex)",
-            "interface": "wg\(networkIndex)/eth\(networkIndex)"
-        ])
+        // Only perform network operations if container is still running (has a client)
+        if let wgClient = wgClient, let networkIndex = networkIndex {
+            logger.info("Removing WireGuard interface", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "network_index": "\(networkIndex)",
+                "interface": "wg\(networkIndex)/eth\(networkIndex)"
+            ])
 
-        // Phase 2.4: Remove this container as a peer from all other containers on this network
-        // Get this container's public key
-        if let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
+            // Phase 2.4: Remove this container as a peer from all other containers on this network
+            // Get this container's public key
+            if let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
             // Get all OTHER containers on this network
             let existingAttachments = containerAttachments[networkID] ?? [:]
             let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
@@ -503,45 +504,54 @@ public actor WireGuardNetworkBackend {
                 }
             }
 
-            logger.info("Peer cleanup completed", metadata: [
-                "container_id": "\(containerID)",
-                "network_id": "\(networkID)",
-                "peers_cleaned": "\(otherContainerIDs.count)"
-            ])
-        }
+                logger.info("Peer cleanup completed", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)",
+                    "peers_cleaned": "\(otherContainerIDs.count)"
+                ])
+            }
 
-        // Remove network interface (wgN/ethN)
-        try await wgClient.removeNetwork(networkID: networkID, networkIndex: networkIndex)
+            // Remove network interface (wgN/ethN)
+            try await wgClient.removeNetwork(networkID: networkID, networkIndex: networkIndex)
 
-        // Update state
-        var updatedIndices = indices
-        updatedIndices.removeValue(forKey: networkID)
+            // Update state
+            var updatedIndices = indices!
+            updatedIndices.removeValue(forKey: networkID)
 
-        if updatedIndices.isEmpty {
-            // Last network removed - cleanup client (hub auto-deleted)
-            logger.info("Last network removed, cleaning up client", metadata: [
-                "container_id": "\(containerID)"
-            ])
+            if updatedIndices.isEmpty {
+                // Last network removed - cleanup client (hub auto-deleted)
+                logger.info("Last network removed, cleaning up client", metadata: [
+                    "container_id": "\(containerID)"
+                ])
 
-            try await wgClient.disconnect()
-            wireGuardClients.removeValue(forKey: containerID)
-            containerNetworkIndices.removeValue(forKey: containerID)
-            containerInterfaceKeys.removeValue(forKey: containerID)
-            containerNetworks.removeValue(forKey: containerID)
-            containerNames.removeValue(forKey: containerID)  // Phase 3.1: Clean up DNS name
+                try await wgClient.disconnect()
+                wireGuardClients.removeValue(forKey: containerID)
+                containerNetworkIndices.removeValue(forKey: containerID)
+                containerInterfaceKeys.removeValue(forKey: containerID)
+                containerNetworks.removeValue(forKey: containerID)
+                containerNames.removeValue(forKey: containerID)  // Phase 3.1: Clean up DNS name
+            } else {
+                containerNetworkIndices[containerID] = updatedIndices
+
+                var keys = containerInterfaceKeys[containerID] ?? [:]
+                keys.removeValue(forKey: networkID)
+                containerInterfaceKeys[containerID] = keys
+
+                var containerNets = containerNetworks[containerID] ?? []
+                containerNets.remove(networkID)
+                containerNetworks[containerID] = containerNets
+            }
         } else {
-            containerNetworkIndices[containerID] = updatedIndices
-
-            var keys = containerInterfaceKeys[containerID] ?? [:]
-            keys.removeValue(forKey: networkID)
-            containerInterfaceKeys[containerID] = keys
-
-            var containerNets = containerNetworks[containerID] ?? []
-            containerNets.remove(networkID)
-            containerNetworks[containerID] = containerNets
+            // Container is already stopped - WireGuard client and interfaces are already cleaned up
+            // by cleanupStoppedContainer(), but we still need to update tracking state
+            logger.info("Container already stopped, skipping WireGuard network interface removal", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
         }
 
-        // Update metadata
+        // ALWAYS update metadata and attachments, even if container is stopped
+        // This ensures network state is consistent after container removal
         metadata.containers.remove(containerID)
         networks[networkID] = metadata
 
