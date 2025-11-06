@@ -48,6 +48,16 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
     _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>
+
+  func publishPort(
+    _ request: Arca_Wireguard_V1_PublishPortRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_PublishPortRequest, Arca_Wireguard_V1_PublishPortResponse>
+
+  func unpublishPort(
+    _ request: Arca_Wireguard_V1_UnpublishPortRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>
 }
 
 extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
@@ -163,6 +173,42 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
     )
   }
+
+  /// Publish a port (create DNAT rule for host port → container port)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to PublishPort.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func publishPort(
+    _ request: Arca_Wireguard_V1_PublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_PublishPortRequest, Arca_Wireguard_V1_PublishPortResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makePublishPortInterceptors() ?? []
+    )
+  }
+
+  /// Unpublish a port (remove DNAT rule)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to UnpublishPort.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func unpublishPort(
+    _ request: Arca_Wireguard_V1_UnpublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
+    )
+  }
 }
 
 @available(*, deprecated)
@@ -258,6 +304,16 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
     _ request: Arca_Wireguard_V1_GetVmnetEndpointRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>
+
+  func makePublishPortCall(
+    _ request: Arca_Wireguard_V1_PublishPortRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_PublishPortRequest, Arca_Wireguard_V1_PublishPortResponse>
+
+  func makeUnpublishPortCall(
+    _ request: Arca_Wireguard_V1_UnpublishPortRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -341,6 +397,30 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
     )
   }
+
+  public func makePublishPortCall(
+    _ request: Arca_Wireguard_V1_PublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_PublishPortRequest, Arca_Wireguard_V1_PublishPortResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makePublishPortInterceptors() ?? []
+    )
+  }
+
+  public func makeUnpublishPortCall(
+    _ request: Arca_Wireguard_V1_UnpublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -416,6 +496,30 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetVmnetEndpointInterceptors() ?? []
     )
   }
+
+  public func publishPort(
+    _ request: Arca_Wireguard_V1_PublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_PublishPortResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makePublishPortInterceptors() ?? []
+    )
+  }
+
+  public func unpublishPort(
+    _ request: Arca_Wireguard_V1_UnpublishPortRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_UnpublishPortResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -454,6 +558,12 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtoc
 
   /// - Returns: Interceptors to use when invoking 'getVmnetEndpoint'.
   func makeGetVmnetEndpointInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_GetVmnetEndpointRequest, Arca_Wireguard_V1_GetVmnetEndpointResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'publishPort'.
+  func makePublishPortInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_PublishPortRequest, Arca_Wireguard_V1_PublishPortResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'unpublishPort'.
+  func makeUnpublishPortInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>]
 }
 
 public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
@@ -467,6 +577,8 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removePeer,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getStatus,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort,
     ]
   )
 
@@ -504,6 +616,18 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     public static let getVmnetEndpoint = GRPCMethodDescriptor(
       name: "GetVmnetEndpoint",
       path: "/arca.wireguard.v1.WireGuardService/GetVmnetEndpoint",
+      type: GRPCCallType.unary
+    )
+
+    public static let publishPort = GRPCMethodDescriptor(
+      name: "PublishPort",
+      path: "/arca.wireguard.v1.WireGuardService/PublishPort",
+      type: GRPCCallType.unary
+    )
+
+    public static let unpublishPort = GRPCMethodDescriptor(
+      name: "UnpublishPort",
+      path: "/arca.wireguard.v1.WireGuardService/UnpublishPort",
       type: GRPCCallType.unary
     )
   }

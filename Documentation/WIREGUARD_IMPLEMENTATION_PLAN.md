@@ -1271,12 +1271,215 @@ Sources/ContainerBridge/
 
 ### Tasks
 
-#### 4.1 Port Mapping (Future Feature)
-- [ ] **Task**: Document port mapping approach
-  - iptables DNAT rules in hub namespace
-  - Map host port → container overlay IP:port
-  - Success: Design documented, implementation deferred
-- [ ] **Note**: Not blocking for Phase 4 - defer to future phase
+#### 4.1 Port Mapping ⚠️ READY TO IMPLEMENT
+
+**Objective**: Implement full Docker-compatible port mapping with proper security model
+
+**Architecture**: Hybrid approach (nftables DNAT + userspace proxy for localhost)
+
+### Security Model
+
+**Default Behavior (no `-p` flags):**
+- Container-to-container (same WireGuard network): ALL ports open ✅ (matches Docker)
+- Host-to-container (via vmnet): ALL ports BLOCKED ❌ (vmnet is underlay only)
+- Only WireGuard UDP traffic (51820+) allowed on vmnet
+
+**With Port Publishing (`-p`):**
+- Non-localhost bindings: nftables DNAT + INPUT rules
+- Localhost bindings: userspace proxy + nftables DNAT
+
+### Architecture Details
+
+**vmnet Security (Default):**
+```
+nftables INPUT chain (vmnet eth0 in root namespace):
+  - ACCEPT udp dport 51820+ (WireGuard underlay traffic)
+  - ACCEPT established,related
+  - DROP all other inbound
+```
+This secures vmnet as WireGuard underlay, blocks direct container access from macOS host.
+
+**Port Publishing - Non-Localhost** (`-p 8080:80` or `-p 192.168.1.100:8080:80`):
+```
+nftables PREROUTING chain (vmnet eth0):
+  - DNAT tcp dport 8080 → container_overlay_ip:80
+
+nftables INPUT chain (vmnet eth0):
+  - ACCEPT tcp dport 8080 (allow the published port)
+```
+macOS host connects to vmnet_ip:8080 → DNATs to container's WireGuard IP:80
+
+**Port Publishing - Localhost** (`-p 127.0.0.1:8080:80`):
+```
+1. Userspace proxy on macOS:
+   - Listen on 127.0.0.1:8080
+   - Forward to vmnet_ip:8080
+
+2. Same nftables rules as non-localhost case
+```
+vmnet IPs aren't on localhost interface, so we need proxy to bridge the gap (matches Docker's docker-proxy behavior).
+
+### Tasks
+
+- [ ] **Task 4.1.1**: Add PublishPort/UnpublishPort RPCs to wireguard.proto
+  - File: `containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto`
+  - RPCs:
+    - `PublishPort(protocol, host_port, container_port) → success`
+    - `UnpublishPort(protocol, host_port) → success`
+  - Handles: TCP and UDP protocols
+  - Run: `./scripts/generate-grpc.sh` after changes
+  - Success: Proto updated, Go and Swift code regenerated
+
+- [ ] **Task 4.1.2**: Implement port publishing in Go (arca-wireguard-service)
+  - File: `containerization/vminitd/extensions/wireguard-service/internal/wireguard/portmap.go` (NEW, ~300 lines)
+  - Functions:
+    - `publishPort(protocol, hostPort, containerIP, containerPort)` - Add PREROUTING DNAT + INPUT ACCEPT rules
+    - `unpublishPort(protocol, hostPort)` - Remove rules
+    - `configureDefaultVmnetSecurity()` - Set up default INPUT rules (block all except WireGuard)
+  - Uses: `github.com/google/nftables` (already in go.mod)
+  - Rules managed in `arca-wireguard` nftables table
+  - Success: nftables rules created/removed correctly
+
+- [ ] **Task 4.1.3**: Add gRPC handlers for PublishPort/UnpublishPort
+  - File: `containerization/vminitd/extensions/wireguard-service/cmd/arca-wireguard-service/main.go` (MODIFIED)
+  - Add handlers calling portmap.go functions
+  - Success: gRPC API functional
+
+- [ ] **Task 4.1.4**: Initialize vmnet security on container boot
+  - File: `containerization/vminitd/extensions/wireguard-service/cmd/arca-wireguard-service/main.go` (MODIFIED)
+  - Call `configureDefaultVmnetSecurity()` during service startup
+  - Blocks all vmnet INPUT except WireGuard UDP + established/related
+  - Success: vmnet secured by default
+
+- [ ] **Task 4.1.5**: Create PortMapManager actor (Swift)
+  - File: `Sources/ContainerBridge/PortMapManager.swift` (NEW, ~250 lines)
+  - Responsibilities:
+    - Parse port bindings from Docker API format
+    - Determine if binding needs proxy (localhost) or just nftables (non-localhost)
+    - Spawn/manage proxy processes for localhost bindings
+    - Track proxy PIDs and port mappings per container
+    - Clean up proxies when container stops
+  - Methods:
+    - `publishPorts(containerID, vmnetIP, overlayIP, portBindings) async throws`
+    - `unpublishPorts(containerID) async throws`
+  - Success: Port map manager compiles
+
+- [ ] **Task 4.1.6**: Implement TCP proxy (Swift)
+  - File: `Sources/ContainerBridge/TCPProxy.swift` (NEW, ~150 lines)
+  - Responsibilities:
+    - Listen on localhost:host_port
+    - Accept connections, forward to vmnet_ip:host_port
+    - Bidirectional data copying
+    - Graceful connection close
+  - Uses: SwiftNIO for async networking
+  - Success: TCP proxy forwards connections correctly
+
+- [ ] **Task 4.1.7**: Implement UDP proxy (Swift)
+  - File: `Sources/ContainerBridge/UDPProxy.swift` (NEW, ~200 lines)
+  - Responsibilities:
+    - Bind to localhost:host_port
+    - Forward datagrams to vmnet_ip:host_port
+    - Track client endpoints for reply routing
+    - Timeout idle mappings (NAT-style)
+  - Uses: SwiftNIO for async networking
+  - Success: UDP proxy forwards datagrams correctly
+
+- [ ] **Task 4.1.8**: Update WireGuardClient for port publishing
+  - File: `Sources/ContainerBridge/WireGuardClient.swift` (MODIFIED)
+  - Add methods:
+    - `publishPort(protocol, hostPort, containerIP, containerPort) async throws`
+    - `unpublishPort(protocol, hostPort) async throws`
+  - Calls new gRPC RPCs
+  - Success: Swift client can publish/unpublish ports
+
+- [ ] **Task 4.1.9**: Integrate with ContainerManager
+  - File: `Sources/ContainerBridge/ContainerManager.swift` (MODIFIED)
+  - Changes:
+    - Add `portMapManager: PortMapManager` property
+    - Parse `PortBindings` from `ContainerCreateRequest.HostConfig`
+    - In `startContainer()`: Call `portMapManager.publishPorts()` after container starts
+    - In `stopContainer()` and `removeContainer()`: Call `portMapManager.unpublishPorts()`
+    - Store port mappings in container state for persistence
+  - Success: Containers with `-p` flags get ports published
+
+- [ ] **Task 4.1.10**: Update Docker API models
+  - File: `Sources/DockerAPI/Models/HostConfig.swift` (MODIFIED)
+  - Add proper `PortBindings` type:
+    ```swift
+    struct PortBinding: Codable {
+        var HostIp: String?
+        var HostPort: String?
+    }
+    var PortBindings: [String: [PortBinding]?]?
+    ```
+  - File: `Sources/DockerAPI/Models/NetworkSettings.swift` (MODIFIED)
+  - Update `Ports` field to include host bindings in inspect response
+  - Success: Port binding parsing and serialization working
+
+- [ ] **Task 4.1.11**: Port persistence across daemon restarts
+  - File: `Sources/ContainerBridge/StateStore.swift` (MODIFIED)
+  - Store port mappings in container metadata
+  - On daemon startup: Restore port mappings for running/auto-restart containers
+  - Handle vmnet IP changes gracefully (resolve new vmnet IP, republish ports)
+  - Success: Ports persist across daemon restarts
+
+- [ ] **Task 4.1.12**: Port conflict detection
+  - Before publishing port, test if host port is available
+  - Use `bind()` syscall test or check PortMapManager's tracking
+  - Return Docker-compatible error:
+    ```
+    Error response from daemon: driver failed programming external connectivity:
+    Bind for 0.0.0.0:8080 failed: port is already allocated
+    ```
+  - Success: Clear error messages for port conflicts
+
+- [ ] **Task 4.1.13**: Testing
+  - Test `-p 8080:80` (bind to all interfaces, non-localhost)
+  - Test `-p 127.0.0.1:8080:80` (localhost only, requires proxy)
+  - Test `-p 8080:80/tcp -p 8080:80/udp` (both protocols)
+  - Test port conflicts (two containers using same host port)
+  - Test `docker port <container>` command
+  - Test `docker inspect` shows correct port mappings
+  - Test vmnet security (host can't reach unpublished ports)
+  - Test container-to-container on WireGuard overlay (all ports open)
+  - Test port mappings survive container restart
+  - Test port mappings survive daemon restart
+  - Test proxy cleanup on container removal
+  - Success: All port mapping scenarios work correctly
+
+- [ ] **Deliverable**: Full port mapping support matching Docker behavior
+
+### Implementation Notes
+
+**Why userspace proxy for localhost?**
+- vmnet IPs (192.168.65.X) are NOT on macOS localhost interface
+- Can't use simple routing/NAT to bridge 127.0.0.1 → vmnet
+- Userspace proxy is Docker's proven solution for this exact problem
+- Only needed for localhost bindings; non-localhost uses direct routing + nftables
+
+**nftables location:**
+- All rules in root namespace (where arca-wireguard-service runs)
+- Container namespace doesn't see vmnet (only sees WireGuard overlay interfaces)
+- Root namespace is the security boundary for vmnet access
+
+**WireGuard traffic:**
+- Allow UDP 51820+ from any vmnet peer (simpler, no per-peer filtering)
+- Each container gets sequential ports (51820, 51821, 51822...)
+- Security via encryption (can't spoof peer without private key)
+
+### Future Enhancements (Phase 4.2+)
+
+- [ ] **Gateway Modes**: `nat`, `routed`, `isolated` modes
+  - Network option: `com.docker.network.bridge.gateway_mode_ipv4`
+  - `routed` mode: skip DNAT, direct routing to container IPs
+
+- [ ] **Default Binding Address**: Configure default bind address
+  - Network option: `com.docker.network.bridge.host_binding_ipv4`
+  - Daemon option: `"ip": "127.0.0.1"` for security by default
+
+- [ ] **Performance**: Optimize non-localhost bindings
+  - Consider kernel-based forwarding for high-throughput scenarios
+  - Keep userspace proxy for localhost (can't avoid this)
 
 #### 4.2 Performance Optimization
 - [ ] **Task**: Benchmark throughput
