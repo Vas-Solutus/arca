@@ -29,6 +29,16 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>
 
+  func addPeer(
+    _ request: Arca_Wireguard_V1_AddPeerRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_AddPeerRequest, Arca_Wireguard_V1_AddPeerResponse>
+
+  func removePeer(
+    _ request: Arca_Wireguard_V1_RemovePeerRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_RemovePeerRequest, Arca_Wireguard_V1_RemovePeerResponse>
+
   func getStatus(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions?
@@ -79,6 +89,42 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeRemoveNetworkInterceptors() ?? []
+    )
+  }
+
+  /// Add a peer to a WireGuard interface (for full mesh networking)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to AddPeer.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func addPeer(
+    _ request: Arca_Wireguard_V1_AddPeerRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_AddPeerRequest, Arca_Wireguard_V1_AddPeerResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addPeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeAddPeerInterceptors() ?? []
+    )
+  }
+
+  /// Remove a peer from a WireGuard interface
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to RemovePeer.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func removePeer(
+    _ request: Arca_Wireguard_V1_RemovePeerRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_RemovePeerRequest, Arca_Wireguard_V1_RemovePeerResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removePeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeRemovePeerInterceptors() ?? []
     )
   }
 
@@ -193,6 +239,16 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>
 
+  func makeAddPeerCall(
+    _ request: Arca_Wireguard_V1_AddPeerRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_AddPeerRequest, Arca_Wireguard_V1_AddPeerResponse>
+
+  func makeRemovePeerCall(
+    _ request: Arca_Wireguard_V1_RemovePeerRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_RemovePeerRequest, Arca_Wireguard_V1_RemovePeerResponse>
+
   func makeGetStatusCall(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions?
@@ -235,6 +291,30 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeRemoveNetworkInterceptors() ?? []
+    )
+  }
+
+  public func makeAddPeerCall(
+    _ request: Arca_Wireguard_V1_AddPeerRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_AddPeerRequest, Arca_Wireguard_V1_AddPeerResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addPeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeAddPeerInterceptors() ?? []
+    )
+  }
+
+  public func makeRemovePeerCall(
+    _ request: Arca_Wireguard_V1_RemovePeerRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_RemovePeerRequest, Arca_Wireguard_V1_RemovePeerResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removePeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeRemovePeerInterceptors() ?? []
     )
   }
 
@@ -289,6 +369,30 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
     )
   }
 
+  public func addPeer(
+    _ request: Arca_Wireguard_V1_AddPeerRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_AddPeerResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addPeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeAddPeerInterceptors() ?? []
+    )
+  }
+
+  public func removePeer(
+    _ request: Arca_Wireguard_V1_RemovePeerRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_RemovePeerResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removePeer.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeRemovePeerInterceptors() ?? []
+    )
+  }
+
   public func getStatus(
     _ request: Arca_Wireguard_V1_GetStatusRequest,
     callOptions: CallOptions? = nil
@@ -339,6 +443,12 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtoc
   /// - Returns: Interceptors to use when invoking 'removeNetwork'.
   func makeRemoveNetworkInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_RemoveNetworkRequest, Arca_Wireguard_V1_RemoveNetworkResponse>]
 
+  /// - Returns: Interceptors to use when invoking 'addPeer'.
+  func makeAddPeerInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_AddPeerRequest, Arca_Wireguard_V1_AddPeerResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'removePeer'.
+  func makeRemovePeerInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_RemovePeerRequest, Arca_Wireguard_V1_RemovePeerResponse>]
+
   /// - Returns: Interceptors to use when invoking 'getStatus'.
   func makeGetStatusInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_GetStatusRequest, Arca_Wireguard_V1_GetStatusResponse>]
 
@@ -353,6 +463,8 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     methods: [
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addNetwork,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removeNetwork,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addPeer,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removePeer,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getStatus,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint,
     ]
@@ -368,6 +480,18 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     public static let removeNetwork = GRPCMethodDescriptor(
       name: "RemoveNetwork",
       path: "/arca.wireguard.v1.WireGuardService/RemoveNetwork",
+      type: GRPCCallType.unary
+    )
+
+    public static let addPeer = GRPCMethodDescriptor(
+      name: "AddPeer",
+      path: "/arca.wireguard.v1.WireGuardService/AddPeer",
+      type: GRPCCallType.unary
+    )
+
+    public static let removePeer = GRPCMethodDescriptor(
+      name: "RemovePeer",
+      path: "/arca.wireguard.v1.WireGuardService/RemovePeer",
       type: GRPCCallType.unary
     )
 

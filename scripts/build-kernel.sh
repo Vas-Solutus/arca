@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Linux kernel with TUN support for Arca
+# Build Linux kernel with TUN and WireGuard support for Arca
 # This script follows Apple's documented kernel build process from:
 # https://github.com/apple/containerization/tree/main/kernel
 
@@ -10,7 +10,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORK_DIR="$HOME/.arca/kernel-build"
 INSTALL_PATH="$HOME/.arca/vmlinux"
 
-echo "=== Building Linux kernel with TUN support ==="
+echo "=== Building Linux kernel with TUN and WireGuard support ==="
 echo
 
 # Check prerequisites
@@ -49,6 +49,18 @@ elif grep -q "^CONFIG_TUN=y" config-arm64; then
 else
     echo "CONFIG_TUN=y" >> config-arm64
     echo "  ✓ Added CONFIG_TUN=y"
+fi
+
+# Enable CONFIG_WIREGUARD in the kernel config
+echo "→ Enabling CONFIG_WIREGUARD in kernel configuration..."
+if grep -q "^# CONFIG_WIREGUARD is not set" config-arm64; then
+    sed -i.bak 's/^# CONFIG_WIREGUARD is not set$/CONFIG_WIREGUARD=y/' config-arm64
+    echo "  ✓ Enabled CONFIG_WIREGUARD=y"
+elif grep -q "^CONFIG_WIREGUARD=y" config-arm64; then
+    echo "  ✓ CONFIG_WIREGUARD already enabled"
+else
+    echo "CONFIG_WIREGUARD=y" >> config-arm64
+    echo "  ✓ Added CONFIG_WIREGUARD=y"
 fi
 
 # Run Apple's build process

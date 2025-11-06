@@ -1,32 +1,22 @@
 import Foundation
 import Logging
 
-/// Network backend type
-public enum NetworkBackend: String, Codable, Sendable {
-    case ovs = "ovs"            // Full Docker compatibility with OVS/OVN (default)
-    case vmnet = "vmnet"        // High performance native vmnet (limited features)
-    case wireguard = "wireguard"  // WireGuard-based overlay (~1ms latency, full features)
-}
-
 /// Configuration for Arca daemon
 public struct ArcaConfig: Codable, Sendable {
     public let kernelPath: String
     public let socketPath: String
     public let logLevel: String
-    public let networkBackend: NetworkBackend
 
     enum CodingKeys: String, CodingKey {
         case kernelPath
         case socketPath
         case logLevel
-        case networkBackend
     }
 
-    public init(kernelPath: String, socketPath: String, logLevel: String, networkBackend: NetworkBackend = .ovs) {
+    public init(kernelPath: String, socketPath: String, logLevel: String) {
         self.kernelPath = kernelPath
         self.socketPath = socketPath
         self.logLevel = logLevel
-        self.networkBackend = networkBackend
     }
 }
 
@@ -38,8 +28,7 @@ public final class ConfigManager {
     private static let defaultConfig = ArcaConfig(
         kernelPath: "~/.arca/vmlinux",
         socketPath: "/var/run/arca.sock",
-        logLevel: "info",
-        networkBackend: .ovs  // Default to OVS for full Docker compatibility
+        logLevel: "info"
     )
 
     public init(logger: Logger) {
@@ -74,8 +63,7 @@ public final class ConfigManager {
             logger.info("Configuration loaded successfully", metadata: [
                 "kernel_path": "\(config.kernelPath)",
                 "socket_path": "\(config.socketPath)",
-                "log_level": "\(config.logLevel)",
-                "network_backend": "\(config.networkBackend.rawValue)"
+                "log_level": "\(config.logLevel)"
             ])
 
             // Expand ~ in all paths
@@ -122,8 +110,7 @@ public final class ConfigManager {
         return ArcaConfig(
             kernelPath: expandTilde(config.kernelPath),
             socketPath: expandTilde(config.socketPath),
-            logLevel: config.logLevel,
-            networkBackend: config.networkBackend
+            logLevel: config.logLevel
         )
     }
 }

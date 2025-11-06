@@ -3,8 +3,8 @@
 #
 # This script builds a custom vminit image based on Apple's vminitd with
 # Arca-specific networking extensions:
-# - arca-tap-forwarder: TAP-over-vsock for overlay networks (legacy)
-# - vlan-service: VLAN configuration service for bridge networks (Phase 3.5.5+)
+# - arca-wireguard-service: WireGuard network service for bridge networks (Phase 3)
+# - arca-embedded-dns: DNS resolver for container name resolution (Phase 3.1)
 #
 # Usage: build-vminit.sh [debug|release]
 #   debug   - Build with DEBUG flag enabled (better logging, runs vminitd as subprocess of pid1)
@@ -51,51 +51,7 @@ if ! swift sdk list 2>/dev/null | grep -q "static-linux"; then
 fi
 echo "  ✓ Swift Static Linux SDK found"
 
-# Build TAP forwarder (Go binary cross-compiled to Linux)
-echo ""
-echo "→ Building TAP forwarder (Go → Linux ARM64)..."
-cd "$VMINITD_DIR/vminitd/extensions/tap-forwarder"
-
-if [ ! -f build.sh ]; then
-    echo "ERROR: tap-forwarder/build.sh not found"
-    exit 1
-fi
-
-./build.sh
-
-if [ ! -f arca-tap-forwarder ]; then
-    echo "ERROR: arca-tap-forwarder binary not built"
-    exit 1
-fi
-
-echo "  ✓ TAP forwarder built: arca-tap-forwarder"
-
-# Build embedded DNS (Go binary cross-compiled to Linux)
-echo ""
-echo "→ Building embedded DNS (Go → Linux ARM64)..."
-cd "$VMINITD_DIR/vminitd/extensions/embedded-dns"
-
-if [ ! -f build.sh ]; then
-    echo "ERROR: embedded-dns/build.sh not found"
-    exit 1
-fi
-
-# Generate protobuf code first
-if [ ! -f proto/network.pb.go ]; then
-    echo "  Generating protobuf code..."
-    ./generate-proto.sh
-fi
-
-./build.sh
-
-if [ ! -f arca-embedded-dns ]; then
-    echo "ERROR: arca-embedded-dns binary not built"
-    exit 1
-fi
-
-echo "  ✓ Embedded DNS built: arca-embedded-dns"
-
-# Build WireGuard service (Go binary cross-compiled to Linux)
+# Build WireGuard service (Go binary cross-compiled to Linux with integrated DNS)
 echo ""
 echo "→ Building WireGuard service (Go → Linux ARM64)..."
 cd "$VMINITD_DIR/vminitd/extensions/wireguard-service"
@@ -172,8 +128,6 @@ echo "  Using cctl to create rootfs with Swift runtime..."
 "$CCTL_BINARY" rootfs create \
     --vminitd "$VMINITD_BINARY" \
     --vmexec "$VMEXEC_BINARY" \
-    --add-file "$VMINITD_DIR/vminitd/extensions/tap-forwarder/arca-tap-forwarder:/sbin/arca-tap-forwarder" \
-    --add-file "$VMINITD_DIR/vminitd/extensions/embedded-dns/arca-embedded-dns:/sbin/arca-embedded-dns" \
     --add-file "$VMINITD_DIR/vminitd/extensions/wireguard-service/arca-wireguard-service:/sbin/arca-wireguard-service" \
     --image arca-vminit:latest \
     --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
@@ -297,9 +251,7 @@ echo ""
 echo "Contents:"
 echo "  /sbin/vminitd                  - Init system (PID 1)"
 echo "  /sbin/vmexec                   - Exec helper"
-echo "  /sbin/arca-tap-forwarder       - TAP forwarder (auto-started on boot, vsock:5555)"
-echo "  /sbin/arca-embedded-dns        - Embedded DNS resolver (127.0.0.11:53, auto-started on boot)"
-echo "  /sbin/arca-wireguard-service   - WireGuard network service (uses netlink API, vsock:51820)"
+echo "  /sbin/arca-wireguard-service   - WireGuard network service (vsock:51820) with integrated DNS (127.0.0.11:53)"
 echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
 echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."

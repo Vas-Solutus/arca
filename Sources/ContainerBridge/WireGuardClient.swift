@@ -91,58 +91,27 @@ public actor WireGuardClient {
         logger.info("Disconnected from container WireGuard service")
     }
 
-    /// Create a WireGuard hub (wg0) interface in the container
-    public func createHub(
-        privateKey: String,
-        listenPort: UInt32,
-        ipAddress: String,
-        networkCIDR: String
-    ) async throws -> String {
-        guard let client = client else {
-            throw WireGuardClientError.notConnected
-        }
-
-        logger.info("Creating WireGuard hub", metadata: [
-            "listenPort": "\(listenPort)",
-            "ipAddress": "\(ipAddress)",
-            "networkCIDR": "\(networkCIDR)"
-        ])
-
-        var request = Arca_Wireguard_V1_CreateHubRequest()
-        request.privateKey = privateKey
-        request.listenPort = listenPort
-        request.ipAddress = ipAddress
-        request.networkCidr = networkCIDR
-
-        let call = client.createHub(request)
-        let response = try await call.response.get()
-
-        guard response.success else {
-            throw WireGuardClientError.operationFailed(response.error)
-        }
-
-        logger.info("WireGuard hub created successfully", metadata: [
-            "publicKey": "\(response.publicKey)",
-            "interface": "\(response.interface)"
-        ])
-        return response.publicKey
-    }
-
-    /// Add a network to the container's WireGuard hub
+    /// Add a network to the container's WireGuard hub (creates wgN/ethN interfaces)
+    /// Hub is created lazily on first network addition
     public func addNetwork(
         networkID: String,
+        networkIndex: UInt32,
+        privateKey: String,
+        listenPort: UInt32,
         peerEndpoint: String,
         peerPublicKey: String,
         ipAddress: String,
         networkCIDR: String,
         gateway: String
-    ) async throws {
+    ) async throws -> (wgInterface: String, ethInterface: String, publicKey: String) {
         guard let client = client else {
             throw WireGuardClientError.notConnected
         }
 
         logger.info("Adding network to WireGuard hub", metadata: [
             "networkID": "\(networkID)",
+            "networkIndex": "\(networkIndex)",
+            "listenPort": "\(listenPort)",
             "peerEndpoint": "\(peerEndpoint)",
             "ipAddress": "\(ipAddress)",
             "networkCIDR": "\(networkCIDR)",
@@ -151,6 +120,9 @@ public actor WireGuardClient {
 
         var request = Arca_Wireguard_V1_AddNetworkRequest()
         request.networkID = networkID
+        request.networkIndex = networkIndex
+        request.privateKey = privateKey
+        request.listenPort = listenPort
         request.peerEndpoint = peerEndpoint
         request.peerPublicKey = peerPublicKey
         request.ipAddress = ipAddress
@@ -165,22 +137,29 @@ public actor WireGuardClient {
         }
 
         logger.info("Network added to WireGuard hub successfully", metadata: [
-            "totalNetworks": "\(response.totalNetworks)"
+            "totalNetworks": "\(response.totalNetworks)",
+            "wgInterface": "\(response.wgInterface)",
+            "ethInterface": "\(response.ethInterface)",
+            "publicKey": "\(response.publicKey)"
         ])
+
+        return (response.wgInterface, response.ethInterface, response.publicKey)
     }
 
-    /// Remove a network from the container's WireGuard hub
-    public func removeNetwork(networkID: String) async throws {
+    /// Remove a network from the container's WireGuard hub (deletes wgN/ethN interfaces)
+    public func removeNetwork(networkID: String, networkIndex: UInt32) async throws {
         guard let client = client else {
             throw WireGuardClientError.notConnected
         }
 
         logger.info("Removing network from WireGuard hub", metadata: [
-            "networkID": "\(networkID)"
+            "networkID": "\(networkID)",
+            "networkIndex": "\(networkIndex)"
         ])
 
         var request = Arca_Wireguard_V1_RemoveNetworkRequest()
         request.networkID = networkID
+        request.networkIndex = networkIndex
 
         let call = client.removeNetwork(request)
         let response = try await call.response.get()
@@ -194,52 +173,88 @@ public actor WireGuardClient {
         ])
     }
 
-    /// Update allowed IPs for multi-network routing
-    public func updateAllowedIPs(peerPublicKey: String, allowedCIDRs: [String]) async throws {
+    /// Add a peer to a WireGuard interface (for full mesh networking + DNS registration)
+    public func addPeer(
+        networkID: String,
+        networkIndex: UInt32,
+        peerPublicKey: String,
+        peerEndpoint: String,
+        peerIPAddress: String,
+        peerName: String,
+        peerContainerID: String,
+        peerAliases: [String] = []
+    ) async throws -> UInt32 {
         guard let client = client else {
             throw WireGuardClientError.notConnected
         }
 
-        logger.info("Updating allowed IPs", metadata: [
-            "peerPublicKey": "\(peerPublicKey)",
-            "allowedCIDRs": "\(allowedCIDRs.joined(separator: ", "))"
+        logger.info("Adding peer to WireGuard interface", metadata: [
+            "networkID": "\(networkID)",
+            "networkIndex": "\(networkIndex)",
+            "peerEndpoint": "\(peerEndpoint)",
+            "peerIPAddress": "\(peerIPAddress)",
+            "peerName": "\(peerName)"
         ])
 
-        var request = Arca_Wireguard_V1_UpdateAllowedIPsRequest()
+        var request = Arca_Wireguard_V1_AddPeerRequest()
+        request.networkID = networkID
+        request.networkIndex = networkIndex
         request.peerPublicKey = peerPublicKey
-        request.allowedCidrs = allowedCIDRs
+        request.peerEndpoint = peerEndpoint
+        request.peerIpAddress = peerIPAddress
+        request.peerName = peerName
+        request.peerContainerID = peerContainerID
+        request.peerAliases = peerAliases
 
-        let call = client.updateAllowedIPs(request)
+        let call = client.addPeer(request)
         let response = try await call.response.get()
 
         guard response.success else {
             throw WireGuardClientError.operationFailed(response.error)
         }
 
-        logger.info("Allowed IPs updated successfully", metadata: [
-            "totalAllowed": "\(response.totalAllowed)"
+        logger.info("Peer added to WireGuard interface successfully (DNS registered)", metadata: [
+            "totalPeers": "\(response.totalPeers)"
         ])
+
+        return response.totalPeers
     }
 
-    /// Delete the WireGuard hub interface
-    public func deleteHub(force: Bool = false) async throws {
+    /// Remove a peer from a WireGuard interface (also removes DNS entry)
+    public func removePeer(
+        networkID: String,
+        networkIndex: UInt32,
+        peerPublicKey: String,
+        peerName: String
+    ) async throws -> UInt32 {
         guard let client = client else {
             throw WireGuardClientError.notConnected
         }
 
-        logger.info("Deleting WireGuard hub", metadata: ["force": "\(force)"])
+        logger.info("Removing peer from WireGuard interface", metadata: [
+            "networkID": "\(networkID)",
+            "networkIndex": "\(networkIndex)",
+            "peerName": "\(peerName)"
+        ])
 
-        var request = Arca_Wireguard_V1_DeleteHubRequest()
-        request.force = force
+        var request = Arca_Wireguard_V1_RemovePeerRequest()
+        request.networkID = networkID
+        request.networkIndex = networkIndex
+        request.peerPublicKey = peerPublicKey
+        request.peerName = peerName
 
-        let call = client.deleteHub(request)
+        let call = client.removePeer(request)
         let response = try await call.response.get()
 
         guard response.success else {
             throw WireGuardClientError.operationFailed(response.error)
         }
 
-        logger.info("WireGuard hub deleted successfully")
+        logger.info("Peer removed from WireGuard interface successfully (DNS unregistered)", metadata: [
+            "remainingPeers": "\(response.remainingPeers)"
+        ])
+
+        return response.remainingPeers
     }
 
     /// Get WireGuard hub status and statistics
@@ -255,9 +270,29 @@ public actor WireGuardClient {
         logger.debug("WireGuard status", metadata: [
             "version": "\(response.version)",
             "networkCount": "\(response.networkCount)",
-            "interface": response.hasInterface ? "\(response.interface.name)" : "none"
+            "interfaces": "\(response.interfaces.map { $0.name }.joined(separator: ", "))"
         ])
 
         return response
+    }
+
+    /// Get the container's vmnet endpoint (eth0 IP:port) for peer configuration
+    public func getVmnetEndpoint() async throws -> String {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.debug("Getting vmnet endpoint from container")
+
+        let request = Arca_Wireguard_V1_GetVmnetEndpointRequest()
+        let call = client.getVmnetEndpoint(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.info("Got vmnet endpoint", metadata: ["endpoint": "\(response.endpoint)"])
+        return response.endpoint
     }
 }

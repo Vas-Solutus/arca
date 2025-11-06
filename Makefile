@@ -1,4 +1,4 @@
-.PHONY: clean install uninstall debug release run all codesign verify-entitlements help helpervm buildkit kernel install-grpc-plugin test tap-forwarder vminit gen-grpc
+.PHONY: clean clean-state install uninstall debug release run all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -55,6 +55,12 @@ clean:
 	swift package clean
 	rm -rf .build
 
+# Clean state database (development)
+clean-state:
+	@echo "Cleaning state database..."
+	@rm -f ~/.arca/state.db
+	@echo "✓ State cleaned"
+
 # Install to system
 install: release
 	@echo "Installing $(BINARY) to $(INSTALL_DIR)..."
@@ -85,23 +91,13 @@ run-release:
 	@rm -f /tmp/arca.sock
 	@.build/release/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
 
-# Build helper VM image
-helpervm:
-	@echo "Building helper VM image..."
-	@./scripts/build-helper-vm.sh
-
-# Build BuildKit image with vsock proxy
-buildkit:
-	@echo "Building BuildKit image with vsock proxy..."
-	@./scripts/build-buildkit-image.sh
-
 # Build kernel with TUN support
 kernel:
 	@echo "Building Linux kernel with TUN support..."
 	@./scripts/build-kernel.sh
 
-# Build custom vminit with VLAN and TAP forwarder extensions
-# The build script now builds both extensions from the vminitd submodule
+# Build custom vminit with WireGuard networking extension
+# The build script builds arca-wireguard-service from the vminitd submodule
 vminit:
 	@echo "Building custom vminit:latest with networking extensions (release)..."
 	@./scripts/build-vminit.sh release
@@ -172,13 +168,12 @@ help:
 	@echo "  make release      - Build and codesign release binary"
 	@echo "  make run          - Build, sign, and run daemon (debug) at /tmp/arca.sock"
 	@echo "  make run-release  - Build, sign, and run daemon (release) at /tmp/arca.sock"
-	@echo "  make test         - Run all tests (helper VM tests start Arca daemon)"
+	@echo "  make test         - Run all tests"
 	@echo "  make clean        - Remove all build artifacts"
+	@echo "  make clean-state  - Remove state database (fresh start)"
 	@echo "  make install      - Install release binary to /usr/local/bin"
 	@echo "  make uninstall    - Remove binary from /usr/local/bin"
-	@echo "  make helpervm     - Build helper VM disk image for networking"
 	@echo "  make kernel       - Build Linux kernel with TUN support (10-15 min)"
-	@echo "  make tap-forwarder - Build arca-tap-forwarder for Linux (container networking)"
 	@echo "  make vminit       - Build custom vminit:latest (release, production use)"
 	@echo "  make vminit-debug - Build custom vminit:latest (debug, better logging)"
 	@echo "  make gen-grpc     - Generate gRPC code from proto files"

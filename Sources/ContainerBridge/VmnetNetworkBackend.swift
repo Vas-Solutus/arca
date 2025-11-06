@@ -14,7 +14,7 @@ import Containerization
 /// - No overlay networks
 ///
 /// **Advantages:**
-/// - 10x lower latency (~0.5ms vs ~4-7ms for OVS)
+/// - Lowest latency (~0.5ms, native kernel switching)
 /// - No helper VM required
 /// - Native kernel-level switching
 public actor VmnetNetworkBackend {
@@ -158,7 +158,7 @@ public actor VmnetNetworkBackend {
     public func attachContainer(containerID: String, networkID: String, ipAddress: String, gateway: String) throws {
         throw NetworkManagerError.dynamicAttachNotSupported(
             backend: "vmnet",
-            suggestion: "Recreate container with --network flag at 'docker run' time, or switch to OVS backend for full Docker Network API support"
+            suggestion: "Recreate container with --network flag at 'docker run' time, or use WireGuard backend (bridge networks) for full Docker Network API support"
         )
     }
 

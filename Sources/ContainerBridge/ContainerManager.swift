@@ -683,12 +683,11 @@ public actor ContainerManager {
             // which automatically creates eth0 for ALL containers via network?.create(id).
             // This happens BEFORE our configuration closure runs.
             //
-            // For ALL network backends (vmnet, bridge/OVS, WireGuard):
+            // For ALL network backends (vmnet, bridge/WireGuard):
             // - eth0 is created in the VM's root namespace (where vminitd lives)
             // - The network backend determines what happens next:
             //   - vmnet: eth0 is the container's only interface (direct NAT access)
-            //   - bridge/OVS: eth0 stays in root ns, TAP devices added dynamically
-            //   - WireGuard: eth0 stays in root ns, veth pair + wg0 created for container
+            //   - bridge/WireGuard: eth0 stays in root ns, veth pairs + wgN interfaces created for container
             //
             // We do NOT override containerConfig.interfaces, allowing the framework to create eth0.
             configLogger.info("Container using framework-managed eth0 interface", metadata: [

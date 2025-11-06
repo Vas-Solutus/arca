@@ -202,21 +202,12 @@ public final class ArcaDaemon: @unchecked Sendable {
         let execManager = ExecManager(containerManager: containerManager, logger: logger)
         self.execManager = execManager
 
-        // Initialize NetworkBridge for TAP device management and packet relay
-        let networkBridge: NetworkBridge?
-        if config.networkBackend == .ovs {
-            networkBridge = NetworkBridge(logger: logger)
-        } else {
-            networkBridge = nil
-        }
-
-        // Initialize NetworkManager with selected backend
-        logger.info("Initializing network manager with \(config.networkBackend.rawValue) backend...")
+        // Initialize NetworkManager with WireGuard backend
+        logger.info("Initializing network manager (WireGuard default)...")
         let nm = NetworkManager(
             config: config,
             stateStore: stateStore,
             containerManager: containerManager,
-            networkBridge: networkBridge,
             logger: logger
         )
         self.networkManager = nm

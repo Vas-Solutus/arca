@@ -30,10 +30,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Crash recovery (kill -9, power loss) marks containers as killed
 
 **Next Priorities**:
-1. Task 6: Control plane as regular container (unify helper VM into ContainerManager)
-2. Task 7: Integration testing (comprehensive test suite for persistence)
-3. Phase 3.7: Named Volumes (VolumeManager, `/volumes/*` API endpoints)
-4. Task 3.7.8: Write-ahead logging for exit state (future improvement)
+1. Phase 3.1: DNS Integration via WireGuard gRPC (embedded-DNS push topology)
+2. Phase 3.7: Named Volumes (VolumeManager, `/volumes/*` API endpoints)
+3. Task 3.7.8: Write-ahead logging for exit state (future improvement)
+4. Integration testing (comprehensive test suite for persistence)
 
 **See**: `Documentation/IMPLEMENTATION_PLAN.md` for complete status
 
@@ -192,57 +192,17 @@ This creates `vminit:latest` OCI image at `~/.arca/vminit/` containing:
 
 **Detailed build guide**: See [Documentation/VMINIT_BUILD.md](Documentation/VMINIT_BUILD.md) for troubleshooting and development workflow.
 
-### One-Time Setup: Building Kernel with TUN Support
+### One-Time Setup: Building Kernel (Optional)
 
-**Critical prerequisite**: Arca's helper VM requires a Linux kernel with TUN/TAP support (`CONFIG_TUN=y`) for OVS userspace networking. Pre-built kernels may not have this enabled.
+**Note**: Arca uses WireGuard for networking, which doesn't require custom kernel features. The standard Apple kernel works out of the box.
 
+If you need to build a custom kernel for other reasons:
 ```bash
-# Build custom kernel with TUN support (takes 10-15 minutes)
+# Build Linux kernel (takes 10-15 minutes)
 make kernel
 ```
 
-This downloads Apple's kernel config, builds a kernel with TUN enabled, and installs it to `~/.arca/vmlinux`.
-
-**Why this is needed**:
-- OVS userspace datapath requires `/dev/net/tun` device
-- Without TUN support, bridge creation fails with "No such device"
-- See `Documentation/KERNEL_BUILD.md` for detailed information
-
-**Verification**:
-```bash
-# After building kernel, rebuild helper VM and test
-make helpervm
-make test-helper
-```
-
-### Building Helper VM (Phase 3 - Networking)
-
-**Context**: Phase 3 introduces a lightweight Linux VM running OVN/OVS for Docker-compatible networking. This helper VM provides bridge networks, network isolation, and full Docker Network API compatibility.
-
-```bash
-# Build the network helper VM OCI image
-make helpervm                  # Builds arca-network-helper:latest
-
-# Manual build (if needed)
-./scripts/build-helper-vm.sh
-```
-
-This creates an OCI image at `~/.arca/helpervm/oci-layout/` containing:
-- Open vSwitch (OVS) v3.6.0
-- Open Virtual Network (OVN) v25.09
-- gRPC control API server (Go)
-- Alpine Linux base (~50-100MB)
-
-**Architecture**: See `Documentation/NETWORK_ARCHITECTURE.md` for detailed networking design.
-
-**Prerequisites**:
-- Docker or Podman (for building the image)
-- protoc compiler with protoc-gen-go and protoc-gen-go-grpc plugins
-
-**gRPC code generation**: If you modify `helpervm/proto/network.proto`:
-```bash
-./scripts/generate-grpc.sh     # Regenerate Go and Swift gRPC code
-```
+This downloads Apple's kernel config and installs the built kernel to `~/.arca/vmlinux`.
 
 ## Configuration
 
@@ -255,36 +215,25 @@ Arca uses a JSON configuration file with the following structure:
 {
   "kernelPath": "~/.arca/vmlinux",
   "socketPath": "/var/run/arca.sock",
-  "logLevel": "info",
-  "networkBackend": "ovs"
+  "logLevel": "info"
 }
 ```
 
 **Configuration options**:
-- `kernelPath`: Path to custom Linux kernel (required for helper VM)
+- `kernelPath`: Path to Linux kernel (default: `~/.arca/vmlinux`)
 - `socketPath`: Docker API socket path (default: `/var/run/arca.sock`)
 - `logLevel`: Logging verbosity (debug, info, warning, error)
-- `networkBackend`: Network backend to use (default: `ovs`)
-  - **`ovs`** - Full Docker compatibility via OVS/OVN helper VM (default)
-    - ✅ Dynamic network attach/detach (`docker network connect/disconnect`)
-    - ✅ Multi-network containers (eth0, eth1, eth2...)
-    - ✅ Port mapping (`-p` flag)
-    - ✅ DNS resolution by container name
-    - ✅ Network isolation
-    - ✅ OVN native DHCP with dynamic IP allocation
-    - ✅ Logical router for L3 routing
-    - ⚠️ ~3ms latency (measured 1.7-5.5ms, avg 3.2ms - better than expected!)
-  - **`vmnet`** - High-performance native Apple networking
-    - ✅ ~0.5ms latency (10x faster than OVS)
-    - ✅ Simple architecture (no helper VM)
-    - ❌ Must specify `--network` at `docker run` time (no dynamic attach)
-    - ❌ Single network per container only
-    - ❌ No port mapping
-    - ❌ No overlay networks
 
 **Kernel setup**: The `vmlinux` kernel must exist at the configured path. Without it, Arca will fail to start with `ConfigError.kernelNotFound`.
 
-**Network backend selection**: See `Documentation/NETWORK_ARCHITECTURE.md` for detailed comparison and migration guide between OVS and vmnet backends.
+**Network backend**: Arca uses WireGuard for bridge networks by default, providing:
+- ✅ Dynamic network attach/detach (`docker network connect/disconnect`)
+- ✅ Multi-network containers (eth0, eth1, eth2...)
+- ✅ Full mesh peer-to-peer networking
+- ✅ ~1ms latency (measured in Phase 2 testing)
+- ✅ Container-to-container and container-to-internet communication
+
+Users can optionally create **vmnet** networks with `--driver vmnet` for high-performance native networking (limited features - no dynamic attach, single network only).
 
 ## Architecture
 
@@ -312,18 +261,16 @@ The project is organized into four Swift Package Manager targets:
    - `ContainerManager.swift` - Container lifecycle management
    - `ImageManager.swift` - OCI image operations
    - `ExecManager.swift` - Exec instance management
-   - **Networking (Dual Backend)**:
+   - **Networking**:
      - `NetworkManager.swift` - Facade routing to backend implementations
-     - `OVSNetworkBackend.swift` - Full Docker compatibility via OVS/OVN (default)
-     - `VmnetNetworkBackend.swift` - High-performance native vmnet
-     - `NetworkHelperVM.swift` - Helper VM lifecycle for OVS backend
-     - `OVNClient.swift` - gRPC client for OVS network control API
-     - `NetworkBridge.swift` - vsock packet relay for TAP-over-vsock
+     - `WireGuardNetworkBackend.swift` - Full Docker compatibility via WireGuard (default)
+     - `VmnetNetworkBackend.swift` - High-performance native vmnet (optional)
+     - `WireGuardClient.swift` - gRPC client for WireGuard network control API
      - `IPAMAllocator.swift` - IP address management
    - `StreamingWriter.swift` - Streaming output for attach/exec
    - `Config.swift` - Configuration management
    - `Types.swift`, `ImageTypes.swift` - Bridging types
-   - `Generated/` - Protobuf/gRPC generated code for network API
+   - `Generated/` - Protobuf/gRPC generated code for WireGuard API
 
 ### Request Flow
 
@@ -375,34 +322,26 @@ All behaviors must follow these specs for:
 - Bidirectional mapping maintained in `idMapping` and `reverseMapping` dictionaries
 - IDs generated via `generateDockerID()` by duplicating UUID hex to reach 64 chars
 
-**Networking Architecture** (Phase 3 - Dual Network Topology):
-- **Control Plane Network** (vmnet, 192.168.0.0/16):
-  - BuildKit container (`buildx_buildkit_default`) - internet access for image pulls
-  - OVS Helper VM (`arca-control-plane`) - manages user container networks
-  - IP addresses dynamically assigned by Apple's vmnet.framework
-  - NAT gateway for internet connectivity (critical for `docker build`)
-  - Isolated from user container networks (security)
-- **User Container Networks** (OVS, 172.17.0.0/16-172.250.0.0/16):
+**Networking Architecture** (Phase 3 - WireGuard):
+- **WireGuard Backend** (default for bridge networks):
   - Full Docker Network API compatibility
-  - Dynamic attach/detach, multi-network containers, port mapping
-  - TAP-over-vsock packet relay architecture
-  - OVN/OVS for L2 isolation and routing
-- **Control Plane Container** (`arca-control-plane`):
-  - Regular container with special labels: `com.arca.internal=true`, `com.arca.role=control-plane`
-  - `--restart always` policy, volume mount for OVN data persistence
-  - Manages user networks via OVS/OVN
-- **Embedded DNS**: Each container runs embedded-DNS at 127.0.0.11:53 for multi-network name resolution
-- See `Documentation/NETWORK_ARCHITECTURE.md` and `Documentation/BUILDKIT_ARCHITECTURE.md` for complete design
-
-**Unified Container Management** (Phase 3.7 - IN PROGRESS):
-- **Everything is a container**: User containers AND control plane use the same lifecycle
-- **No special cases**: Control plane managed via `ContainerManager` like any other container
-- **Code reuse**: Persistence, restart policies, volumes work for all containers
-- **Benefits**:
-  - ~500 lines of `NetworkHelperVM` actor code deleted
-  - Control plane gets restart policies for free
-  - OVN databases persist via volume mount
-  - Simpler mental model: "container with special label"
+  - Dynamic network attach/detach (`docker network connect/disconnect`)
+  - Multi-network containers (eth0, eth1, eth2...)
+  - Full mesh peer-to-peer networking within each network
+  - ~1ms latency (measured in Phase 2 testing)
+  - Container-to-container and container-to-internet communication
+- **arca-wireguard-service**: gRPC service running in each container VM (vsock port 51820)
+  - Manages WireGuard interfaces and peer configuration
+  - AddNetwork/RemoveNetwork RPCs for dynamic network management
+  - AddPeer/RemovePeer RPCs for full mesh topology
+- **Embedded DNS** (Phase 3.1 - PLANNED): Container name resolution at 127.0.0.11:53
+  - DNS topology pushed via WireGuard gRPC (no tap-forwarder needed)
+  - embedded-DNS integrated into arca-wireguard-service
+- **vmnet Backend** (optional, user-created networks only):
+  - High-performance native Apple networking (~0.5ms latency)
+  - Limited features: no dynamic attach, single network per container
+  - Created with `docker network create --driver vmnet mynet`
+- See `Documentation/WIREGUARD_IMPLEMENTATION_PLAN.md` for complete Phase 2 architecture
 
 **Volumes**:
 - ✅ **Bind mounts** (`-v /host:/container`) work via VirtioFS
@@ -423,50 +362,17 @@ All behaviors must follow these specs for:
 - Used for: image pull progress, exec attach, container attach, log streaming
 - Docker progress format: newline-delimited JSON with progress details
 
-**Networking Architecture (Phase 3 - OVS + Direct Push DNS)**:
+**DNS Integration (Phase 3.1 - PLANNED)**:
 
-**Current State**: OVS backend with custom IPAM, dnsmasq for single-network DNS, and TAP-over-vsock for packet forwarding.
+**Goal**: Container name resolution at 127.0.0.11:53 for multi-network containers
 
-**Multi-Network DNS Challenge**:
-- dnsmasq in helper VM only works for single-network containers
-- Containers on multiple networks need to resolve names from ALL attached networks
-- Cannot use TCP to query helper VM (security risk - exposes control plane to containers)
-- vsock constraint: Only host can dial containers (containers cannot dial host or each other)
+**Planned Architecture**:
+- **Direct Push via WireGuard gRPC**: DNS topology updates pushed to containers via existing arca-wireguard-service
+- **Embedded-DNS Integration**: DNS server integrated into arca-wireguard-service (single binary)
+- **UpdateDNSMappings RPC**: New RPC added to WireGuard service for topology updates
+- **Multi-network support**: Containers resolve names from ALL attached networks
 
-**Solution: Direct Push via tap-forwarder gRPC**:
-- **Reuse existing infrastructure**: tap-forwarder gRPC server already runs on vsock port 5555 for TAP device management
-- **Add one RPC**: UpdateDNSMappings extends existing tap-forwarder service
-- **Embedded-DNS**: Runs in each container at 127.0.0.11:53 with local DNS mappings
-- **Direct push**: Daemon dials containers via Container.dialVsock(5555) and pushes topology updates
-- **Relay**: tap-forwarder forwards updates to embedded-DNS via Unix socket
-- **Security**: vsock isolates control plane, only host→container communication allowed
-
-**Key Components**:
-1. **tap-forwarder**: Extended gRPC service with UpdateDNSMappings RPC (vsock port 5555)
-2. **Embedded-DNS**: DNS server + control server on Unix socket + local in-memory mappings
-3. **Topology Publisher**: ContainerManager pushes updates on lifecycle changes via TAPForwarderClient
-4. **TAP-over-vsock**: Unchanged - handles packet forwarding for network traffic
-
-**Data Flow**:
-```
-ContainerManager (detect topology change)
-  → TAPForwarderClient.updateDNSMappings() (Swift gRPC)
-  → Container.dialVsock(5555) (host→container)
-  → tap-forwarder UpdateDNSMappings handler (Go gRPC)
-  → Unix socket /tmp/arca-dns-control.sock (JSON)
-  → embedded-DNS control server (Go)
-  → Update local DNSMappings (atomic)
-  → Resolve container names to IPs
-```
-
-**Benefits**:
-- **Simple**: No broker needed, direct host→container push
-- **Secure**: vsock isolates control plane from container networks
-- **Reuses infrastructure**: tap-forwarder already exists and runs on vsock port 5555
-- **Complete snapshots**: Full topology sent on each update (idempotent, no deltas)
-- **Best-effort**: DNS updates don't block container operations
-
-See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentation/NETWORK_ARCHITECTURE.md` for overall networking architecture.
+See `Documentation/WIREGUARD_IMPLEMENTATION_PLAN.md` Phase 3.1 for complete design.
 
 ## Implementation Status
 
@@ -489,18 +395,18 @@ See `Documentation/DNS_PUSH_ARCHITECTURE.md` for complete design and `Documentat
   - Graceful shutdown (5s timeout for monitoring tasks)
   - Database-only container removal
   - State reconciliation on daemon startup
-- ✅ **Networking (Phase 3) - Dual Backend Complete**:
-  - OVS Backend (default): Full Docker compatibility via TAP-over-vsock + OVS helper VM
+- ✅ **Networking (Phase 3) - WireGuard Backend Complete**:
+  - WireGuard Backend (default): Full Docker compatibility via peer-to-peer WireGuard tunnels
     - Dynamic network attach/detach
-    - Multi-network containers
-    - DNS resolution by container name
-    - Network isolation
+    - Multi-network containers (eth0, eth1, eth2...)
+    - Full mesh peer-to-peer networking
+    - ~1ms latency (measured in Phase 2)
+    - Network isolation per network
   - vmnet Backend (optional): High-performance native Apple networking
-    - 10x lower latency than OVS
+    - ~0.5ms latency
     - Limited features (no dynamic attach, single network only)
+    - User-created networks only (--driver vmnet)
   - NetworkManager facade pattern routing to backends
-  - Helper VM with OVS/OVN + dnsmasq
-  - TAP-over-vsock packet relay
   - IPAM for IP address allocation
 - ✅ **Bind Mounts** (`-v /host:/container`) - VirtioFS-based with read-only support
 - ✅ vminitd fork as submodule with Arca networking extensions
@@ -683,30 +589,30 @@ When adding new Containerization API calls:
 4. Handle errors and translate to Docker HTTP status codes
 5. Update ID mappings for container operations
 
-### Helper VM and Networking (Phase 3)
+### WireGuard Networking (Phase 3)
 
-When working with the helper VM networking stack:
+When working with the WireGuard networking stack:
 
-1. **Helper VM lifecycle**: Managed by `NetworkHelperVM` class
-   - Launches as a Container using the Containerization framework
-   - Runs the `arca-network-helper:latest` OCI image
-   - Starts OVS/OVN processes and gRPC control API server
+1. **arca-wireguard-service**: gRPC service running in each container VM
+   - Runs at vsock port 51820 in every container
+   - Manages WireGuard interfaces and peer configuration
+   - Provides AddNetwork/RemoveNetwork/AddPeer/RemovePeer RPCs
 
-2. **gRPC communication**: Use `OVNClient` for network operations
-   - Communication via `Container.dial()` over vsock (port 9999 → TCP in VM)
-   - Auto-connects when `NetworkHelperVM.ensureRunning()` succeeds
+2. **gRPC communication**: Use `WireGuardClient` for network operations
+   - Communication via `Container.dialVsock(51820)` over vsock
    - All network operations are async via gRPC
+   - See `WireGuardNetworkBackend.swift` for usage examples
 
-3. **Protobuf changes**: If modifying `helpervm/proto/network.proto`
+3. **Protobuf changes**: If modifying `containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto`
    - Run `./scripts/generate-grpc.sh` to regenerate code
-   - Updates both Go code (helper VM) and Swift code (Arca daemon)
-   - Generated Swift code: `Sources/ContainerBridge/Generated/network.{pb,grpc}.swift`
-   - Generated Go code: `helpervm/control-api/proto/network.{pb,grpc}.go`
+   - Updates both Go code (arca-wireguard-service) and Swift code (Arca daemon)
+   - Generated Swift code: `Sources/ContainerBridge/Generated/wireguard.{pb,grpc}.swift`
+   - Generated Go code: `containerization/vminitd/extensions/wireguard-service/proto/wireguard.{pb,grpc}.go`
 
-4. **Helper VM development**: To rebuild after changes to helper VM code
-   - Modify code in `helpervm/control-api/`, `helpervm/scripts/`, or `helpervm/config/`
-   - Run `make helpervm` to rebuild OCI image
-   - Restart Arca daemon to pick up new image
+4. **WireGuard service development**: To rebuild after changes
+   - Modify code in `containerization/vminitd/extensions/wireguard-service/`
+   - Run `make vminit` to rebuild vminit:latest OCI image
+   - Restart Arca daemon and recreate containers to pick up new vminit
 
 ### vminitd Submodule (Phase 3.5.5+)
 
@@ -796,50 +702,16 @@ When implementing new endpoints, follow this workflow:
 - **Logging**: swift-log
 - **Containerization**: apple/containerization package
 - **gRPC**: grpc-swift for network control API
-- **Networking**: Open vSwitch (OVS) v3.6.0 + Open Virtual Network (OVN) v25.09
-- **Helper VM**: Alpine Linux 3.22 with Go control API server
+- **Networking**: WireGuard for bridge networks, vmnet for high-performance alternative
 - **API Version**: Docker Engine API v1.51
 - **Socket Path**: `/var/run/arca.sock` (configurable via `--socket-path`)
-
-## Helper VM Directory Structure (Phase 3)
-
-The `helpervm/` directory contains everything needed for the networking helper VM:
-
-```
-helpervm/
-├── Dockerfile                  # Multi-stage build: OVS/OVN + Router + Go control API
-├── proto/
-│   ├── network.proto          # gRPC API definition for OVS (overlay networks)
-│   └── router.proto           # gRPC API definition for VLAN router (bridge networks)
-├── control-api/               # Go gRPC server (OVS management)
-│   ├── main.go                # Control API entry point
-│   ├── server.go              # OVS bridge/port operations
-│   ├── tap_relay.go           # TAP-over-vsock relay for overlay networks
-│   └── proto/                 # Generated Go code
-├── router-service/            # Go gRPC server (VLAN routing - Phase 3.5.5+)
-│   ├── main.go                # Router service entry point
-│   ├── router.go              # VLAN interface management via netlink
-│   └── proto/                 # Generated Go code
-├── scripts/
-│   ├── startup.sh             # VM entrypoint: starts OVS/OVN + Router + APIs
-│   ├── ovs-init.sh            # OVS/OVN initialization
-│   └── router-init.sh         # Router initialization (iptables, IP forwarding)
-└── config/
-    └── dnsmasq.conf           # DHCP/DNS configuration for container networks
-```
-
-**Build output**: `~/.arca/helpervm/oci-layout/` - OCI image layout compatible with Containerization framework
-
-**Dual Architecture**:
-- **Bridge networks**: Use router-service with VLAN tagging (simple, fast)
-- **Overlay networks**: Use control-api with OVS/OVN (complex, multi-host capable)
 
 ## Known Limitations
 
 See `Documentation/LIMITATIONS.md` for full details. Key limitations:
 
 1. **Image Size Reporting**: Reports compressed (OCI blob) sizes instead of uncompressed sizes
-2. **Networking**: Phase 3 (in progress) - OVN/OVS helper VM provides bridge networks
+2. **Networking**: WireGuard provides bridge networks; Phase 3.1 (DNS integration) in progress
 3. **Volumes**: VirtioFS limitations affect some operations
 4. **Build API**: Not yet implemented
 5. **Swarm Mode**: Not supported

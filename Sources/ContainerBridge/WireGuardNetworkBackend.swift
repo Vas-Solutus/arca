@@ -18,11 +18,12 @@ import Containerization
 /// - No helper VM required
 ///
 /// **Performance:**
-/// - ~1ms latency (3x faster than OVS)
+/// - ~1ms latency (kernel-space routing)
 /// - Single kernel-space routing decision per packet
 /// - No vsock relay overhead (direct vmnet UDP)
 public actor WireGuardNetworkBackend {
     private let logger: Logger
+    private let stateStore: StateStore
 
     // Network state tracking
     private var networks: [String: NetworkMetadata] = [:]  // Network ID -> Metadata
@@ -32,11 +33,18 @@ public actor WireGuardNetworkBackend {
     // Container attachment details: networkID -> containerID -> (ip, mac, aliases)
     private var containerAttachments: [String: [String: NetworkAttachment]] = [:]
 
-    // WireGuard hub state: containerID -> hub public key
-    private var containerHubs: [String: String] = [:]
+    // WireGuard interface state (Phase 2.2 - multi-network)
+    // Track network index for each container-network pair: containerID -> networkID -> networkIndex
+    private var containerNetworkIndices: [String: [String: UInt32]] = [:]
+
+    // Track public keys per interface: containerID -> networkID -> publicKey
+    private var containerInterfaceKeys: [String: [String: String]] = [:]
 
     // WireGuard clients for container communication: containerID -> WireGuardClient
     private var wireGuardClients: [String: WireGuardClient] = [:]
+
+    // Container names for DNS resolution (Phase 3.1): containerID -> containerName
+    private var containerNames: [String: String] = [:]
 
     // Subnet allocation tracking (simple counter for auto-allocation)
     private var nextSubnetByte: UInt8 = 18  // Start at 172.18.0.0/16
@@ -44,8 +52,9 @@ public actor WireGuardNetworkBackend {
     // IP allocation within networks: networkID -> next IP octet
     private var nextIPOctet: [String: UInt8] = [:]  // Tracks .2, .3, .4, etc. (.1 is gateway)
 
-    public init(logger: Logger) {
+    public init(logger: Logger, stateStore: StateStore) {
         self.logger = logger
+        self.stateStore = stateStore
     }
 
     // MARK: - Network Management
@@ -59,7 +68,7 @@ public actor WireGuardNetworkBackend {
         ipRange: String?,
         options: [String: String],
         labels: [String: String]
-    ) throws -> NetworkMetadata {
+    ) async throws -> NetworkMetadata {
         logger.info("Creating WireGuard bridge network", metadata: [
             "network_id": "\(id)",
             "network_name": "\(name)",
@@ -87,6 +96,7 @@ public actor WireGuardNetworkBackend {
         nextIPOctet[id] = 2
 
         // Create metadata
+        let createdDate = Date()
         let metadata = NetworkMetadata(
             id: id,
             name: name,
@@ -94,7 +104,7 @@ public actor WireGuardNetworkBackend {
             subnet: effectiveSubnet,
             gateway: effectiveGateway,
             containers: [],
-            created: Date(),
+            created: createdDate,
             options: options,
             labels: labels,
             isDefault: false
@@ -102,6 +112,34 @@ public actor WireGuardNetworkBackend {
 
         networks[id] = metadata
         networksByName[name] = id
+
+        // Persist network to database
+        do {
+            let optionsJSON = try JSONEncoder().encode(options)
+            let labelsJSON = try JSONEncoder().encode(labels)
+
+            try await stateStore.saveNetwork(
+                id: id,
+                name: name,
+                driver: "wireguard",
+                scope: "local",
+                createdAt: createdDate,
+                subnet: effectiveSubnet,
+                gateway: effectiveGateway,
+                ipRange: ipRange,
+                optionsJSON: String(data: optionsJSON, encoding: .utf8),
+                labelsJSON: String(data: labelsJSON, encoding: .utf8),
+                isDefault: false
+            )
+
+            logger.debug("WireGuard network persisted to database", metadata: ["network_id": "\(id)"])
+        } catch {
+            logger.error("Failed to persist WireGuard network to database", metadata: [
+                "network_id": "\(id)",
+                "error": "\(error)"
+            ])
+            // Continue - network is created in memory even if persistence fails
+        }
 
         logger.info("WireGuard bridge network created", metadata: [
             "network_id": "\(id)",
@@ -113,7 +151,7 @@ public actor WireGuardNetworkBackend {
     }
 
     /// Delete a bridge network
-    public func deleteBridgeNetwork(id: String) throws {
+    public func deleteBridgeNetwork(id: String) async throws {
         guard networks[id] != nil else {
             throw NetworkManagerError.networkNotFound(id)
         }
@@ -125,6 +163,18 @@ public actor WireGuardNetworkBackend {
 
         logger.info("Deleting WireGuard bridge network", metadata: ["network_id": "\(id)"])
 
+        // Delete from database first
+        do {
+            try await stateStore.deleteNetwork(id: id)
+            logger.debug("WireGuard network deleted from database", metadata: ["network_id": "\(id)"])
+        } catch {
+            logger.error("Failed to delete WireGuard network from database", metadata: [
+                "network_id": "\(id)",
+                "error": "\(error)"
+            ])
+            // Continue - still delete from memory
+        }
+
         networks.removeValue(forKey: id)
         networksByName.removeValue(forKey: networksByName.first(where: { $0.value == id })?.key ?? "")
         containerAttachments.removeValue(forKey: id)
@@ -135,7 +185,7 @@ public actor WireGuardNetworkBackend {
 
     /// Attach container to network
     ///
-    /// This creates the WireGuard hub on first attachment, and adds subsequent networks as peers.
+    /// Phase 2.2: Creates separate wgN/ethN interfaces for each network (wg0/eth0, wg1/eth1, etc.)
     public func attachContainer(
         containerID: String,
         container: Containerization.LinuxContainer,
@@ -164,54 +214,158 @@ public actor WireGuardNetworkBackend {
         // Get or create WireGuard client for this container
         let wgClient = try await getOrCreateWireGuardClient(containerID: containerID, container: container)
 
-        // Check if this is the first network for this container
-        let isFirstNetwork = containerHubs[containerID] == nil
+        // Calculate network index for this container (0 for first network, 1 for second, etc.)
+        var indices = containerNetworkIndices[containerID] ?? [:]
+        let networkIndex = UInt32(indices.count)
 
-        if isFirstNetwork {
-            // Create WireGuard hub (wg0) for this container
-            logger.info("Creating WireGuard hub for container (first network)", metadata: [
-                "container_id": "\(containerID)"
-            ])
+        logger.info("Creating WireGuard interface for network", metadata: [
+            "container_id": "\(containerID)",
+            "network_id": "\(networkID)",
+            "network_index": "\(networkIndex)",
+            "interface": "wg\(networkIndex)/eth\(networkIndex)"
+        ])
 
-            // Generate WireGuard private key
-            let privateKey = try generateWireGuardPrivateKey()
+        // Generate WireGuard private key for this network's interface
+        let privateKey = try generateWireGuardPrivateKey()
 
-            // Create hub with this network's IP address
-            let publicKey = try await wgClient.createHub(
-                privateKey: privateKey,
-                listenPort: 51820,  // WireGuard default port
-                ipAddress: ipAddress,
-                networkCIDR: metadata.subnet
-            )
+        // Calculate listen port (51820 + network_index)
+        let listenPort = 51820 + networkIndex
 
-            containerHubs[containerID] = publicKey
+        // Create wgN/ethN interface for this network (hub created lazily)
+        let result = try await wgClient.addNetwork(
+            networkID: networkID,
+            networkIndex: networkIndex,
+            privateKey: privateKey,
+            listenPort: listenPort,
+            peerEndpoint: "",  // Empty - no initial peer needed
+            peerPublicKey: "",  // Empty - no initial peer needed
+            ipAddress: ipAddress,
+            networkCIDR: metadata.subnet,
+            gateway: metadata.gateway
+        )
 
-            logger.info("WireGuard hub created", metadata: [
+        // Store interface metadata
+        indices[networkID] = networkIndex
+        containerNetworkIndices[containerID] = indices
+
+        var keys = containerInterfaceKeys[containerID] ?? [:]
+        keys[networkID] = result.publicKey
+        containerInterfaceKeys[containerID] = keys
+
+        logger.info("WireGuard interface created", metadata: [
+            "container_id": "\(containerID)",
+            "network_id": "\(networkID)",
+            "wg_interface": "\(result.wgInterface)",
+            "eth_interface": "\(result.ethInterface)",
+            "public_key": "\(result.publicKey)",
+            "ip_address": "\(ipAddress)"
+        ])
+
+        // Phase 2.4: Configure full mesh with other containers on this network
+        // Get this container's vmnet endpoint (vmnet IP:port for WireGuard UDP)
+        let thisEndpoint = try await wgClient.getVmnetEndpoint()
+
+        logger.info("Configuring full mesh for network", metadata: [
+            "container_id": "\(containerID)",
+            "network_id": "\(networkID)",
+            "this_endpoint": "\(thisEndpoint)",
+            "this_public_key": "\(result.publicKey)",
+            "this_ip": "\(ipAddress)"
+        ])
+
+        // Get all OTHER containers already on this network
+        let existingAttachments = containerAttachments[networkID] ?? [:]
+        let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
+
+        logger.debug("Found existing containers on network", metadata: [
+            "network_id": "\(networkID)",
+            "count": "\(otherContainerIDs.count)"
+        ])
+
+        // For each existing container on this network:
+        // 1. Add THIS container as a peer to THAT container
+        // 2. Add THAT container as a peer to THIS container
+        for otherContainerID in otherContainerIDs {
+            guard let otherAttachment = existingAttachments[otherContainerID],
+                  let otherClient = wireGuardClients[otherContainerID],
+                  let otherPublicKey = containerInterfaceKeys[otherContainerID]?[networkID],
+                  let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
+                logger.warning("Skipping peer - missing metadata", metadata: [
+                    "other_container_id": "\(otherContainerID)"
+                ])
+                continue
+            }
+
+            // Get the other container's vmnet endpoint
+            let otherEndpoint = try await otherClient.getVmnetEndpoint()
+
+            logger.debug("Configuring peer mesh", metadata: [
                 "container_id": "\(containerID)",
-                "public_key": "\(publicKey)",
-                "ip_address": "\(ipAddress)"
-            ])
-        } else {
-            // Add this network as a peer to existing hub
-            logger.info("Adding network to existing WireGuard hub", metadata: [
-                "container_id": "\(containerID)",
-                "network_id": "\(networkID)"
+                "peer_container_id": "\(otherContainerID)",
+                "peer_endpoint": "\(otherEndpoint)",
+                "peer_ip": "\(otherAttachment.ip)"
             ])
 
-            // TODO: In real implementation, we would need to:
-            // 1. Get the network's hub/gateway peer public key
-            // 2. Add peer to container's wg0 with allowed-ips for this network's CIDR
-            // For now, just add the IP address to the interface
+            // Add THIS container as a peer to OTHER container
+            do {
+                let _ = try await otherClient.addPeer(
+                    networkID: networkID,
+                    networkIndex: otherNetworkIndex,
+                    peerPublicKey: result.publicKey,
+                    peerEndpoint: thisEndpoint,
+                    peerIPAddress: ipAddress,
+                    peerName: containerName,
+                    peerContainerID: containerID,
+                    peerAliases: aliases
+                )
+                logger.debug("Added this container as peer to other container (DNS registered)", metadata: [
+                    "this_container": "\(containerID)",
+                    "other_container": "\(otherContainerID)"
+                ])
+            } catch {
+                logger.error("Failed to add this container as peer to other container", metadata: [
+                    "this_container": "\(containerID)",
+                    "other_container": "\(otherContainerID)",
+                    "error": "\(error)"
+                ])
+                // Continue - try to add other peers
+            }
 
-            try await wgClient.addNetwork(
-                networkID: networkID,
-                peerEndpoint: "",  // TODO: Network hub endpoint
-                peerPublicKey: "",  // TODO: Network hub public key
-                ipAddress: ipAddress,
-                networkCIDR: metadata.subnet,
-                gateway: metadata.gateway
-            )
+            // Add OTHER container as a peer to THIS container
+            do {
+                // Get other container's name and aliases (stored when it was attached)
+                let otherName = containerNames[otherContainerID] ?? otherContainerID
+                let otherAliases = Array(otherAttachment.aliases.dropLast())  // Drop container name (last element)
+
+                let _ = try await wgClient.addPeer(
+                    networkID: networkID,
+                    networkIndex: networkIndex,
+                    peerPublicKey: otherPublicKey,
+                    peerEndpoint: otherEndpoint,
+                    peerIPAddress: otherAttachment.ip,
+                    peerName: otherName,
+                    peerContainerID: otherContainerID,
+                    peerAliases: otherAliases
+                )
+                logger.debug("Added other container as peer to this container (DNS registered)", metadata: [
+                    "this_container": "\(containerID)",
+                    "other_container": "\(otherContainerID)"
+                ])
+            } catch {
+                logger.error("Failed to add other container as peer to this container", metadata: [
+                    "this_container": "\(containerID)",
+                    "other_container": "\(otherContainerID)",
+                    "error": "\(error)"
+                ])
+                // Continue - try to add other peers
+            }
         }
+
+        logger.info("Full mesh configured for container", metadata: [
+            "container_id": "\(containerID)",
+            "network_id": "\(networkID)",
+            "total_peers": "\(otherContainerIDs.count)"
+        ])
 
         // Generate MAC address (deterministic based on container ID and network ID)
         let mac = generateMACAddress(containerID: containerID, networkID: networkID)
@@ -236,6 +390,9 @@ public actor WireGuardNetworkBackend {
         containerNets.insert(networkID)
         containerNetworks[containerID] = containerNets
 
+        // Store container name for DNS (Phase 3.1)
+        containerNames[containerID] = containerName
+
         logger.info("Container attached to WireGuard network", metadata: [
             "container_id": "\(containerID)",
             "network_id": "\(networkID)",
@@ -246,6 +403,8 @@ public actor WireGuardNetworkBackend {
     }
 
     /// Detach container from network
+    ///
+    /// Phase 2.2: Removes wgN/ethN interface for this network
     public func detachContainer(
         containerID: String,
         container: Containerization.LinuxContainer,
@@ -270,27 +429,101 @@ public actor WireGuardNetworkBackend {
             throw NetworkManagerError.containerNotFound(containerID)
         }
 
-        // Remove network from container's hub
-        try await wgClient.removeNetwork(networkID: networkID)
+        // Get network index for this network
+        guard let indices = containerNetworkIndices[containerID],
+              let networkIndex = indices[networkID] else {
+            throw NetworkManagerError.notConnected(containerID, metadata.name)
+        }
 
-        // Check if this was the last network
-        var containerNets = containerNetworks[containerID] ?? []
-        containerNets.remove(networkID)
+        logger.info("Removing WireGuard interface", metadata: [
+            "container_id": "\(containerID)",
+            "network_id": "\(networkID)",
+            "network_index": "\(networkIndex)",
+            "interface": "wg\(networkIndex)/eth\(networkIndex)"
+        ])
 
-        if containerNets.isEmpty {
-            // Delete the WireGuard hub (no networks left)
-            logger.info("Deleting WireGuard hub (no networks remaining)", metadata: [
+        // Phase 2.4: Remove this container as a peer from all other containers on this network
+        // Get this container's public key
+        if let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
+            // Get all OTHER containers on this network
+            let existingAttachments = containerAttachments[networkID] ?? [:]
+            let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
+
+            logger.debug("Removing this container as peer from other containers", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "peer_count": "\(otherContainerIDs.count)"
+            ])
+
+            // Remove this container as a peer from each other container
+            for otherContainerID in otherContainerIDs {
+                guard let otherClient = wireGuardClients[otherContainerID],
+                      let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
+                    logger.warning("Skipping peer removal - missing metadata", metadata: [
+                        "other_container_id": "\(otherContainerID)"
+                    ])
+                    continue
+                }
+
+                do {
+                    // Get this container's name for DNS entry removal
+                    let thisName = containerNames[containerID] ?? containerID
+
+                    let _ = try await otherClient.removePeer(
+                        networkID: networkID,
+                        networkIndex: otherNetworkIndex,
+                        peerPublicKey: thisPublicKey,
+                        peerName: thisName
+                    )
+                    logger.debug("Removed this container as peer from other container (DNS unregistered)", metadata: [
+                        "this_container": "\(containerID)",
+                        "other_container": "\(otherContainerID)"
+                    ])
+                } catch {
+                    logger.error("Failed to remove this container as peer from other container", metadata: [
+                        "this_container": "\(containerID)",
+                        "other_container": "\(otherContainerID)",
+                        "error": "\(error)"
+                    ])
+                    // Continue - try to remove from other peers
+                }
+            }
+
+            logger.info("Peer cleanup completed", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "peers_cleaned": "\(otherContainerIDs.count)"
+            ])
+        }
+
+        // Remove network interface (wgN/ethN)
+        try await wgClient.removeNetwork(networkID: networkID, networkIndex: networkIndex)
+
+        // Update state
+        var updatedIndices = indices
+        updatedIndices.removeValue(forKey: networkID)
+
+        if updatedIndices.isEmpty {
+            // Last network removed - cleanup client (hub auto-deleted)
+            logger.info("Last network removed, cleaning up client", metadata: [
                 "container_id": "\(containerID)"
             ])
 
-            try await wgClient.deleteHub(force: true)
-
-            // Cleanup client and hub state
             try await wgClient.disconnect()
             wireGuardClients.removeValue(forKey: containerID)
-            containerHubs.removeValue(forKey: containerID)
+            containerNetworkIndices.removeValue(forKey: containerID)
+            containerInterfaceKeys.removeValue(forKey: containerID)
             containerNetworks.removeValue(forKey: containerID)
+            containerNames.removeValue(forKey: containerID)  // Phase 3.1: Clean up DNS name
         } else {
+            containerNetworkIndices[containerID] = updatedIndices
+
+            var keys = containerInterfaceKeys[containerID] ?? [:]
+            keys.removeValue(forKey: networkID)
+            containerInterfaceKeys[containerID] = keys
+
+            var containerNets = containerNetworks[containerID] ?? []
+            containerNets.remove(networkID)
             containerNetworks[containerID] = containerNets
         }
 

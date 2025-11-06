@@ -77,20 +77,6 @@ else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi
 
-# Generate Swift code for TAP Forwarder (containerization/vminitd/extensions/tap-forwarder/proto/tapforwarder.proto)
-echo ""
-echo "→ Generating Swift code for TAP Forwarder..."
-TAP_FORWARDER_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/tap-forwarder/proto/tapforwarder.proto"
-if [ -f "$TAP_FORWARDER_PROTO" ]; then
-    protoc "$TAP_FORWARDER_PROTO" \
-        --proto_path="$(dirname "$TAP_FORWARDER_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
-    echo "  ✓ Generated Swift code: tapforwarder.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - proto file not found: $TAP_FORWARDER_PROTO"
-fi
-
 # Generate Swift code for WireGuard Service (containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto)
 echo ""
 echo "→ Generating Swift code for WireGuard Service..."
@@ -103,69 +89,6 @@ if [ -f "$WIREGUARD_PROTO" ]; then
     echo "  ✓ Generated Swift code: wireguard.{pb,grpc}.swift"
 else
     echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
-fi
-
-# Generate Swift code for Builder API (Apple's container-builder-shim protocol)
-echo ""
-echo "→ Generating Swift code for Builder API..."
-BUILDER_PROTO="$PROJECT_ROOT/Sources/ContainerBuild/Proto/Builder.proto"
-BUILDER_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBuild/Generated"
-if [ -f "$BUILDER_PROTO" ]; then
-    protoc "$BUILDER_PROTO" \
-        --proto_path="$(dirname "$BUILDER_PROTO")" \
-        --swift_out=Visibility=Public:"$BUILDER_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$BUILDER_OUTPUT_DIR"
-    echo "  ✓ Generated Swift code: Builder.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - proto file not found: $BUILDER_PROTO"
-fi
-
-# Generate Swift code for BuildKit Control API
-echo ""
-echo "→ Generating Swift code for BuildKit Control API..."
-BUILDKIT_PROTO_DIR="$PROJECT_ROOT/Sources/ContainerBuild/proto"
-BUILDKIT_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBuild/Generated"
-
-# Create BuildKit output directory
-mkdir -p "$BUILDKIT_OUTPUT_DIR"
-
-# List of BuildKit proto files to compile (in dependency order)
-BUILDKIT_PROTOS=(
-    "$BUILDKIT_PROTO_DIR/google/rpc/status.proto"
-    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/solver/pb/ops.proto"
-    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/solver/errdefs/errdefs.proto"
-    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/sourcepolicy/pb/policy.proto"
-    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/api/types/worker.proto"
-    "$BUILDKIT_PROTO_DIR/github.com/moby/buildkit/api/services/control/control.proto"
-)
-
-# Check if all proto files exist
-ALL_EXIST=true
-for proto in "${BUILDKIT_PROTOS[@]}"; do
-    if [ ! -f "$proto" ]; then
-        echo "  ⚠ Missing proto file: $proto"
-        ALL_EXIST=false
-    fi
-done
-
-if [ "$ALL_EXIST" = true ]; then
-    # Generate Swift code for all BuildKit protos
-    # Note: We use --proto_path to point to the root of our vendored proto files
-    # so that imports like "github.com/moby/buildkit/..." resolve correctly
-    # We also include protoc's default include path for google/protobuf well-known types
-    PROTOC_INCLUDE=$(dirname $(dirname $(which protoc)))/include
-
-    # Compile all protos together so imports are resolved
-    protoc "${BUILDKIT_PROTOS[@]}" \
-        --proto_path="$BUILDKIT_PROTO_DIR" \
-        --proto_path="$PROTOC_INCLUDE" \
-        --swift_out=Visibility=Public:"$BUILDKIT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$BUILDKIT_OUTPUT_DIR"
-
-    echo "  ✓ Generated Swift code for BuildKit in $BUILDKIT_OUTPUT_DIR"
-    echo "  ✓ Files: ops.pb.swift, errdefs.pb.swift, policy.pb.swift, worker.pb.swift, control.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - some proto files not found"
 fi
 
 echo ""

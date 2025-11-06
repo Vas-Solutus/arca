@@ -273,6 +273,102 @@ public struct Arca_Wireguard_V1_GetVmnetEndpointResponse: Sendable {
   public init() {}
 }
 
+/// Request to add a peer to a WireGuard interface
+public struct Arca_Wireguard_V1_AddPeerRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Network ID this peer belongs to
+  public var networkID: String = String()
+
+  /// Network index (which wgN interface to add peer to)
+  public var networkIndex: UInt32 = 0
+
+  /// Peer's WireGuard public key (Base64-encoded)
+  public var peerPublicKey: String = String()
+
+  /// Peer's vmnet endpoint (IP:port, e.g., "192.168.65.5:51820")
+  public var peerEndpoint: String = String()
+
+  /// Peer's overlay IP address (for allowed-ips routing, e.g., "172.18.0.3")
+  public var peerIpAddress: String = String()
+
+  /// Peer's container name (for DNS resolution, e.g., "web1")
+  public var peerName: String = String()
+
+  /// Peer's container ID (Docker ID, for logging/debugging)
+  public var peerContainerID: String = String()
+
+  /// Peer's DNS aliases (additional names that resolve to this IP)
+  public var peerAliases: [String] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Wireguard_V1_AddPeerResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  /// Total number of peers on this interface
+  public var totalPeers: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Request to remove a peer from a WireGuard interface
+public struct Arca_Wireguard_V1_RemovePeerRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Network ID this peer belongs to
+  public var networkID: String = String()
+
+  /// Network index (which wgN interface to remove peer from)
+  public var networkIndex: UInt32 = 0
+
+  /// Peer's WireGuard public key to remove (Base64-encoded)
+  public var peerPublicKey: String = String()
+
+  /// Peer's container name (for DNS entry removal)
+  public var peerName: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Wireguard_V1_RemovePeerResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  /// Remaining number of peers on this interface
+  public var remainingPeers: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "arca.wireguard.v1"
@@ -749,6 +845,196 @@ extension Arca_Wireguard_V1_GetVmnetEndpointResponse: SwiftProtobuf.Message, Swi
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.endpoint != rhs.endpoint {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_AddPeerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AddPeerRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0\u{3}peer_public_key\0\u{3}peer_endpoint\0\u{3}peer_ip_address\0\u{3}peer_name\0\u{3}peer_container_id\0\u{3}peer_aliases\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.networkIndex) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.peerPublicKey) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.peerEndpoint) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.peerIpAddress) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.peerName) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.peerContainerID) }()
+      case 8: try { try decoder.decodeRepeatedStringField(value: &self.peerAliases) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.networkID.isEmpty {
+      try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
+    }
+    if self.networkIndex != 0 {
+      try visitor.visitSingularUInt32Field(value: self.networkIndex, fieldNumber: 2)
+    }
+    if !self.peerPublicKey.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerPublicKey, fieldNumber: 3)
+    }
+    if !self.peerEndpoint.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerEndpoint, fieldNumber: 4)
+    }
+    if !self.peerIpAddress.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerIpAddress, fieldNumber: 5)
+    }
+    if !self.peerName.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerName, fieldNumber: 6)
+    }
+    if !self.peerContainerID.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerContainerID, fieldNumber: 7)
+    }
+    if !self.peerAliases.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.peerAliases, fieldNumber: 8)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_AddPeerRequest, rhs: Arca_Wireguard_V1_AddPeerRequest) -> Bool {
+    if lhs.networkID != rhs.networkID {return false}
+    if lhs.networkIndex != rhs.networkIndex {return false}
+    if lhs.peerPublicKey != rhs.peerPublicKey {return false}
+    if lhs.peerEndpoint != rhs.peerEndpoint {return false}
+    if lhs.peerIpAddress != rhs.peerIpAddress {return false}
+    if lhs.peerName != rhs.peerName {return false}
+    if lhs.peerContainerID != rhs.peerContainerID {return false}
+    if lhs.peerAliases != rhs.peerAliases {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_AddPeerResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AddPeerResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}total_peers\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.totalPeers) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    if self.totalPeers != 0 {
+      try visitor.visitSingularUInt32Field(value: self.totalPeers, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_AddPeerResponse, rhs: Arca_Wireguard_V1_AddPeerResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.totalPeers != rhs.totalPeers {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_RemovePeerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".RemovePeerRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0\u{3}peer_public_key\0\u{3}peer_name\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.networkID) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.networkIndex) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.peerPublicKey) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.peerName) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.networkID.isEmpty {
+      try visitor.visitSingularStringField(value: self.networkID, fieldNumber: 1)
+    }
+    if self.networkIndex != 0 {
+      try visitor.visitSingularUInt32Field(value: self.networkIndex, fieldNumber: 2)
+    }
+    if !self.peerPublicKey.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerPublicKey, fieldNumber: 3)
+    }
+    if !self.peerName.isEmpty {
+      try visitor.visitSingularStringField(value: self.peerName, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_RemovePeerRequest, rhs: Arca_Wireguard_V1_RemovePeerRequest) -> Bool {
+    if lhs.networkID != rhs.networkID {return false}
+    if lhs.networkIndex != rhs.networkIndex {return false}
+    if lhs.peerPublicKey != rhs.peerPublicKey {return false}
+    if lhs.peerName != rhs.peerName {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_RemovePeerResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".RemovePeerResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}remaining_peers\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.remainingPeers) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    if self.remainingPeers != 0 {
+      try visitor.visitSingularUInt32Field(value: self.remainingPeers, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_RemovePeerResponse, rhs: Arca_Wireguard_V1_RemovePeerResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.remainingPeers != rhs.remainingPeers {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
