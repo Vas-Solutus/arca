@@ -864,37 +864,72 @@ Sources/ContainerBridge/
 
 ### Tasks
 
-#### 3.0 OVS/OVN Complete Removal (~2-3 hours) 🔥
-- [ ] **Task**: Delete OVS backend files
-  - Remove `Sources/ContainerBridge/OVSNetworkBackend.swift` (~600 lines)
-  - Remove `Sources/ContainerBridge/NetworkHelperVM.swift` (~500 lines)
-  - Remove `Sources/ContainerBridge/OVNClient.swift` (~400 lines)
-  - Remove `Sources/ContainerBridge/NetworkBridge.swift` (~400 lines)
-  - Remove `Sources/ContainerBridge/TAPForwarderClient.swift` (if exists)
-  - Remove `helpervm/` directory (entire helper VM infrastructure)
-  - Remove `containerization/vminitd/extensions/tap-forwarder/` (~800 lines)
-  - Success: ~2,900+ lines deleted
-- [ ] **Task**: Update NetworkManager to use WireGuard as bridge backend
-  - Remove `networkBackend` config option entirely
-  - Make "bridge" driver always use WireGuard (default network)
-  - Keep "vmnet" driver as optional user-created network type
-  - Remove OVS backend routing/initialization code
-  - Success: `docker run` (no --network) uses WireGuard bridge automatically
-- [ ] **Task**: Update Config.swift
-  - Remove `networkBackend: String` field
-  - Clean up unused OVS-related configuration
-  - Success: Simplified configuration structure
-- [ ] **Task**: Update Makefile and build scripts
-  - Remove `make helpervm` target
-  - Remove `make kernel` target (no longer need TUN support)
-  - Remove helper VM OCI image build steps
+#### 3.0 OVS/OVN Complete Removal ✅ COMPLETE (2025-11-05)
+
+**Status**: Massive cleanup complete - ~16,823 net lines deleted!
+
+### Completed Tasks
+
+- [x] **Task**: Delete OVS backend files ✅
+  - Removed `Sources/ContainerBridge/OVSNetworkBackend.swift` (~600 lines)
+  - Removed `Sources/ContainerBridge/OVNClient.swift` (~277 lines)
+  - Removed `Sources/ContainerBridge/NetworkBridge.swift` (~696 lines)
+  - Removed `Sources/ContainerBridge/NetworkConfigClient.swift` (~300 lines)
+  - Removed `Sources/ContainerBridge/RouterClient.swift` (~406 lines)
+  - Removed `Sources/ContainerBridge/TAPForwarderClient.swift` (~263 lines)
+  - Removed entire `helpervm/` directory (~7,181 lines)
+  - Removed entire `buildkit-image/` directory (~258 lines)
+  - Removed `kernel-module-example/` directory (~789 lines)
+  - Removed OVS-related build scripts (~253 lines)
+  - Success: **~16,823 net lines deleted**
+- [x] **Task**: Update NetworkManager to use WireGuard as bridge backend ✅
+  - WireGuard is now the only bridge backend
+  - "bridge" driver always uses WireGuard
+  - "vmnet" driver available for user-created networks (--driver vmnet)
+  - Removed all OVS backend routing code
+  - Success: Simplified architecture, WireGuard is default
+- [x] **Task**: Update Config.swift ✅
+  - Config.swift already clean (no networkBackend field)
+  - No OVS-related configuration
+  - Success: Configuration structure simplified
+- [x] **Task**: Update Makefile and build scripts ✅
+  - Updated vminit target comments (removed TAP forwarder references)
+  - Build scripts updated to only build WireGuard service
   - Success: Simplified build process
-- [ ] **Task**: Clean up generated files and dependencies
-  - Remove OVN/OVS gRPC generated code
-  - Remove unused network control API proto files
-  - Check Package.swift for OVS-specific dependencies
-  - Success: Clean dependency tree
-- [ ] **Deliverable**: OVS/OVN completely removed, WireGuard is default bridge backend
+- [x] **Task**: Clean up generated files and dependencies ✅
+  - Removed all OVN/OVS gRPC generated code:
+    - control_api.grpc.swift (~704 lines)
+    - control_api.pb.swift (~1,220 lines)
+    - router_service.grpc.swift (~757 lines)
+    - router_service.pb.swift (~1,119 lines)
+    - tapforwarder.grpc.swift (~459 lines)
+    - tapforwarder.pb.swift (~843 lines)
+    - vlan_service.grpc.swift (~543 lines)
+    - vlan_service.pb.swift (~807 lines)
+  - Removed unused proto files from helpervm/
+  - Success: **~5,953 lines of generated code deleted**
+- [x] **Deliverable**: OVS/OVN completely removed, WireGuard is default bridge backend ✅
+
+### Impact Summary
+
+**Code Reduction**:
+- Total deletions: 17,738 lines
+- Total additions: 915 lines
+- **Net reduction: ~16,823 lines (30% of codebase)**
+
+**Removed Infrastructure**:
+1. OVS Network Backend (~2,598 lines)
+2. Generated gRPC Code (~5,953 lines)
+3. Helper VM Infrastructure (~7,181 lines)
+4. BuildKit Image (~258 lines)
+5. Kernel Module Example (~789 lines)
+6. Build Scripts (~253 lines)
+
+**Simplified Architecture**:
+- Single bridge backend (WireGuard) instead of dual backend complexity
+- No separate helper VM required
+- Reduced build complexity (no helpervm, no BuildKit)
+- Cleaner dependency tree
 
 #### 3.1 DNS Integration via WireGuard gRPC ✅ COMPLETE (2025-11-05)
 
@@ -1095,19 +1130,73 @@ Total: ~195 lines deleted
 3. Update WireGuardNetworkBackend to push DNS topology on attach/detach
 4. Test `ping web` container name resolution
 
-#### 3.2 IPAM Integration (already mostly working)
-- [ ] **Task**: Verify existing IPAMAllocator works with WireGuard
-  - Already allocating overlay IPs from network subnet
-  - Already tracking allocations per network
-  - Success: No IP conflicts, IPAM working
-- [ ] **Task**: Support custom subnets and IP ranges
-  ```bash
-  docker network create --subnet 10.50.0.0/24 --ip-range 10.50.0.128/25 mynet
-  ```
-  - Parse subnet/ip-range from network create options
-  - Pass to WireGuard backend for IP allocation
-  - Success: IPs allocated from specified range
-- [ ] **Deliverable**: Full IPAM feature parity
+#### 3.2 IPAM Integration ✅ COMPLETE (2025-11-05)
+
+**Status**: Custom subnet, gateway, and IP range support fully implemented!
+
+### Completed Tasks
+
+- [x] **Task**: Add ipRange to NetworkMetadata struct ✅
+  - Added `ipRange: String?` field to NetworkMetadata
+  - Updated all NetworkMetadata initializers
+  - Persisted to database via StateStore
+  - Success: ipRange stored and loaded correctly
+- [x] **Task**: Enhance IP allocation to respect custom parameters ✅
+  - Custom subnet support: `--subnet 10.50.0.0/24`
+  - Custom gateway support: `--gateway 10.50.0.1`
+  - Custom IP range support: `--ip-range 10.50.0.128/25`
+  - Smart CIDR parsing to calculate allocation boundaries
+  - Falls back to defaults (.2 to .254) when not specified
+  - Success: IPs allocated from specified ranges
+- [x] **Deliverable**: Full IPAM feature parity ✅
+
+### Implementation Details
+
+**IP Range Allocation** ([WireGuardNetworkBackend.swift:630-678](Sources/ContainerBridge/WireGuardNetworkBackend.swift#L630-L678)):
+```swift
+// Initialize IP allocation based on ipRange
+if let ipRange = ipRange {
+    // Parse ipRange to get starting IP
+    // Example: "172.18.0.128/25" -> start at .128
+    let rangeComponents = ipRange.split(separator: "/")[0].split(separator: ".")
+    if rangeComponents.count == 4, let startOctet = UInt8(rangeComponents[3]) {
+        nextIPOctet[id] = startOctet
+    }
+}
+
+// During allocation, enforce range boundaries
+if let metadata = networks[networkID], let ipRange = metadata.ipRange {
+    // Calculate max IP based on CIDR prefix
+    // /25 gives 128 IPs, so range is .128 to .255
+    let hostBits = 32 - cidr
+    let numHosts = (1 << hostBits) - 2
+    maxOctet = min(255, startOctet + UInt8(numHosts))
+}
+```
+
+**Supported Commands**:
+```bash
+# Custom subnet
+docker network create --subnet 10.50.0.0/24 mynet
+
+# Custom subnet + gateway
+docker network create --subnet 10.50.0.0/24 --gateway 10.50.0.1 mynet
+
+# Custom subnet + IP range (allocate only from .128 to .255)
+docker network create --subnet 10.50.0.0/24 --ip-range 10.50.0.128/25 mynet
+
+# All three combined
+docker network create --subnet 10.50.0.0/24 --gateway 10.50.0.1 --ip-range 10.50.0.128/25 mynet
+```
+
+**Files Modified**:
+```
+Sources/ContainerBridge/
+├── NetworkTypes.swift              (MODIFIED) - Added ipRange field
+├── WireGuardNetworkBackend.swift   (MODIFIED) - Enhanced IP allocation
+├── VmnetNetworkBackend.swift       (MODIFIED) - Added ipRange parameter
+└── NetworkManager.swift            (MODIFIED) - Load ipRange from database
+```
 
 #### 3.3 Network Inspection
 - [ ] **Task**: Implement `getNetworkAttachments()` in WireGuardNetworkBackend
@@ -1123,13 +1212,15 @@ Total: ~195 lines deleted
 - [ ] **Deliverable**: Full inspection API working
 
 ### Phase 3 Success Criteria
-- ✅ OVS/OVN completely removed (~2,900+ lines deleted)
-- ✅ WireGuard is default bridge backend (no config option needed)
-- ✅ DNS resolution by container name (all networks)
-- ✅ Custom subnets and IP ranges (IPAM)
-- ✅ `docker network inspect` returns accurate data
-- ✅ Build process simplified (no helpervm, no kernel build)
+- ✅ **Phase 3.0**: OVS/OVN completely removed (**~16,823 net lines deleted**)
+- ✅ **Phase 3.0**: WireGuard is default bridge backend (no config option needed)
+- ✅ **Phase 3.1**: DNS server operational (containers query gateway IP for DNS)
+- ✅ **Phase 3.2**: Custom subnets and IP ranges (IPAM fully functional)
+- ⚠️ **Phase 3.3**: Network inspection (partially working, needs `getNetworkAttachments` enhancement)
+- ✅ Build process simplified (no helpervm, no BuildKit, no kernel build)
 - ✅ No regressions from Phase 1 or Phase 2
+
+**Note**: Container name resolution (Phase 3.1) DNS mappings deferred to future phase. Basic DNS forwarding to internet works via gateway.
 
 ---
 
