@@ -664,6 +664,7 @@ public struct ContainerHandlers: Sendable {
 
                         // Encode and write JSON
                         let encoder = JSONEncoder()
+                        encoder.outputFormatting = .withoutEscapingSlashes
                         encoder.dateEncodingStrategy = .iso8601
                         let jsonData = try encoder.encode(statsResponse)
 

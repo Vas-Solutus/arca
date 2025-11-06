@@ -999,7 +999,9 @@ public final class ArcaDaemon: @unchecked Sendable {
                 // Return streaming response (newline-delimited JSON like pull)
                 let jsonData: Data
                 do {
-                    jsonData = try JSONEncoder().encode(response)
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = .withoutEscapingSlashes
+                    jsonData = try encoder.encode(response)
                 } catch {
                     return .standard(HTTPResponse.internalServerError("Failed to encode response"))
                 }
