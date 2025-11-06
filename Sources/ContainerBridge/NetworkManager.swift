@@ -2,20 +2,19 @@ import Foundation
 import Logging
 import Containerization
 
-/// Manages Docker networks with configurable backend:
-/// - OVS backend (default): Full Docker compatibility with OVS/OVN helper VM
-/// - vmnet backend: High performance native vmnet (limited features)
+/// Manages Docker networks with WireGuard as the default bridge backend:
+/// - WireGuard backend (default): Full Docker compatibility with ~1ms latency
+/// - vmnet backend: High performance native vmnet (limited features, user-created only)
 ///
 /// NetworkManager acts as a facade that delegates to the appropriate backend
-/// based on user configuration and network driver type.
+/// based on user-specified driver type.
 public actor NetworkManager {
     private let config: ArcaConfig
     private let logger: Logger
     private let stateStore: StateStore
     private let containerManager: ContainerManager
 
-    // Backends (initialized based on config)
-    private var ovsBackend: OVSNetworkBackend?
+    // Backends
     private var vmnetBackend: VmnetNetworkBackend?
     private var wireGuardBackend: WireGuardNetworkBackend?
 
@@ -24,117 +23,30 @@ public actor NetworkManager {
     private var networkDrivers: [String: String] = [:]
     private var networkNames: [String: String] = [:]  // name -> ID mapping
 
-    // Control plane for OVS backend
-    private var controlPlaneContainer: Containerization.LinuxContainer?
-    private var ovnClient: OVNClient?
-
-    // Dependencies for OVS backend
-    private let networkBridge: NetworkBridge?
-
     /// Initialize NetworkManager with configuration
     public init(
         config: ArcaConfig,
         stateStore: StateStore,
         containerManager: ContainerManager,
-        networkBridge: NetworkBridge?,
         logger: Logger
     ) {
         self.config = config
         self.stateStore = stateStore
         self.containerManager = containerManager
-        self.networkBridge = networkBridge
         self.logger = logger
     }
 
     /// Initialize the network manager and backends
     public func initialize() async throws {
-        logger.info("Initializing NetworkManager", metadata: [
-            "backend": "\(config.networkBackend.rawValue)"
-        ])
+        logger.info("Initializing NetworkManager (WireGuard default)")
 
-        switch config.networkBackend {
-        case .ovs:
-            // Initialize OVS backend (requires control plane container)
-            guard let networkBridge = networkBridge else {
-                throw NetworkManagerError.helperVMNotReady
-            }
+        // Always initialize WireGuard backend as the default
+        let backend = WireGuardNetworkBackend(logger: logger, stateStore: stateStore)
+        self.wireGuardBackend = backend
 
-            // Create or get control plane container
-            try await ensureControlPlane()
+        logger.info("WireGuard backend initialized (default for bridge networks)")
 
-            // Create OVN client
-            guard let container = controlPlaneContainer else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            let client = OVNClient(logger: logger)
-
-            // Retry connection with exponential backoff
-            // Control plane needs time to initialize OVS/OVN services before accepting connections
-            let maxAttempts = 10
-            var attempt = 0
-            var lastError: Error?
-
-            while attempt < maxAttempts {
-                attempt += 1
-
-                do {
-                    logger.info("Attempting to connect to control plane", metadata: [
-                        "attempt": "\(attempt)/\(maxAttempts)"
-                    ])
-                    try await client.connect(container: container, vsockPort: 9999)
-                    self.ovnClient = client
-                    logger.info("OVN client connected to control plane", metadata: [
-                        "attempts": "\(attempt)"
-                    ])
-                    break
-                } catch {
-                    lastError = error
-                    logger.warning("Connection attempt failed", metadata: [
-                        "attempt": "\(attempt)/\(maxAttempts)",
-                        "error": "\(error)"
-                    ])
-
-                    if attempt < maxAttempts {
-                        // Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, 16s, 16s, 16s, 16s
-                        let backoffSeconds = min(0.5 * Double(1 << (attempt - 1)), 16.0)
-                        logger.debug("Retrying in \(backoffSeconds)s...")
-                        try await Task.sleep(for: .seconds(backoffSeconds))
-                    }
-                }
-            }
-
-            // If all attempts failed, throw the last error
-            if self.ovnClient == nil {
-                logger.error("Failed to connect to control plane after \(maxAttempts) attempts")
-                throw lastError ?? NetworkManagerError.helperVMNotReady
-            }
-
-            let backend = OVSNetworkBackend(
-                stateStore: stateStore,
-                ovnClient: client,
-                networkBridge: networkBridge,
-                logger: logger
-            )
-            try await backend.initialize()
-            self.ovsBackend = backend
-
-            logger.info("OVS backend initialized")
-
-        case .vmnet:
-            // Initialize vmnet backend (no dependencies)
-            let backend = VmnetNetworkBackend(logger: logger)
-            self.vmnetBackend = backend
-
-            logger.info("vmnet backend initialized")
-
-        case .wireguard:
-            // Initialize WireGuard backend (no dependencies)
-            let backend = WireGuardNetworkBackend(logger: logger)
-            self.wireGuardBackend = backend
-
-            logger.info("WireGuard backend initialized")
-        }
+        // vmnet backend is created on-demand when explicitly requested
 
         // Load network driver and name mappings from StateStore
         // This allows us to route network operations to the correct backend efficiently
@@ -150,91 +62,54 @@ public actor NetworkManager {
             // Continue - backends will still work, just without persisted mappings
         }
 
+        // Create default networks (idempotent - only creates if they don't exist)
+        try await createDefaultNetworks()
+
         logger.info("NetworkManager initialized successfully")
     }
 
-    /// Ensure control plane container exists and is running
-    private func ensureControlPlane() async throws {
-        logger.info("Ensuring control plane container exists and is running")
+    /// Create default Docker networks (bridge, none)
+    /// This is idempotent - only creates networks that don't already exist
+    private func createDefaultNetworks() async throws {
+        logger.info("Creating default networks (if not exist)")
 
-        // Check if control plane already exists
-        if let existingID = await containerManager.resolveContainer(idOrName: "arca-control-plane") {
-            logger.info("Control plane container already exists", metadata: ["id": "\(existingID)"])
-
-            // Get the container object
-            let container = try? await containerManager.getLinuxContainer(dockerID: existingID)
-            if let container = container {
-                self.controlPlaneContainer = container
-                logger.info("Control plane container retrieved")
-
-                // Set control plane on network bridge
-                if let bridge = networkBridge {
-                    await bridge.setControlPlane(container)
-                    logger.info("Network bridge configured with control plane container")
-                }
-
-                // Check if it's running
-                if let info = try? await containerManager.getContainer(id: existingID) {
-                    if info.state.status == "running" {
-                        logger.info("Control plane container is already running")
-                        return
-                    }
-                }
-
-                // Start it if it's not running
-                logger.info("Starting control plane container")
-                try await containerManager.startContainer(id: existingID)
-                logger.info("Control plane container started")
-                return
-            }
+        // 1. Create "bridge" network (172.17.0.0/16 - Docker's default)
+        if await getNetworkByName(name: "bridge") == nil {
+            logger.info("Creating default 'bridge' network (172.17.0.0/16)")
+            let _ = try await createNetwork(
+                name: "bridge",
+                driver: "bridge",
+                subnet: "172.17.0.0/16",
+                gateway: "172.17.0.1",
+                ipRange: nil,
+                options: [:],
+                labels: [:],
+                isDefault: true
+            )
+            logger.info("Created default 'bridge' network")
+        } else {
+            logger.info("Default 'bridge' network already exists")
         }
 
-        // Create control plane container
-        logger.info("Creating control plane container")
-
-        // Create volume directory for OVN data
-        let volumePath = NSString(string: "~/.arca/control-plane/ovn-data").expandingTildeInPath
-        try FileManager.default.createDirectory(atPath: volumePath, withIntermediateDirectories: true)
-
-        let dockerID = try await containerManager.createContainer(
-            image: "arca-control-plane:latest",
-            name: "arca-control-plane",
-            entrypoint: nil,  // Use image default entrypoint (["/usr/local/bin/startup.sh"])
-            command: nil,  // Use image default cmd (empty)
-            env: nil,
-            workingDir: nil,
-            labels: [
-                "com.arca.internal": "true",
-                "com.arca.role": "control-plane",
-                "com.arca.skip-embedded-dns": "true"  // vmnet containers use gateway DNS, not embedded-DNS
-            ],
-            attachStdin: false,
-            attachStdout: false,
-            attachStderr: false,
-            tty: false,
-            openStdin: false,
-            networkMode: "vmnet",  // Use Apple NATInterface for internet access
-            restartPolicy: RestartPolicy(name: "always", maximumRetryCount: 0),
-            binds: ["\(volumePath):/etc/ovn"]
-        )
-
-        logger.info("Control plane container created", metadata: ["id": "\(dockerID)"])
-
-        // Start the container
-        try await containerManager.startContainer(id: dockerID)
-        logger.info("Control plane container started")
-
-        // Get the container object
-        guard let container = try? await containerManager.getLinuxContainer(dockerID: dockerID) else {
-            throw NetworkManagerError.helperVMNotReady
+        // 2. Create "none" network (null driver - no network interfaces)
+        if await getNetworkByName(name: "none") == nil {
+            logger.info("Creating default 'none' network (null driver)")
+            let _ = try await createNetwork(
+                name: "none",
+                driver: "null",
+                subnet: nil,
+                gateway: nil,
+                ipRange: nil,
+                options: [:],
+                labels: [:],
+                isDefault: true
+            )
+            logger.info("Created default 'none' network")
+        } else {
+            logger.info("Default 'none' network already exists")
         }
-        self.controlPlaneContainer = container
 
-        // Set control plane on network bridge
-        if let bridge = networkBridge {
-            await bridge.setControlPlane(container)
-            logger.info("Network bridge configured with control plane container")
-        }
+        logger.info("Default networks created successfully")
     }
 
     // MARK: - Network CRUD Operations
@@ -250,8 +125,8 @@ public actor NetworkManager {
         labels: [String: String],
         isDefault: Bool = false
     ) async throws -> String {
-        // Determine effective driver (explicit driver or default backend)
-        let effectiveDriver = driver ?? config.networkBackend.rawValue
+        // Determine effective driver (explicit driver or "bridge" as default)
+        let effectiveDriver = driver ?? "bridge"
 
         // Generate network ID
         let networkID = generateNetworkID()
@@ -269,18 +144,28 @@ public actor NetworkManager {
 
         // Route to appropriate backend
         switch effectiveDriver {
-        case "bridge":
-            // Use configured default backend for bridge networks
-            return try await createBridgeNetwork(
+        case "bridge", "wireguard":
+            // Bridge networks always use WireGuard backend
+            // "wireguard" is an alias for "bridge" for backwards compatibility
+            guard let backend = wireGuardBackend else {
+                throw NetworkManagerError.backendNotReady
+            }
+
+            let metadata = try await backend.createBridgeNetwork(
                 id: networkID,
                 name: name,
                 subnet: subnet,
                 gateway: gateway,
                 ipRange: ipRange,
                 options: options,
-                labels: labels,
-                isDefault: isDefault
+                labels: labels
             )
+
+            // Register in mappings
+            networkDrivers[networkID] = "bridge"  // Always register as "bridge"
+            networkNames[name] = networkID
+
+            return metadata.id
 
         case "vmnet":
             // Explicitly requested vmnet driver
@@ -306,126 +191,40 @@ public actor NetworkManager {
 
             return metadata.id
 
-        case "overlay":
-            // Overlay networks always use OVS/OVN
-            guard let backend = ovsBackend else {
-                throw NetworkManagerError.unsupportedDriver("overlay (requires OVS backend)")
-            }
+        case "null":
+            // "null" driver - no network interfaces attached to containers
+            // Used for the default "none" network
+            let createdDate = Date()
 
-            let metadata = try await backend.createOverlayNetwork(
+            // Persist to StateStore
+            let optionsJSON = try JSONEncoder().encode(options)
+            let labelsJSON = try JSONEncoder().encode(labels)
+
+            try await stateStore.saveNetwork(
                 id: networkID,
                 name: name,
-                subnet: subnet,
-                gateway: gateway,
-                ipRange: ipRange,
-                options: options,
-                labels: labels
+                driver: "null",
+                scope: "local",
+                createdAt: createdDate,
+                subnet: "",
+                gateway: "",
+                ipRange: nil,
+                optionsJSON: String(data: optionsJSON, encoding: .utf8),
+                labelsJSON: String(data: labelsJSON, encoding: .utf8),
+                isDefault: isDefault
             )
 
             // Register in mappings
-            networkDrivers[networkID] = metadata.driver
+            networkDrivers[networkID] = "null"
             networkNames[name] = networkID
 
-            return metadata.id
+            logger.info("Created null network", metadata: ["name": "\(name)", "id": "\(networkID)"])
 
-        case "wireguard":
-            // Explicitly requested WireGuard driver
-            if wireGuardBackend == nil {
-                // If WireGuard backend not initialized, create it on-demand
-                let backend = WireGuardNetworkBackend(logger: logger)
-                self.wireGuardBackend = backend
-            }
-
-            let metadata = try await wireGuardBackend!.createBridgeNetwork(
-                id: networkID,
-                name: name,
-                subnet: subnet,
-                gateway: gateway,
-                ipRange: ipRange,
-                options: options,
-                labels: labels
-            )
-
-            // Register in mappings
-            networkDrivers[networkID] = metadata.driver
-            networkNames[name] = networkID
-
-            return metadata.id
+            return networkID
 
         default:
             throw NetworkManagerError.unsupportedDriver(effectiveDriver)
         }
-    }
-
-    /// Create a bridge network using the configured default backend
-    private func createBridgeNetwork(
-        id: String,
-        name: String,
-        subnet: String?,
-        gateway: String?,
-        ipRange: String?,
-        options: [String: String],
-        labels: [String: String],
-        isDefault: Bool
-    ) async throws -> String {
-        let driver: String
-
-        switch config.networkBackend {
-        case .ovs:
-            guard let backend = ovsBackend else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            let metadata = try await backend.createBridgeNetwork(
-                id: id,
-                name: name,
-                subnet: subnet,
-                gateway: gateway,
-                ipRange: ipRange,
-                options: options,
-                labels: labels,
-                isDefault: isDefault
-            )
-            driver = metadata.driver
-
-        case .vmnet:
-            guard let backend = vmnetBackend else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            let metadata = try await backend.createBridgeNetwork(
-                id: id,
-                name: name,
-                subnet: subnet,
-                gateway: gateway,
-                ipRange: ipRange,
-                options: options,
-                labels: labels
-            )
-            driver = metadata.driver
-
-        case .wireguard:
-            guard let backend = wireGuardBackend else {
-                throw NetworkManagerError.helperVMNotReady
-            }
-
-            let metadata = try await backend.createBridgeNetwork(
-                id: id,
-                name: name,
-                subnet: subnet,
-                gateway: gateway,
-                ipRange: ipRange,
-                options: options,
-                labels: labels
-            )
-            driver = metadata.driver
-        }
-
-        // Register network driver and name mappings for efficient routing
-        networkDrivers[id] = driver
-        networkNames[name] = id
-
-        return id
     }
 
     /// Delete a network
@@ -440,27 +239,12 @@ public actor NetworkManager {
 
         // Route to appropriate backend based on driver
         switch driver {
-        case "bridge":
-            // Bridge networks use the configured default backend
-            switch config.networkBackend {
-            case .ovs:
-                guard let backend = ovsBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.deleteNetwork(id: id)
-
-            case .vmnet:
-                guard let backend = vmnetBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.deleteBridgeNetwork(id: id)
-
-            case .wireguard:
-                guard let backend = wireGuardBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.deleteBridgeNetwork(id: id)
+        case "bridge", "wireguard":
+            // Bridge networks always use WireGuard backend
+            guard let backend = wireGuardBackend else {
+                throw NetworkManagerError.backendNotReady
             }
+            try await backend.deleteBridgeNetwork(id: id)
 
         case "vmnet":
             // Explicitly requested vmnet driver
@@ -469,19 +253,10 @@ public actor NetworkManager {
             }
             try await backend.deleteBridgeNetwork(id: id)
 
-        case "wireguard":
-            // Explicitly requested WireGuard driver
-            guard let backend = wireGuardBackend else {
-                throw NetworkManagerError.unsupportedDriver("wireguard (backend not initialized)")
-            }
-            try await backend.deleteBridgeNetwork(id: id)
-
-        case "overlay":
-            // Overlay networks always use OVS/OVN
-            guard let backend = ovsBackend else {
-                throw NetworkManagerError.unsupportedDriver("overlay (requires OVS backend)")
-            }
-            try await backend.deleteNetwork(id: id)
+        case "null":
+            // "null" driver - just remove from StateStore
+            try await stateStore.deleteNetwork(id: id)
+            logger.info("Deleted null network", metadata: ["id": "\(id)"])
 
         default:
             throw NetworkManagerError.unsupportedDriver(driver)
@@ -511,81 +286,44 @@ public actor NetworkManager {
 
         // Route to appropriate backend based on driver
         switch driver {
-        case "bridge":
-            // Bridge networks route based on configured backend
-            switch config.networkBackend {
-            case .ovs:
-                guard let backend = ovsBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                return try await backend.attachContainer(
-                    containerID: containerID,
-                    container: container,
-                    networkID: networkID,
-                    containerName: containerName,
-                    aliases: aliases
-                )
-
-            case .vmnet:
-                guard let backend = vmnetBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                // vmnet backend doesn't support dynamic attach
-                try await backend.attachContainer(
-                    containerID: containerID,
-                    networkID: networkID,
-                    ipAddress: "",  // Not used (will throw error)
-                    gateway: ""     // Not used (will throw error)
-                )
-                fatalError("vmnet backend should have thrown dynamicAttachNotSupported")
-
-            case .wireguard:
-                guard let backend = wireGuardBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                return try await backend.attachContainer(
-                    containerID: containerID,
-                    container: container,
-                    networkID: networkID,
-                    containerName: containerName,
-                    aliases: aliases
-                )
+        case "bridge", "wireguard":
+            // Bridge networks always use WireGuard backend
+            guard let backend = wireGuardBackend else {
+                throw NetworkManagerError.backendNotReady
             }
+            return try await backend.attachContainer(
+                containerID: containerID,
+                container: container,
+                networkID: networkID,
+                containerName: containerName,
+                aliases: aliases
+            )
 
         case "vmnet":
             guard let backend = vmnetBackend else {
                 throw NetworkManagerError.unsupportedDriver("vmnet (backend not initialized)")
             }
+            // vmnet backend doesn't support dynamic attach
             try await backend.attachContainer(
                 containerID: containerID,
                 networkID: networkID,
-                ipAddress: "",
-                gateway: ""
+                ipAddress: "",  // Not used (will throw error)
+                gateway: ""     // Not used (will throw error)
             )
             fatalError("vmnet backend should have thrown dynamicAttachNotSupported")
 
-        case "wireguard":
-            guard let backend = wireGuardBackend else {
-                throw NetworkManagerError.unsupportedDriver("wireguard (backend not initialized)")
-            }
-            return try await backend.attachContainer(
-                containerID: containerID,
-                container: container,
+        case "null":
+            // "null" driver - no network interface attached
+            // Return empty attachment (container only has loopback)
+            logger.info("Skipping network attachment for null network", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
+            return NetworkAttachment(
                 networkID: networkID,
-                containerName: containerName,
-                aliases: aliases
-            )
-
-        case "overlay":
-            guard let backend = ovsBackend else {
-                throw NetworkManagerError.unsupportedDriver("overlay (requires OVS backend)")
-            }
-            return try await backend.attachContainer(
-                containerID: containerID,
-                container: container,
-                networkID: networkID,
-                containerName: containerName,
-                aliases: aliases
+                ip: "",
+                mac: "",
+                aliases: []
             )
 
         default:
@@ -606,61 +344,29 @@ public actor NetworkManager {
 
         // Route to appropriate backend based on driver
         switch driver {
-        case "bridge":
-            // Bridge networks route based on configured backend
-            switch config.networkBackend {
-            case .ovs:
-                guard let backend = ovsBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.detachContainer(
-                    containerID: containerID,
-                    container: container,
-                    networkID: networkID
-                )
-
-            case .vmnet:
-                guard let backend = vmnetBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.detachContainer(containerID: containerID, networkID: networkID)
-
-            case .wireguard:
-                guard let backend = wireGuardBackend else {
-                    throw NetworkManagerError.helperVMNotReady
-                }
-                try await backend.detachContainer(
-                    containerID: containerID,
-                    container: container,
-                    networkID: networkID
-                )
+        case "null":
+            // "null" driver - nothing to detach
+            logger.info("Skipping network detachment for null network", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
+            return
+        case "bridge", "wireguard":
+            // Bridge networks always use WireGuard backend
+            guard let backend = wireGuardBackend else {
+                throw NetworkManagerError.backendNotReady
             }
+            try await backend.detachContainer(
+                containerID: containerID,
+                container: container,
+                networkID: networkID
+            )
 
         case "vmnet":
             guard let backend = vmnetBackend else {
                 throw NetworkManagerError.unsupportedDriver("vmnet (backend not initialized)")
             }
             try await backend.detachContainer(containerID: containerID, networkID: networkID)
-
-        case "wireguard":
-            guard let backend = wireGuardBackend else {
-                throw NetworkManagerError.unsupportedDriver("wireguard (backend not initialized)")
-            }
-            try await backend.detachContainer(
-                containerID: containerID,
-                container: container,
-                networkID: networkID
-            )
-
-        case "overlay":
-            guard let backend = ovsBackend else {
-                throw NetworkManagerError.unsupportedDriver("overlay (requires OVS backend)")
-            }
-            try await backend.detachContainer(
-                containerID: containerID,
-                container: container,
-                networkID: networkID
-            )
 
         default:
             throw NetworkManagerError.unsupportedDriver(driver)
@@ -691,24 +397,53 @@ public actor NetworkManager {
 
         // Route to appropriate backend based on driver
         switch driver {
-        case "bridge":
-            switch config.networkBackend {
-            case .ovs:
-                return await ovsBackend?.getNetwork(id: id)
-            case .vmnet:
-                return await vmnetBackend?.getNetwork(id: id)
-            case .wireguard:
-                return await wireGuardBackend?.getNetwork(id: id)
-            }
+        case "bridge", "wireguard":
+            return await wireGuardBackend?.getNetwork(id: id)
 
         case "vmnet":
             return await vmnetBackend?.getNetwork(id: id)
 
-        case "wireguard":
-            return await wireGuardBackend?.getNetwork(id: id)
+        case "null":
+            // "null" driver - load from StateStore
+            do {
+                let allNetworks = try await stateStore.loadAllNetworks()
+                guard let networkData = allNetworks.first(where: { $0.id == id }) else {
+                    return nil
+                }
 
-        case "overlay":
-            return await ovsBackend?.getNetwork(id: id)
+                // Decode options and labels from JSON
+                let options: [String: String]
+                if let optionsJSON = networkData.optionsJSON,
+                   let data = optionsJSON.data(using: .utf8) {
+                    options = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+                } else {
+                    options = [:]
+                }
+
+                let labels: [String: String]
+                if let labelsJSON = networkData.labelsJSON,
+                   let data = labelsJSON.data(using: .utf8) {
+                    labels = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+                } else {
+                    labels = [:]
+                }
+
+                return NetworkMetadata(
+                    id: networkData.id,
+                    name: networkData.name,
+                    driver: networkData.driver,
+                    subnet: networkData.subnet,
+                    gateway: networkData.gateway,
+                    containers: [],  // Null networks don't track containers
+                    created: networkData.createdAt,
+                    options: options,
+                    labels: labels,
+                    isDefault: networkData.isDefault
+                )
+            } catch {
+                logger.error("Failed to load null network", metadata: ["id": "\(id)", "error": "\(error)"])
+                return nil
+            }
 
         default:
             return nil
@@ -727,8 +462,8 @@ public actor NetworkManager {
 
     /// Get container attachments for a network
     public func getNetworkAttachments(networkID: String) async -> [String: NetworkAttachment] {
-        // Try OVS backend first
-        if let backend = ovsBackend, await backend.getNetwork(id: networkID) != nil {
+        // Try WireGuard backend first (default for bridge)
+        if let backend = wireGuardBackend, await backend.getNetwork(id: networkID) != nil {
             return await backend.getNetworkAttachments(networkID: networkID)
         }
 
@@ -744,10 +479,6 @@ public actor NetworkManager {
     public func listNetworks() async -> [NetworkMetadata] {
         var networks: [NetworkMetadata] = []
 
-        if let backend = ovsBackend {
-            networks.append(contentsOf: await backend.listNetworks())
-        }
-
         if let backend = vmnetBackend {
             networks.append(contentsOf: await backend.listNetworks())
         }
@@ -756,16 +487,20 @@ public actor NetworkManager {
             networks.append(contentsOf: await backend.listNetworks())
         }
 
+        // Add null driver networks from StateStore
+        let nullNetworkIDs = networkDrivers.filter { $0.value == "null" }.keys
+        for networkID in nullNetworkIDs {
+            if let network = await getNetwork(id: networkID) {
+                networks.append(network)
+            }
+        }
+
         return networks
     }
 
     /// Get networks for a container
     public func getContainerNetworks(containerID: String) async -> [NetworkMetadata] {
         var networks: [NetworkMetadata] = []
-
-        if let backend = ovsBackend {
-            networks.append(contentsOf: await backend.getContainerNetworks(containerID: containerID))
-        }
 
         if vmnetBackend != nil {
             // vmnet backend doesn't track container networks separately
@@ -814,10 +549,6 @@ public actor NetworkManager {
     /// Called when container stops to ensure state is clean for restart
     public func cleanupStoppedContainer(containerID: String) async {
         // Clean up in all backends (container could be in any)
-        if let backend = ovsBackend {
-            await backend.cleanupStoppedContainer(containerID: containerID)
-        }
-
         if let backend = vmnetBackend {
             await backend.cleanupStoppedContainer(containerID: containerID)
         }
@@ -850,7 +581,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case alreadyConnected(String, String)
     case notConnected(String, String)
     case ipAllocationFailed(String)
-    case helperVMNotReady
+    case backendNotReady
     case containerNotFound(String)
     case dynamicAttachNotSupported(backend: String, suggestion: String)
 
@@ -876,8 +607,8 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "container \(containerID) is not connected to network \(networkName)"
         case .ipAllocationFailed(let reason):
             return "IP allocation failed: \(reason)"
-        case .helperVMNotReady:
-            return "Network helper VM is not ready or OVN client is not connected"
+        case .backendNotReady:
+            return "Network backend is not ready"
         case .containerNotFound(let id):
             return "Container not found: \(id)"
         case .dynamicAttachNotSupported(let backend, let suggestion):
