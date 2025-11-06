@@ -1685,6 +1685,71 @@ public actor ContainerManager {
             }
         }
 
+        // Detach from all networks before removal
+        // This updates the network's container list and removes IP allocations
+        if let networkManager = networkManager, !info.networkAttachments.isEmpty {
+            // Only detach if we have a native container object
+            // For database-only containers (after daemon restart), skip detachment since
+            // the container's network interfaces don't exist anyway
+            if let nativeContainer = nativeContainers[dockerID] {
+                logger.info("Detaching container from networks", metadata: [
+                    "container": "\(dockerID)",
+                    "network_count": "\(info.networkAttachments.count)"
+                ])
+
+                for networkID in info.networkAttachments.keys {
+                    do {
+                        // Detach from network (this removes from network's container list)
+                        try await networkManager.detachContainerFromNetwork(
+                            containerID: dockerID,
+                            container: nativeContainer,
+                            networkID: networkID
+                        )
+                        logger.debug("Detached container from network", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(networkID)"
+                        ])
+                    } catch {
+                        // Log but don't fail - network might already be deleted
+                        logger.warning("Failed to detach from network (may already be deleted)", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(networkID)",
+                            "error": "\(error)"
+                        ])
+                    }
+                }
+            } else {
+                // Database-only container - just clean up in-memory state
+                logger.info("Skipping network detachment for database-only container", metadata: [
+                    "container": "\(dockerID)",
+                    "network_count": "\(info.networkAttachments.count)"
+                ])
+
+                // Clean up in-memory state in NetworkManager
+                await networkManager.cleanupStoppedContainer(containerID: dockerID)
+
+                // Delete network attachment records from StateStore
+                for networkID in info.networkAttachments.keys {
+                    do {
+                        try await stateStore.deleteNetworkAttachment(
+                            containerID: dockerID,
+                            networkID: networkID
+                        )
+                        logger.debug("Deleted network attachment record", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(networkID)"
+                        ])
+                    } catch {
+                        logger.warning("Failed to delete network attachment record", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(networkID)",
+                            "error": "\(error)"
+                        ])
+                    }
+                }
+            }
+        }
+
         // Push DNS topology updates to remove this container from other containers' view
         for networkID in info.networkAttachments.keys {
             await pushDNSTopologyToNetwork(networkID: networkID)
