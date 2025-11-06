@@ -92,8 +92,21 @@ public actor WireGuardNetworkBackend {
             }
         }
 
-        // Initialize IP allocation for this network (start at .2, .1 is gateway)
-        nextIPOctet[id] = 2
+        // Initialize IP allocation for this network
+        // If ipRange is specified, calculate starting octet from it
+        // Otherwise start at .2 (.1 is gateway)
+        if let ipRange = ipRange {
+            // Parse ipRange to get starting IP
+            // Example: "172.18.0.128/25" -> start at .128
+            let rangeComponents = ipRange.split(separator: "/")[0].split(separator: ".")
+            if rangeComponents.count == 4, let startOctet = UInt8(rangeComponents[3]) {
+                nextIPOctet[id] = startOctet
+            } else {
+                nextIPOctet[id] = 2  // Fallback
+            }
+        } else {
+            nextIPOctet[id] = 2
+        }
 
         // Create metadata
         let createdDate = Date()
@@ -103,6 +116,7 @@ public actor WireGuardNetworkBackend {
             driver: "wireguard",
             subnet: effectiveSubnet,
             gateway: effectiveGateway,
+            ipRange: ipRange,
             containers: [],
             created: createdDate,
             options: options,
@@ -623,13 +637,38 @@ public actor WireGuardNetworkBackend {
 
         let prefix = "\(components[0]).\(components[1])"
 
-        // Get next octet (starts at 2, .1 is gateway)
-        guard var octet = nextIPOctet[networkID] else {
+        // Get next octet (starts at 2, .1 is gateway, or from ipRange)
+        guard let octet = nextIPOctet[networkID] else {
             throw NetworkManagerError.ipAllocationFailed("Network not initialized: \(networkID)")
         }
 
-        guard octet < 255 else {
-            throw NetworkManagerError.ipAllocationFailed("IP pool exhausted for network \(networkID)")
+        // Check if ipRange is specified for this network
+        let maxOctet: UInt8
+        if let metadata = networks[networkID], let ipRange = metadata.ipRange {
+            // Parse ipRange to get the upper bound
+            // Example: "172.18.0.128/25" -> /25 gives us 128 IPs, so range is .128 to .255
+            let rangeComponents = ipRange.split(separator: "/")
+            if rangeComponents.count == 2, let cidr = Int(rangeComponents[1]) {
+                // Calculate number of host bits
+                let hostBits = 32 - cidr
+                let numHosts = (1 << hostBits) - 2  // -2 for network and broadcast
+
+                // Get starting IP from ipRange
+                let ipComponents = rangeComponents[0].split(separator: ".")
+                if ipComponents.count == 4, let startOctet = UInt8(ipComponents[3]) {
+                    maxOctet = min(255, startOctet + UInt8(numHosts))
+                } else {
+                    maxOctet = 254  // Fallback
+                }
+            } else {
+                maxOctet = 254  // Fallback
+            }
+        } else {
+            maxOctet = 254  // Default: allow up to .254 (.255 is broadcast)
+        }
+
+        guard octet <= maxOctet else {
+            throw NetworkManagerError.ipAllocationFailed("IP pool exhausted for network \(networkID) (range limit reached)")
         }
 
         let ip = "\(prefix).0.\(octet)"

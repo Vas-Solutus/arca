@@ -9,6 +9,7 @@ public struct NetworkMetadata: Sendable {
     public let driver: String
     public let subnet: String
     public let gateway: String
+    public let ipRange: String?  // Optional IP range for IPAM (e.g., "172.18.0.128/25")
     public var containers: Set<String>
     public let created: Date
     public let options: [String: String]
@@ -21,6 +22,7 @@ public struct NetworkMetadata: Sendable {
         driver: String,
         subnet: String,
         gateway: String,
+        ipRange: String? = nil,
         containers: Set<String> = [],
         created: Date = Date(),
         options: [String: String] = [:],
@@ -32,6 +34,7 @@ public struct NetworkMetadata: Sendable {
         self.driver = driver
         self.subnet = subnet
         self.gateway = gateway
+        self.ipRange = ipRange
         self.containers = containers
         self.created = created
         self.options = options

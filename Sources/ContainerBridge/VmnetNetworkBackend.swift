@@ -64,6 +64,7 @@ public actor VmnetNetworkBackend {
             driver: "vmnet",
             subnet: vmnet.subnet,
             gateway: vmnet.gateway,
+            ipRange: ipRange,  // vmnet doesn't use ipRange for allocation, but store for API compatibility
             containers: [],
             created: Date(),
             options: options,

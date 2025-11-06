@@ -434,6 +434,7 @@ public actor NetworkManager {
                     driver: networkData.driver,
                     subnet: networkData.subnet,
                     gateway: networkData.gateway,
+                    ipRange: networkData.ipRange,  // Load ipRange from database
                     containers: [],  // Null networks don't track containers
                     created: networkData.createdAt,
                     options: options,
