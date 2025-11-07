@@ -41,6 +41,9 @@ public actor ContainerManager {
     // Optional VolumeManager reference for named volume resolution
     private var volumeManager: VolumeManager?
 
+    // Optional PortMapManager reference for port publishing
+    private var portMapManager: PortMapManager?
+
     // Shared vmnet network for NAT networking with internet access
     private var sharedNetwork: SharedVmnetNetwork?
 
@@ -80,14 +83,14 @@ public actor ContainerManager {
     /// Handles for an attached container (stdin/stdout/stderr streams)
     public struct AttachHandles: Sendable {
         public let stdin: ChannelReader
-        public let stdout: StreamingWriter
-        public let stderr: StreamingWriter
+        public let stdout: Writer
+        public let stderr: Writer
         public let waitForExit: @Sendable () async throws -> Void
 
         public init(
             stdin: ChannelReader,
-            stdout: StreamingWriter,
-            stderr: StreamingWriter,
+            stdout: Writer,
+            stderr: Writer,
             waitForExit: @escaping @Sendable () async throws -> Void
         ) {
             self.stdin = stdin
@@ -118,6 +121,11 @@ public actor ContainerManager {
     /// Set the VolumeManager (called after VolumeManager is initialized)
     public func setVolumeManager(_ manager: VolumeManager) {
         self.volumeManager = manager
+    }
+
+    /// Set the PortMapManager (called after PortMapManager is initialized)
+    public func setPortMapManager(_ manager: PortMapManager) {
+        self.portMapManager = manager
     }
 
     /// Set the SharedVmnetNetwork (called after network is initialized)
@@ -752,7 +760,8 @@ public actor ContainerManager {
         networkMode: String? = nil,
         restartPolicy: RestartPolicy? = nil,
         binds: [String]? = nil,
-        volumes: [String: Any]? = nil  // Anonymous volumes: {"/container/path": {}}
+        volumes: [String: Any]? = nil,  // Anonymous volumes: {"/container/path": {}}
+        portBindings: [String: [PortBinding]]? = nil  // Port mappings: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]}
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -915,6 +924,7 @@ public actor ContainerManager {
             hostConfig: HostConfig(
                 binds: binds ?? [],
                 networkMode: networkMode ?? "default",
+                portBindings: portBindings ?? [:],
                 restartPolicy: restartPolicy ?? RestartPolicy(name: "no", maximumRetryCount: 0)
             ),
             config: ContainerConfiguration(
@@ -1351,6 +1361,49 @@ public actor ContainerManager {
             await pushDNSTopologyToNetwork(networkID: networkID)
         }
 
+        // Publish ports if configured (Phase 4.1)
+        if let portMapManager = portMapManager,
+           !info.hostConfig.portBindings.isEmpty,
+           let networkManager = networkManager {
+            // Re-fetch updated container info after network attachment
+            guard let updatedInfo = containers[dockerID] else {
+                logger.warning("Container disappeared during port publishing", metadata: ["container": "\(dockerID)"])
+                return
+            }
+
+            // Get WireGuard client for this container
+            if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
+                do {
+                    // Get vmnet IP from container
+                    let vmnetEndpoint = try await wireguardClient.getVmnetEndpoint()
+                    let vmnetIP = vmnetEndpoint.split(separator: ":").first.map(String.init) ?? vmnetEndpoint
+
+                    // Get overlay IP from first network attachment
+                    let overlayIP = updatedInfo.networkAttachments.values.first?.ip ?? ""
+
+                    // Publish all port mappings
+                    try await portMapManager.publishPorts(
+                        containerID: dockerID,
+                        vmnetIP: vmnetIP,
+                        overlayIP: overlayIP,
+                        portBindings: info.hostConfig.portBindings,
+                        wireguardClient: wireguardClient
+                    )
+
+                    logger.info("Published port mappings for container", metadata: [
+                        "container": "\(dockerID)",
+                        "portCount": "\(info.hostConfig.portBindings.count)"
+                    ])
+                } catch {
+                    logger.error("Failed to publish port mappings", metadata: [
+                        "container": "\(dockerID)",
+                        "error": "\(error)"
+                    ])
+                    // Don't fail container start on port mapping errors
+                }
+            }
+        }
+
         // Spawn background monitoring task to detect when container exits
         // The task waits for the container to exit, then calls back into the actor to update state
         let monitoringTask = Task { [weak self, logger, attachInfo] in
@@ -1445,6 +1498,30 @@ public actor ContainerManager {
         // Push DNS topology updates to remove this container from other containers' view
         for networkID in info.networkAttachments.keys {
             await pushDNSTopologyToNetwork(networkID: networkID)
+        }
+
+        // Unpublish ports if configured (Phase 4.1)
+        if let portMapManager = portMapManager,
+           !info.hostConfig.portBindings.isEmpty,
+           let networkManager = networkManager {
+            // Get WireGuard client for this container
+            if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
+                do {
+                    try await portMapManager.unpublishPorts(
+                        containerID: dockerID,
+                        wireguardClient: wireguardClient
+                    )
+                    logger.info("Unpublished port mappings for container", metadata: [
+                        "container": "\(dockerID)"
+                    ])
+                } catch {
+                    logger.warning("Failed to unpublish port mappings", metadata: [
+                        "container": "\(dockerID)",
+                        "error": "\(error)"
+                    ])
+                    // Don't fail container stop on port unpublishing errors
+                }
+            }
         }
 
         // Clean up in-memory network state (TAP devices are auto-cleaned by VM shutdown)
@@ -1681,6 +1758,30 @@ public actor ContainerManager {
             if let task = monitoringTasks.removeValue(forKey: dockerID) {
                 task.cancel()
                 _ = await task.result
+            }
+        }
+
+        // Unpublish ports before removal (Phase 4.1)
+        if let portMapManager = portMapManager,
+           !info.hostConfig.portBindings.isEmpty,
+           let networkManager = networkManager {
+            // Get WireGuard client for this container (if still available)
+            if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
+                do {
+                    try await portMapManager.unpublishPorts(
+                        containerID: dockerID,
+                        wireguardClient: wireguardClient
+                    )
+                    logger.info("Unpublished port mappings before removal", metadata: [
+                        "container": "\(dockerID)"
+                    ])
+                } catch {
+                    logger.warning("Failed to unpublish port mappings during removal", metadata: [
+                        "container": "\(dockerID)",
+                        "error": "\(error)"
+                    ])
+                    // Don't fail container removal on port unpublishing errors
+                }
             }
         }
 
@@ -2065,6 +2166,14 @@ public actor ContainerManager {
             return nil
         }
         return containers[dockerID]?.state
+    }
+
+    /// Get container TTY flag by ID (for attach/exec stream multiplexing)
+    public func getContainerTTY(id: String) async -> Bool? {
+        guard let dockerID = resolveContainerID(id) else {
+            return nil
+        }
+        return containers[dockerID]?.tty
     }
 
     /// Check if container is running (for log streaming)

@@ -550,6 +550,15 @@ public actor NetworkManager {
         return await getNetwork(id: networkID)?.name
     }
 
+    /// Get WireGuard client for a container (for port mapping)
+    /// Returns nil if container is not attached to any WireGuard networks
+    public func getWireGuardClient(containerID: String) async -> WireGuardClient? {
+        guard let backend = wireGuardBackend else {
+            return nil
+        }
+        return await backend.getWireGuardClient(containerID: containerID)
+    }
+
     /// Clean up in-memory network state for a stopped/exited container
     /// Called when container stops to ensure state is clean for restart
     public func cleanupStoppedContainer(containerID: String) async {

@@ -256,6 +256,12 @@ public final class ArcaDaemon: @unchecked Sendable {
             volumeManager = nil
         }
 
+        // Initialize PortMapManager (Phase 4.1 - Port Mapping)
+        logger.info("Initializing port mapping manager...")
+        let portMapManager = PortMapManager(logger: logger)
+        await containerManager.setPortMapManager(portMapManager)
+        logger.debug("ContainerManager configured with PortMapManager")
+
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
             .use(RequestLogger(logger: logger))

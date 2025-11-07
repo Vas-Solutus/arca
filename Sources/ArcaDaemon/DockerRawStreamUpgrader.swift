@@ -3,13 +3,14 @@ import Logging
 import NIO
 import NIOHTTP1
 import ContainerBridge
+import Containerization  // For Writer protocol
 
 /// SwiftNIO HTTP protocol upgrader for Docker's raw stream protocol
 /// Handles upgrade from HTTP to raw TCP for Docker attach/exec operations
 final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     private let logger: Logger
     private let execManager: ExecManager
-    private let containerManager: ContainerManager
+    private let containerManager: ContainerBridge.ContainerManager
 
     // Required property: supported upgrade protocols
     let supportedProtocol: String = "tcp"
@@ -17,7 +18,7 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     // Optional headers to include in upgrade response
     let requiredUpgradeHeaders: [String] = []
 
-    init(execManager: ExecManager, containerManager: ContainerManager, logger: Logger) {
+    init(execManager: ExecManager, containerManager: ContainerBridge.ContainerManager, logger: Logger) {
         self.execManager = execManager
         self.containerManager = containerManager
         self.logger = logger
@@ -246,19 +247,38 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     private func attachToContainer(containerID: String, channel: Channel, stdinReader: ChannelReader) async throws {
         logger.info("Attaching to container with raw stream", metadata: ["container_id": "\(containerID)"])
 
+        // Check if container is running with TTY
+        guard let isTTY = await containerManager.getContainerTTY(id: containerID) else {
+            throw DockerRawStreamUpgraderError.containerNotFound(containerID)
+        }
+
         // Create AsyncStreams for stdout/stderr from the container process
         let (stdoutStream, stdoutContinuation) = AsyncStream<Data>.makeStream()
         let (stderrStream, stderrContinuation) = AsyncStream<Data>.makeStream()
 
         // Create writers that feed the AsyncStreams
-        let stdoutWriter = StreamingWriter(continuation: stdoutContinuation, streamType: 1)
-        let stderrWriter = StreamingWriter(continuation: stderrContinuation, streamType: 2)
+        // TTY mode: Use RawWriter (no multiplexing headers)
+        // Non-TTY mode: Use StreamingWriter (with multiplexing headers)
+        let stdoutWriter: Writer
+        let stderrWriter: Writer
+
+        if isTTY {
+            // TTY mode: Output is raw, no stream type headers
+            stdoutWriter = RawWriter(continuation: stdoutContinuation)
+            stderrWriter = RawWriter(continuation: stderrContinuation)
+            logger.debug("Using raw writers for TTY mode", metadata: ["container_id": "\(containerID)"])
+        } else {
+            // Non-TTY mode: Output is multiplexed with stream type headers
+            stdoutWriter = StreamingWriter(continuation: stdoutContinuation, streamType: 1)
+            stderrWriter = StreamingWriter(continuation: stderrContinuation, streamType: 2)
+            logger.debug("Using streaming writers for non-TTY mode", metadata: ["container_id": "\(containerID)"])
+        }
 
         // Create a continuation to signal when the container exits
         let exitContinuation = AsyncStream<Void>.makeStream()
 
         // Create attach handles
-        let handles = ContainerManager.AttachHandles(
+        let handles = ContainerBridge.ContainerManager.AttachHandles(
             stdin: stdinReader,
             stdout: stdoutWriter,
             stderr: stderrWriter,
@@ -395,13 +415,34 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     private func startExecWithRawStream(execID: String, channel: Channel, stdinReader: ChannelReader) async throws {
         logger.info("Starting exec with raw stream", metadata: ["exec_id": "\(execID)"])
 
+        // Get exec info to check TTY mode
+        guard let execInfo = await execManager.getExecInfo(execID: execID) else {
+            throw DockerRawStreamUpgraderError.execNotFound(execID)
+        }
+
+        let isTTY = execInfo.config.tty
+
         // Create AsyncStreams for stdout/stderr from the exec process
         let (stdoutStream, stdoutContinuation) = AsyncStream<Data>.makeStream()
         let (stderrStream, stderrContinuation) = AsyncStream<Data>.makeStream()
 
         // Create writers that feed the AsyncStreams
-        let stdoutWriter = StreamingWriter(continuation: stdoutContinuation, streamType: 1)
-        let stderrWriter = StreamingWriter(continuation: stderrContinuation, streamType: 2)
+        // TTY mode: Use RawWriter (no multiplexing headers)
+        // Non-TTY mode: Use StreamingWriter (with multiplexing headers)
+        let stdoutWriter: Writer
+        let stderrWriter: Writer
+
+        if isTTY {
+            // TTY mode: Output is raw, no stream type headers
+            stdoutWriter = RawWriter(continuation: stdoutContinuation)
+            stderrWriter = RawWriter(continuation: stderrContinuation)
+            logger.debug("Using raw writers for TTY mode", metadata: ["exec_id": "\(execID)"])
+        } else {
+            // Non-TTY mode: Output is multiplexed with stream type headers
+            stdoutWriter = StreamingWriter(continuation: stdoutContinuation, streamType: 1)
+            stderrWriter = StreamingWriter(continuation: stderrContinuation, streamType: 2)
+            logger.debug("Using streaming writers for non-TTY mode", metadata: ["exec_id": "\(execID)"])
+        }
 
         // Start task to forward stream data to the raw TCP channel
         let forwardTask = Task {
@@ -612,5 +653,20 @@ final class DockerRawStreamHandler: ChannelInboundHandler, RemovableChannelHandl
     func channelInactive(context: ChannelHandlerContext) {
         // Close stdin stream when channel closes
         stdinContinuation?.finish()
+    }
+}
+
+/// Errors that can occur during Docker raw stream upgrade
+enum DockerRawStreamUpgraderError: Error, CustomStringConvertible {
+    case execNotFound(String)
+    case containerNotFound(String)
+
+    var description: String {
+        switch self {
+        case .execNotFound(let execID):
+            return "Exec instance not found: \(execID)"
+        case .containerNotFound(let containerID):
+            return "Container not found: \(containerID)"
+        }
     }
 }

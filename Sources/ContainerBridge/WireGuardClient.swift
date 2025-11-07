@@ -295,4 +295,94 @@ public actor WireGuardClient {
         logger.info("Got vmnet endpoint", metadata: ["endpoint": "\(response.endpoint)"])
         return response.endpoint
     }
+
+    /// Publish a port (Phase 4.1)
+    /// Creates DNAT and INPUT rules to expose container port on vmnet interface
+    public func publishPort(
+        proto: String,
+        hostPort: UInt32,
+        containerIP: String,
+        containerPort: UInt32
+    ) async throws {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.info("Publishing port via WireGuard gRPC", metadata: [
+            "protocol": "\(proto)",
+            "hostPort": "\(hostPort)",
+            "containerIP": "\(containerIP)",
+            "containerPort": "\(containerPort)"
+        ])
+
+        var request = Arca_Wireguard_V1_PublishPortRequest()
+        request.`protocol` = proto
+        request.hostPort = hostPort
+        request.containerIp = containerIP
+        request.containerPort = containerPort
+
+        let call = client.publishPort(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.info("Port published successfully via WireGuard gRPC", metadata: [
+            "protocol": "\(proto)",
+            "hostPort": "\(hostPort)"
+        ])
+    }
+
+    /// Unpublish a port (Phase 4.1)
+    /// Removes DNAT and INPUT rules for published port
+    public func unpublishPort(
+        proto: String,
+        hostPort: UInt32
+    ) async throws {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.info("Unpublishing port via WireGuard gRPC", metadata: [
+            "protocol": "\(proto)",
+            "hostPort": "\(hostPort)"
+        ])
+
+        var request = Arca_Wireguard_V1_UnpublishPortRequest()
+        request.`protocol` = proto
+        request.hostPort = hostPort
+
+        let call = client.unpublishPort(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.info("Port unpublished successfully via WireGuard gRPC", metadata: [
+            "protocol": "\(proto)",
+            "hostPort": "\(hostPort)"
+        ])
+    }
+
+    /// Dump nftables ruleset for debugging (Phase 4.1)
+    /// Returns full nftables ruleset with packet counters
+    public func dumpNftables() async throws -> String {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.debug("Dumping nftables ruleset from container")
+
+        let request = Arca_Wireguard_V1_DumpNftablesRequest()
+        let call = client.dumpNftables(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        return response.ruleset
+    }
 }

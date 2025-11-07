@@ -712,6 +712,12 @@ public actor WireGuardNetworkBackend {
         return client
     }
 
+    /// Get WireGuard client for a container (for port mapping)
+    /// Returns nil if container is not attached to any WireGuard networks
+    public func getWireGuardClient(containerID: String) -> WireGuardClient? {
+        return wireGuardClients[containerID]
+    }
+
     /// Allocate an IP address for a container in a network
     private func allocateIP(networkID: String, subnet: String) throws -> String {
         // Extract network prefix (e.g., "172.18.0.0/16" -> "172.18")

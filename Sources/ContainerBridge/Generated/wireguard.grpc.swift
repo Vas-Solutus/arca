@@ -58,6 +58,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
     _ request: Arca_Wireguard_V1_UnpublishPortRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>
+
+  func dumpNftables(
+    _ request: Arca_Wireguard_V1_DumpNftablesRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>
 }
 
 extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
@@ -209,6 +214,24 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
     )
   }
+
+  /// Dump nftables state for debugging (returns full ruleset with counters)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to DumpNftables.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func dumpNftables(
+    _ request: Arca_Wireguard_V1_DumpNftablesRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.dumpNftables.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
+    )
+  }
 }
 
 @available(*, deprecated)
@@ -314,6 +337,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
     _ request: Arca_Wireguard_V1_UnpublishPortRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>
+
+  func makeDumpNftablesCall(
+    _ request: Arca_Wireguard_V1_DumpNftablesRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -421,6 +449,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
     )
   }
+
+  public func makeDumpNftablesCall(
+    _ request: Arca_Wireguard_V1_DumpNftablesRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.dumpNftables.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -520,6 +560,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeUnpublishPortInterceptors() ?? []
     )
   }
+
+  public func dumpNftables(
+    _ request: Arca_Wireguard_V1_DumpNftablesRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_DumpNftablesResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.dumpNftables.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -564,6 +616,9 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtoc
 
   /// - Returns: Interceptors to use when invoking 'unpublishPort'.
   func makeUnpublishPortInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_UnpublishPortRequest, Arca_Wireguard_V1_UnpublishPortResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'dumpNftables'.
+  func makeDumpNftablesInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>]
 }
 
 public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
@@ -579,6 +634,7 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.getVmnetEndpoint,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.dumpNftables,
     ]
   )
 
@@ -628,6 +684,12 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     public static let unpublishPort = GRPCMethodDescriptor(
       name: "UnpublishPort",
       path: "/arca.wireguard.v1.WireGuardService/UnpublishPort",
+      type: GRPCCallType.unary
+    )
+
+    public static let dumpNftables = GRPCMethodDescriptor(
+      name: "DumpNftables",
+      path: "/arca.wireguard.v1.WireGuardService/DumpNftables",
       type: GRPCCallType.unary
     )
   }

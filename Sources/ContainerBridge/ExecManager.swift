@@ -207,10 +207,10 @@ public actor ExecManager {
 
             // Close output streams to signal completion
             // This finishes the AsyncStream continuations
-            // Cast to StreamingWriter to access close() method
-            if let streamingWriter = stdout as? StreamingWriter {
+            // Works for both RawWriter (TTY mode) and StreamingWriter (non-TTY mode)
+            if let writer = stdout {
                 do {
-                    try streamingWriter.close()
+                    try writer.close()
                 } catch {
                     logger.warning("Failed to close stdout writer", metadata: [
                         "exec_id": "\(execID)",
@@ -219,9 +219,9 @@ public actor ExecManager {
                 }
             }
 
-            if let streamingWriter = stderr as? StreamingWriter {
+            if let writer = stderr {
                 do {
-                    try streamingWriter.close()
+                    try writer.close()
                 } catch {
                     logger.warning("Failed to close stderr writer", metadata: [
                         "exec_id": "\(execID)",

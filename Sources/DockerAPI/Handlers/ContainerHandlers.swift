@@ -143,6 +143,16 @@ public struct ContainerHandlers: Sendable {
                 )
             }
 
+            // Convert PortBindingCreate to PortBinding
+            let portBindings: [String: [PortBinding]]? = request.hostConfig?.portBindings?.mapValues { bindings in
+                bindings.map { binding in
+                    PortBinding(
+                        hostIp: binding.hostIp ?? "",
+                        hostPort: binding.hostPort ?? ""
+                    )
+                }
+            }
+
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
@@ -159,7 +169,8 @@ public struct ContainerHandlers: Sendable {
                 networkMode: request.hostConfig?.networkMode,
                 restartPolicy: restartPolicy,
                 binds: request.hostConfig?.binds,
-                volumes: request.volumes?.mapValues { $0.value }  // Convert AnyCodable to Any
+                volumes: request.volumes?.mapValues { $0.value },  // Convert AnyCodable to Any
+                portBindings: portBindings
             )
 
             logger.info("Container created", metadata: [
@@ -809,7 +820,11 @@ public struct ContainerHandlers: Sendable {
                 hostConfig: HostConfigInspect(
                     binds: container.hostConfig.binds,
                     networkMode: container.hostConfig.networkMode,
-                    portBindings: [:],  // TODO: Map port bindings
+                    portBindings: container.hostConfig.portBindings.mapValues { bindings in
+                        bindings.map { binding in
+                            PortBindingInspect(hostIp: binding.hostIp, hostPort: binding.hostPort)
+                        }
+                    },
                     restartPolicy: RestartPolicyInspect(
                         name: container.hostConfig.restartPolicy.name,
                         maximumRetryCount: container.hostConfig.restartPolicy.maximumRetryCount

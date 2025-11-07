@@ -69,6 +69,9 @@ func startDaemon(socketPath: String, arcaBinary: String = ".build/debug/Arca", l
     // Clean up old socket
     try? FileManager.default.removeItem(atPath: socketPath)
 
+    // Create log file if it doesn't exist
+    FileManager.default.createFile(atPath: logFile, contents: nil, attributes: nil)
+
     // Start daemon in background
     let task = Process()
     task.executableURL = URL(fileURLWithPath: arcaBinary)
