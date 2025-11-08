@@ -834,7 +834,7 @@ public actor ContainerManager {
         }
 
         // Parse bind mounts and named volumes
-        let mounts = try await parseVolumeMounts(effectiveBinds)
+        let mounts = try await parseVolumeMounts(effectiveBinds, dockerID: dockerID)
         if !mounts.isEmpty {
             logger.info("Container has volume mounts", metadata: [
                 "docker_id": "\(dockerID)",
@@ -1170,7 +1170,7 @@ public actor ContainerManager {
                 }
 
                 // Parse volume mounts from persisted binds (includes both bind mounts and named volumes)
-                let recreatedMounts = try await parseVolumeMounts(info.hostConfig.binds)
+                let recreatedMounts = try await parseVolumeMounts(info.hostConfig.binds, dockerID: dockerID)
 
                 // Resolve command and entrypoint: use persisted if provided, otherwise use image defaults
                 // Empty array means "no override, use image defaults" in Docker semantics
@@ -2204,7 +2204,7 @@ public actor ContainerManager {
     /// Supports both bind mounts and named volumes:
     /// - Bind mounts: "/host/path:/container/path[:ro]" or "relative/path:/container/path[:ro]"
     /// - Named volumes: "volume-name:/container/path[:ro]"
-    private func parseVolumeMounts(_ binds: [String]?) async throws -> [Containerization.Mount] {
+    private func parseVolumeMounts(_ binds: [String]?, dockerID: String) async throws -> [Containerization.Mount] {
         guard let binds = binds else {
             return []
         }
@@ -2295,20 +2295,52 @@ public actor ContainerManager {
             // Create the appropriate mount type
             let mount: Containerization.Mount
             if isNamedVolume {
-                // Named volumes: Use block device mount
-                // expandedHostPath is the path to volume.img file
-                mount = Containerization.Mount.block(
-                    format: "ext4",
-                    source: expandedHostPath,
-                    destination: containerPath,
-                    options: options
-                )
-                logger.debug("Created block device mount for named volume", metadata: [
-                    "source": "\(source)",
-                    "blockDevice": "\(expandedHostPath)",
-                    "destination": "\(containerPath)",
-                    "readOnly": "\(isReadOnly)"
-                ])
+                // Named volumes: Branch on driver type
+                guard let volumeManager = volumeManager else {
+                    logger.error("Named volume requested but VolumeManager not available", metadata: [
+                        "volume": "\(source)"
+                    ])
+                    throw ContainerManagerError.volumeManagerNotAvailable
+                }
+
+                let volumeMetadata = try await volumeManager.inspectVolume(name: source)
+
+                // Validate exclusive access for block volumes
+                try await volumeManager.validateVolumeAccess(volumeName: source, containerID: dockerID)
+
+                switch volumeMetadata.driver {
+                case "local":
+                    // Local driver: VirtioFS directory share
+                    mount = Containerization.Mount.share(
+                        source: volumeMetadata.mountpoint,  // Directory path
+                        destination: containerPath,
+                        options: options
+                    )
+                    logger.debug("Created VirtioFS share for local volume", metadata: [
+                        "volume": "\(source)",
+                        "mountpoint": "\(volumeMetadata.mountpoint)",
+                        "destination": "\(containerPath)",
+                        "readOnly": "\(isReadOnly)"
+                    ])
+
+                case "block":
+                    // Block driver: Exclusive EXT4 block device
+                    mount = Containerization.Mount.block(
+                        format: "ext4",
+                        source: volumeMetadata.mountpoint,  // volume.img path
+                        destination: containerPath,
+                        options: options
+                    )
+                    logger.debug("Created block device mount for block volume", metadata: [
+                        "volume": "\(source)",
+                        "blockDevice": "\(volumeMetadata.mountpoint)",
+                        "destination": "\(containerPath)",
+                        "readOnly": "\(isReadOnly)"
+                    ])
+
+                default:
+                    throw ContainerManagerError.invalidConfiguration("Unsupported volume driver: \(volumeMetadata.driver)")
+                }
             } else {
                 // Bind mounts: Use VirtioFS share
                 // Validate host path exists (create directory if needed for rw mounts)

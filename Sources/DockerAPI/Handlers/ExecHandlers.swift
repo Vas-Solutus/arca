@@ -16,7 +16,9 @@ public struct ExecHandlers: Sendable {
 
     /// Get error description for HTTP responses
     private func errorDescription(_ error: Error) -> String {
-        return error.localizedDescription
+        // String interpolation automatically uses CustomStringConvertible.description
+        // This gives us the proper error messages from ExecManagerError
+        return "\(error)"
     }
 
     /// Handle POST /containers/{id}/exec

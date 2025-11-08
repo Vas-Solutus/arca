@@ -37,7 +37,9 @@ public struct ContainerHandlers: Sendable {
 
     /// Get error description from Swift errors
     private func errorDescription(_ error: Error) -> String {
-        return error.localizedDescription
+        // String interpolation automatically uses CustomStringConvertible.description
+        // This gives us the proper error messages from ContainerManagerError
+        return "\(error)"
     }
 
     /// Check if a container is the control plane
@@ -771,6 +773,19 @@ public struct ContainerHandlers: Sendable {
             ])
 
             return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to remove container", metadata: [
+                "id": "\(id)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            default:
+                return .failure(ContainerError.removeFailed(error.description))
+            }
         } catch {
             logger.error("Failed to remove container", metadata: [
                 "id": "\(id)",

@@ -89,8 +89,8 @@ public actor VolumeManager {
     /// Create a new volume
     /// - Parameters:
     ///   - name: Volume name (auto-generated if nil)
-    ///   - driver: Volume driver (only "local" supported)
-    ///   - driverOpts: Driver options (ignored for local driver)
+    ///   - driver: Volume driver ("local" for VirtioFS, "block" for EXT4)
+    ///   - driverOpts: Driver options (size for block driver)
     ///   - labels: User-defined labels
     /// - Returns: Created volume metadata
     /// - Throws: VolumeError if creation fails
@@ -100,9 +100,9 @@ public actor VolumeManager {
         driverOpts: [String: String]?,
         labels: [String: String]?
     ) async throws -> VolumeMetadata {
-        // Validate driver (only "local" supported)
+        // Validate driver (only "local" and "block" supported)
         let volumeDriver = driver ?? "local"
-        guard volumeDriver == "local" else {
+        guard volumeDriver == "local" || volumeDriver == "block" else {
             logger.error("Unsupported volume driver", metadata: ["driver": "\(volumeDriver)"])
             throw VolumeError.unsupportedDriver(volumeDriver)
         }
@@ -116,70 +116,113 @@ public actor VolumeManager {
             throw VolumeError.alreadyExists(volumeName)
         }
 
-        // Create volume directory and EXT4 block device
         let volumeDir = "\(volumesBasePath)/\(volumeName)"
-        let blockImagePath = "\(volumeDir)/volume.img"
         let fileManager = FileManager.default
-
-        // Parse size from driverOpts (default 512GB)
-        let sizeInBytes: UInt64
-        if let sizeStr = driverOpts?["size"] {
-            sizeInBytes = try parseSizeString(sizeStr)
-        } else {
-            sizeInBytes = 512 * 1024 * 1024 * 1024  // 512GB default (sparse)
-        }
-
-        do {
-            // Create volume directory
-            try fileManager.createDirectory(
-                atPath: volumeDir,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            logger.debug("Created volume directory", metadata: [
-                "name": "\(volumeName)",
-                "path": "\(volumeDir)"
-            ])
-
-            // Create and format EXT4 block device
-            logger.info("Creating EXT4 block device", metadata: [
-                "name": "\(volumeName)",
-                "path": "\(blockImagePath)",
-                "size": "\(sizeInBytes) bytes"
-            ])
-
-            let formatter = try EXT4.Formatter(
-                FilePath(blockImagePath),
-                blockSize: 4096,
-                minDiskSize: sizeInBytes
-            )
-            try formatter.close()
-
-            logger.info("EXT4 block device created", metadata: [
-                "name": "\(volumeName)",
-                "path": "\(blockImagePath)"
-            ])
-        } catch {
-            // Clean up on failure
-            try? fileManager.removeItem(atPath: volumeDir)
-            logger.error("Failed to create volume block device", metadata: [
-                "name": "\(volumeName)",
-                "error": "\(error)"
-            ])
-            throw VolumeError.creationFailed(volumeName, error.localizedDescription)
-        }
-
-        // Create metadata (mountpoint is the block device file, not directory)
         let createdAt = Date()
-        let metadata = VolumeMetadata(
-            name: volumeName,
-            driver: volumeDriver,
-            format: "ext4",
-            mountpoint: blockImagePath,  // Path to volume.img file
-            createdAt: createdAt,
-            labels: labels ?? [:],
-            options: driverOpts
-        )
+        let metadata: VolumeMetadata
+
+        // Branch on driver type
+        switch volumeDriver {
+        case "local":
+            // Local driver: Create VirtioFS directory share
+            let dataDir = "\(volumeDir)/data"
+
+            do {
+                // Create volume data directory
+                try fileManager.createDirectory(
+                    atPath: dataDir,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+                logger.info("Created local volume directory", metadata: [
+                    "name": "\(volumeName)",
+                    "path": "\(dataDir)"
+                ])
+            } catch {
+                // Clean up on failure
+                try? fileManager.removeItem(atPath: volumeDir)
+                logger.error("Failed to create local volume directory", metadata: [
+                    "name": "\(volumeName)",
+                    "error": "\(error)"
+                ])
+                throw VolumeError.creationFailed(volumeName, error.localizedDescription)
+            }
+
+            metadata = VolumeMetadata(
+                name: volumeName,
+                driver: "local",
+                format: "dir",
+                mountpoint: dataDir,  // Directory path
+                createdAt: createdAt,
+                labels: labels ?? [:],
+                options: driverOpts
+            )
+
+        case "block":
+            // Block driver: Create exclusive EXT4 block device
+            let blockImagePath = "\(volumeDir)/volume.img"
+
+            // Parse size from driverOpts (default 512GB)
+            let sizeInBytes: UInt64
+            if let sizeStr = driverOpts?["size"] {
+                sizeInBytes = try parseSizeString(sizeStr)
+            } else {
+                sizeInBytes = 512 * 1024 * 1024 * 1024  // 512GB default (sparse)
+            }
+
+            do {
+                // Create volume directory
+                try fileManager.createDirectory(
+                    atPath: volumeDir,
+                    withIntermediateDirectories: true,
+                    attributes: nil
+                )
+                logger.debug("Created volume directory", metadata: [
+                    "name": "\(volumeName)",
+                    "path": "\(volumeDir)"
+                ])
+
+                // Create and format EXT4 block device
+                logger.info("Creating EXT4 block device", metadata: [
+                    "name": "\(volumeName)",
+                    "path": "\(blockImagePath)",
+                    "size": "\(sizeInBytes) bytes"
+                ])
+
+                let formatter = try EXT4.Formatter(
+                    FilePath(blockImagePath),
+                    blockSize: 4096,
+                    minDiskSize: sizeInBytes
+                )
+                try formatter.close()
+
+                logger.info("EXT4 block device created", metadata: [
+                    "name": "\(volumeName)",
+                    "path": "\(blockImagePath)"
+                ])
+            } catch {
+                // Clean up on failure
+                try? fileManager.removeItem(atPath: volumeDir)
+                logger.error("Failed to create volume block device", metadata: [
+                    "name": "\(volumeName)",
+                    "error": "\(error)"
+                ])
+                throw VolumeError.creationFailed(volumeName, error.localizedDescription)
+            }
+
+            metadata = VolumeMetadata(
+                name: volumeName,
+                driver: "block",
+                format: "ext4",
+                mountpoint: blockImagePath,  // Path to volume.img file
+                createdAt: createdAt,
+                labels: labels ?? [:],
+                options: driverOpts
+            )
+
+        default:
+            throw VolumeError.unsupportedDriver(volumeDriver)
+        }
 
         // Store in memory
         volumes[volumeName] = metadata
@@ -190,7 +233,7 @@ public actor VolumeManager {
         logger.info("Volume created", metadata: [
             "name": "\(volumeName)",
             "driver": "\(volumeDriver)",
-            "mountpoint": "\(blockImagePath)"
+            "mountpoint": "\(metadata.mountpoint)"
         ])
 
         return metadata
@@ -361,6 +404,37 @@ public actor VolumeManager {
         return (deletedVolumes, spaceReclaimed)
     }
 
+    /// Validate exclusive access for block volumes
+    /// - Parameters:
+    ///   - volumeName: Name of the volume
+    ///   - containerID: ID of the container requesting access
+    /// - Throws: VolumeError.exclusiveAccessViolation if block volume is already in use
+    public func validateVolumeAccess(volumeName: String, containerID: String) async throws {
+        guard let metadata = volumes[volumeName] else {
+            throw VolumeError.notFound(volumeName)
+        }
+
+        // Only block volumes require exclusive access
+        guard metadata.driver == "block" else {
+            return
+        }
+
+        // Check if volume is already in use by a different container
+        let users = try await stateStore.getVolumeUsers(volumeName: volumeName)
+        if !users.isEmpty && !users.contains(containerID) {
+            let ownerContainer = users[0]
+            logger.error("Block volume exclusive access violation", metadata: [
+                "volume": "\(volumeName)",
+                "requesting_container": "\(containerID)",
+                "owner_container": "\(ownerContainer)"
+            ])
+            throw VolumeError.exclusiveAccessViolation(
+                volumeName: volumeName,
+                ownerContainer: ownerContainer
+            )
+        }
+    }
+
     // MARK: - Private Helpers
 
     /// Generate a random volume name
@@ -493,6 +567,7 @@ public enum VolumeError: Error, CustomStringConvertible {
     case creationFailed(String, String)
     case deletionFailed(String, String)
     case inUse(String, [String])  // volume name, container IDs
+    case exclusiveAccessViolation(volumeName: String, ownerContainer: String)
     case metadataLoadFailed(String)
     case metadataSaveFailed(String)
     case invalidSize(String)  // invalid size string
@@ -500,7 +575,7 @@ public enum VolumeError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .unsupportedDriver(let driver):
-            return "Unsupported volume driver: \(driver). Only 'local' driver is supported."
+            return "Unsupported volume driver: '\(driver)'. Supported drivers: 'local' (VirtioFS directory share), 'block' (exclusive EXT4 block device)."
         case .alreadyExists(let name):
             return "Volume '\(name)' already exists"
         case .notFound(let name):
@@ -511,6 +586,8 @@ public enum VolumeError: Error, CustomStringConvertible {
             return "Failed to delete volume '\(name)': \(reason)"
         case .inUse(let name, let containers):
             return "Volume '\(name)' is in use by containers: \(containers.joined(separator: ", "))"
+        case .exclusiveAccessViolation(let volumeName, let ownerContainer):
+            return "Volume '\(volumeName)' uses driver 'block' (exclusive access). Currently in use by container: \(ownerContainer)\n\nTo share volumes across multiple containers, create with --driver local:\n  docker volume create --driver local \(volumeName)-shared"
         case .metadataLoadFailed(let reason):
             return "Failed to load volume metadata: \(reason)"
         case .metadataSaveFailed(let reason):

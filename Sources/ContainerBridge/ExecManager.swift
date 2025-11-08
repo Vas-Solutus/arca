@@ -257,13 +257,16 @@ public actor ExecManager {
             throw ExecManagerError.execNotFound(execID)
         }
 
-        guard let process = execInfo.process else {
-            throw ExecManagerError.startFailed("Exec process not started")
-        }
-
         guard execInfo.config.tty else {
             // Not an error - just silently ignore resize for non-TTY exec
             logger.debug("Ignoring resize for non-TTY exec", metadata: ["exec_id": "\(execID)"])
+            return
+        }
+
+        // Race condition: Docker client may send resize before process is fully started
+        // This is normal behavior - silently ignore if process not ready yet
+        guard let process = execInfo.process else {
+            logger.debug("Ignoring resize - exec process not started yet", metadata: ["exec_id": "\(execID)"])
             return
         }
 
