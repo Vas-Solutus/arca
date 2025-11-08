@@ -1381,13 +1381,15 @@ public actor ContainerManager {
                         "ip": "\(attachment.ip)"
                     ])
 
-                    // Reattach to the network
+                    // Reattach to the network with the persisted IP address
+                    // This ensures we reuse the same IP and allows the backend to recognize this as a restoration
                     let newAttachment = try await networkManager.attachContainerToNetwork(
                         containerID: dockerID,
                         container: nativeContainer,
                         networkID: networkID,
                         containerName: containerName,
-                        aliases: attachment.aliases
+                        aliases: attachment.aliases,
+                        userSpecifiedIP: attachment.ip  // Reuse persisted IP for restoration
                     )
 
                     logger.info("Network attachment restored successfully", metadata: [

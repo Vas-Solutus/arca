@@ -297,7 +297,23 @@ public actor WireGuardNetworkBackend {
 
         // Check if already attached
         if metadata.containers.contains(containerID) {
-            throw NetworkManagerError.alreadyConnected(containerID, metadata.name)
+            // Container is already in this network - check if this is a restoration after restart
+            let existingAttachments = containerAttachments[networkID] ?? [:]
+            if let existingAttachment = existingAttachments[containerID],
+               let userIP = userSpecifiedIP,
+               userIP == existingAttachment.ip {
+                // This is a restoration after container restart - same container, same IP
+                // The WireGuard client was disconnected on stop, so we need to recreate interfaces
+                logger.info("Container restart detected - recreating WireGuard interface with existing IP", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)",
+                    "ip": "\(userIP)"
+                ])
+                // Allow the attachment to proceed - we'll recreate the WireGuard interface
+            } else {
+                // This is a duplicate connection attempt (not a restart)
+                throw NetworkManagerError.alreadyConnected(containerID, metadata.name)
+            }
         }
 
         // Allocate IP address for this container in this network
@@ -308,10 +324,10 @@ public actor WireGuardNetworkBackend {
                 throw NetworkManagerError.invalidIPAddress("IP \(userIP) not in subnet \(metadata.subnet)")
             }
 
-            // Check if IP is already allocated
+            // Check if IP is already allocated to a DIFFERENT container
             let existingAttachments = containerAttachments[networkID] ?? [:]
-            for (_, attachment) in existingAttachments {
-                if attachment.ip == userIP {
+            for (existingContainerID, attachment) in existingAttachments {
+                if attachment.ip == userIP && existingContainerID != containerID {
                     throw NetworkManagerError.ipAlreadyInUse(userIP)
                 }
             }
