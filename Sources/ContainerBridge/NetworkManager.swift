@@ -236,6 +236,7 @@ public actor NetworkManager {
                 subnet: "",
                 gateway: "",
                 ipRange: nil,
+                nextIPOctet: 2,  // Null networks don't use IPAM, but need default value
                 optionsJSON: String(data: optionsJSON, encoding: .utf8),
                 labelsJSON: String(data: labelsJSON, encoding: .utf8),
                 isDefault: isDefault

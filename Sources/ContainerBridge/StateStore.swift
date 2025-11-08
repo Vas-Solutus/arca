@@ -46,6 +46,7 @@ public actor StateStore {
     private nonisolated(unsafe) let subnet = Expression<String>("subnet")
     private nonisolated(unsafe) let gateway = Expression<String>("gateway")
     private nonisolated(unsafe) let ipRange = Expression<String?>("ip_range")
+    private nonisolated(unsafe) let nextIPOctet = Expression<Int>("next_ip_octet")
     private nonisolated(unsafe) let optionsJSON = Expression<String?>("options_json")
     private nonisolated(unsafe) let labelsJSON = Expression<String?>("labels_json")
     private nonisolated(unsafe) let isDefault = Expression<Bool>("is_default")
@@ -205,6 +206,7 @@ public actor StateStore {
                 t.column(subnet)
                 t.column(gateway)
                 t.column(ipRange)
+                t.column(nextIPOctet, defaultValue: 2)  // Default to .2 (gateway is .1)
                 t.column(optionsJSON)
                 t.column(labelsJSON)
                 t.column(isDefault, defaultValue: false)
@@ -559,6 +561,7 @@ public actor StateStore {
         subnet: String,
         gateway: String,
         ipRange: String?,
+        nextIPOctet: UInt8,
         optionsJSON: String?,
         labelsJSON: String?,
         isDefault: Bool
@@ -572,6 +575,7 @@ public actor StateStore {
             self.subnet <- subnet,
             self.gateway <- gateway,
             self.ipRange <- ipRange,
+            self.nextIPOctet <- Int(nextIPOctet),
             self.optionsJSON <- optionsJSON,
             self.labelsJSON <- labelsJSON,
             self.isDefault <- isDefault
@@ -594,6 +598,7 @@ public actor StateStore {
         subnet: String,
         gateway: String,
         ipRange: String?,
+        nextIPOctet: UInt8,
         optionsJSON: String?,
         labelsJSON: String?,
         isDefault: Bool
@@ -601,7 +606,7 @@ public actor StateStore {
         var result: [(
             id: String, name: String, driver: String, scope: String,
             createdAt: Date, subnet: String, gateway: String,
-            ipRange: String?, optionsJSON: String?, labelsJSON: String?,
+            ipRange: String?, nextIPOctet: UInt8, optionsJSON: String?, labelsJSON: String?,
             isDefault: Bool
         )] = []
 
@@ -617,6 +622,7 @@ public actor StateStore {
                 subnet: row[subnet],
                 gateway: row[gateway],
                 ipRange: row[ipRange],
+                nextIPOctet: UInt8(row[nextIPOctet]),
                 optionsJSON: row[optionsJSON],
                 labelsJSON: row[labelsJSON],
                 isDefault: row[isDefault]

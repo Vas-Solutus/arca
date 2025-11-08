@@ -103,27 +103,16 @@ public actor WireGuardNetworkBackend {
             networks[networkData.id] = metadata
             networksByName[networkData.name] = networkData.id
 
-            // Initialize IP allocation state
-            // If ipRange is specified, calculate starting octet from it
-            // Otherwise start at .2 (.1 is gateway)
-            if let ipRange = networkData.ipRange {
-                // Parse ipRange to get starting IP
-                // Example: "172.18.0.128/25" -> start at .128
-                let rangeComponents = ipRange.split(separator: "/")[0].split(separator: ".")
-                if rangeComponents.count == 4, let startOctet = UInt8(rangeComponents[3]) {
-                    nextIPOctet[networkData.id] = startOctet
-                } else {
-                    nextIPOctet[networkData.id] = 2  // Fallback
-                }
-            } else {
-                nextIPOctet[networkData.id] = 2
-            }
+            // Restore IP allocation state from persisted data
+            // This ensures we continue allocating IPs from where we left off before daemon restart
+            nextIPOctet[networkData.id] = networkData.nextIPOctet
 
             logger.debug("Restored network from database", metadata: [
                 "network_id": "\(networkData.id)",
                 "name": "\(networkData.name)",
                 "subnet": "\(networkData.subnet)",
-                "gateway": "\(networkData.gateway)"
+                "gateway": "\(networkData.gateway)",
+                "next_ip_octet": "\(networkData.nextIPOctet)"
             ])
         }
 
@@ -217,6 +206,7 @@ public actor WireGuardNetworkBackend {
                 subnet: effectiveSubnet,
                 gateway: effectiveGateway,
                 ipRange: ipRange,
+                nextIPOctet: nextIPOctet[id] ?? 2,
                 optionsJSON: String(data: optionsJSON, encoding: .utf8),
                 labelsJSON: String(data: labelsJSON, encoding: .utf8),
                 isDefault: isDefault
@@ -340,15 +330,29 @@ public actor WireGuardNetworkBackend {
             ])
         } else {
             // Auto-allocate IP (existing logic)
-            ipAddress = try allocateIP(networkID: networkID, subnet: metadata.subnet)
+            ipAddress = try await allocateIP(networkID: networkID, subnet: metadata.subnet)
         }
 
         // Get or create WireGuard client for this container
         let wgClient = try await getOrCreateWireGuardClient(containerID: containerID, container: container)
 
-        // Calculate network index for this container (0 for first network, 1 for second, etc.)
+        // Determine network index for this container
+        // On restart, reuse existing index to keep eth0 as eth0, eth1 as eth1, etc.
+        // For new networks, calculate next available index
         var indices = containerNetworkIndices[containerID] ?? [:]
-        let networkIndex = UInt32(indices.count)
+        let networkIndex: UInt32
+        if let existingIndex = indices[networkID] {
+            // Restart scenario - reuse existing index
+            networkIndex = existingIndex
+            logger.debug("Reusing existing network index for restart", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "network_index": "\(networkIndex)"
+            ])
+        } else {
+            // New network attachment - calculate next available index
+            networkIndex = UInt32(indices.count)
+        }
 
         logger.info("Creating WireGuard interface for network", metadata: [
             "container_id": "\(containerID)",
@@ -762,7 +766,7 @@ public actor WireGuardNetworkBackend {
     }
 
     /// Allocate an IP address for a container in a network
-    private func allocateIP(networkID: String, subnet: String) throws -> String {
+    private func allocateIP(networkID: String, subnet: String) async throws -> String {
         // Extract network prefix (e.g., "172.18.0.0/16" -> "172.18")
         let components = subnet.split(separator: "/")[0].split(separator: ".")
         guard components.count >= 3 else {
@@ -807,6 +811,33 @@ public actor WireGuardNetworkBackend {
 
         let ip = "\(prefix).0.\(octet)"
         nextIPOctet[networkID] = octet + 1
+
+        // Persist updated IPAM state to database
+        // This ensures nextIPOctet survives daemon restarts and prevents IP allocation collisions
+        if let metadata = networks[networkID] {
+            let optionsJSON = try? JSONEncoder().encode(metadata.options)
+            let labelsJSON = try? JSONEncoder().encode(metadata.labels)
+
+            try await stateStore.saveNetwork(
+                id: metadata.id,
+                name: metadata.name,
+                driver: metadata.driver,
+                scope: "local",
+                createdAt: metadata.created,
+                subnet: metadata.subnet,
+                gateway: metadata.gateway,
+                ipRange: metadata.ipRange,
+                nextIPOctet: octet + 1,  // Save the updated value
+                optionsJSON: optionsJSON.flatMap { String(data: $0, encoding: .utf8) },
+                labelsJSON: labelsJSON.flatMap { String(data: $0, encoding: .utf8) },
+                isDefault: metadata.isDefault
+            )
+
+            logger.debug("Persisted IPAM state", metadata: [
+                "network_id": "\(networkID)",
+                "next_ip_octet": "\(octet + 1)"
+            ])
+        }
 
         return ip
     }
