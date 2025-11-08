@@ -663,12 +663,26 @@ public actor ContainerManager {
             }
 
             // Add ARCA_CONTAINER_ID for embedded-dns to query helper VM for networks
-            // Skip for containers with com.arca.skip-embedded-dns label (like BuildKit)
-            if !skipEmbeddedDNS {
+            // Skip for:
+            // 1. Containers with com.arca.skip-embedded-dns label (like BuildKit)
+            // 2. Host network containers (vmnet-only, no WireGuard)
+            // 3. None network containers (no networking at all)
+            let shouldSkipEmbeddedDNS = skipEmbeddedDNS ||
+                                        effectiveNetworkMode == "host" ||
+                                        effectiveNetworkMode == "none"
+
+            if !shouldSkipEmbeddedDNS {
                 containerConfig.process.environmentVariables.append("ARCA_CONTAINER_ID=\(dockerID)")
-                configLogger.debug("Embedded-DNS enabled for container", metadata: ["docker_id": "\(dockerID)"])
+                configLogger.debug("Embedded-DNS enabled for container", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "networkMode": "\(effectiveNetworkMode ?? "bridge")"
+                ])
             } else {
-                configLogger.debug("Embedded-DNS skipped for container (using system DNS)", metadata: ["docker_id": "\(dockerID)"])
+                configLogger.debug("Embedded-DNS skipped for container", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "networkMode": "\(effectiveNetworkMode ?? "none")",
+                    "reason": skipEmbeddedDNS ? "label" : "network_mode"
+                ])
             }
 
             if let workingDir = config.workingDir {
@@ -678,8 +692,11 @@ public actor ContainerManager {
             // Set hostname (OCI spec field)
             containerConfig.hostname = config.hostname
 
-            // Enable network namespace for WireGuard/bridge containers
-            // vmnet and none containers stay in root namespace
+            // Enable network namespace for WireGuard/bridge containers only
+            // Host and none network containers stay in root namespace
+            // - host network: vmnet-only interface, NO network namespace, NO WireGuard
+            // - bridge network: WireGuard interface in network namespace
+            // - none network: no interfaces at all
             containerConfig.useNetworkNamespace = needsNetworkNamespace
             configLogger.debug("Network namespace configuration", metadata: [
                 "docker_id": "\(dockerID)",
@@ -688,20 +705,32 @@ public actor ContainerManager {
             ])
 
             // Network interface configuration:
-            // The ContainerManager is initialized with VmnetNetwork (see initialize()),
-            // which automatically creates eth0 for ALL containers via network?.create(id).
-            // This happens BEFORE our configuration closure runs.
+            // Apple's Containerization framework creates a vmnet eth0 interface for ALL containers
+            // (via shared vmnet network set during initialize()). This happens automatically.
             //
-            // For ALL network backends (vmnet, bridge/WireGuard):
-            // - eth0 is created in the VM's root namespace (where vminitd lives)
-            // - The network backend determines what happens next:
-            //   - vmnet: eth0 is the container's only interface (direct NAT access)
-            //   - bridge/WireGuard: eth0 stays in root ns, veth pairs + wgN interfaces created for container
+            // What happens next depends on the network mode:
+            // - host network (networkMode="host", useNetworkNamespace=false):
+            //   * eth0 is the ONLY interface - provides direct NAT internet access
+            //   * No WireGuard setup, no embedded-DNS, stays in root namespace
+            //   * Simple vmnet-only networking
             //
-            // We do NOT override containerConfig.interfaces, allowing the framework to create eth0.
-            configLogger.info("Container using framework-managed eth0 interface", metadata: [
+            // - bridge network (networkMode="bridge", useNetworkNamespace=true):
+            //   * eth0 stays in VM root namespace as underlay for WireGuard traffic
+            //   * WireGuard interface (wg0) created in container's network namespace
+            //   * Embedded-DNS provides name resolution
+            //   * veth pairs connect container namespace to root namespace
+            //
+            // - none network (networkMode="none", useNetworkNamespace=false):
+            //   * eth0 exists but is not used
+            //   * No networking configured for container
+            //
+            // We do NOT override containerConfig.interfaces, allowing Apple's framework
+            // to manage the vmnet eth0 interface automatically.
+            configLogger.info("Container network configuration", metadata: [
                 "container_id": "\(dockerID)",
-                "networkMode": "\(effectiveNetworkMode ?? "none")"
+                "networkMode": "\(effectiveNetworkMode ?? "none")",
+                "embeddedDNS": "\(!shouldSkipEmbeddedDNS)",
+                "networkNamespace": "\(needsNetworkNamespace)"
             ])
 
             // Configure TTY mode
@@ -2180,6 +2209,11 @@ public actor ContainerManager {
     /// Get container name by Docker ID
     public func getContainerName(dockerID: String) async -> String? {
         return containers[dockerID]?.name
+    }
+
+    /// Get container network mode by Docker ID
+    public func getContainerNetworkMode(dockerID: String) async -> String? {
+        return containers[dockerID]?.hostConfig.networkMode
     }
 
     // MARK: - Helpers for ExecManager

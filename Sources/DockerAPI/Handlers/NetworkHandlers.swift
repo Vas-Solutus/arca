@@ -247,6 +247,20 @@ public struct NetworkHandlers: Sendable {
         let aliases = endpointConfig?.aliases ?? []
 
         do {
+            // Check if container is using host or none network mode
+            // Docker does not allow connecting additional networks to these containers
+            if let networkMode = await containerManager.getContainerNetworkMode(dockerID: containerID) {
+                if networkMode == "host" || networkMode == "none" {
+                    logger.warning("Rejecting network connect for host/none network container", metadata: [
+                        "container": "\(containerID)",
+                        "networkMode": "\(networkMode)"
+                    ])
+                    return .failure(NetworkError.conflict(
+                        "container sharing network namespace of another container cannot be connected to other networks"
+                    ))
+                }
+            }
+
             // Resolve network name or ID to full network ID
             guard let resolvedNetworkID = await networkManager.resolveNetworkID(networkID) else {
                 return .failure(NetworkError.notFound("network \(networkID) not found"))
