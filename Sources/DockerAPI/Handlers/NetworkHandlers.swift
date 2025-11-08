@@ -395,6 +395,131 @@ public struct NetworkHandlers: Sendable {
             labels: metadata.labels
         )
     }
+
+    /// Handle POST /networks/prune
+    /// Deletes unused networks (no containers attached)
+    ///
+    /// Query parameters:
+    /// - filters: JSON encoded filters (until, label)
+    public func handlePruneNetworks(filters: [String: [String]] = [:]) async -> Result<NetworkPruneResponse, NetworkError> {
+        logger.info("Handling prune networks request", metadata: ["filters": "\(filters)"])
+
+        do {
+            // Parse filters
+            var untilDate: Date? = nil
+            var labelFilters: [String] = []
+
+            if let untilValues = filters["until"], let untilStr = untilValues.first {
+                // Parse timestamp (Unix timestamp, RFC3339, or duration like "24h")
+                untilDate = parseTimestamp(untilStr)
+            }
+
+            if let labels = filters["label"] {
+                labelFilters = labels
+            }
+
+            // Get all networks from NetworkManager
+            let allNetworks = await networkManager.listNetworks()
+
+            var deletedNetworkIDs: [String] = []
+
+            for network in allNetworks {
+                // Skip default networks (bridge, vmnet, none)
+                if network.isDefault {
+                    continue
+                }
+
+                // Skip networks with active containers
+                let attachments = await networkManager.getNetworkAttachments(networkID: network.id)
+                if !attachments.isEmpty {
+                    continue
+                }
+
+                // Apply until filter
+                if let until = untilDate, network.created > until {
+                    continue
+                }
+
+                // Apply label filters
+                if !labelFilters.isEmpty {
+                    let matchesLabels = labelFilters.allSatisfy { labelFilter in
+                        if let (key, value) = labelFilter.split(separator: "=", maxSplits: 1).map({ String($0) }).tuple() {
+                            return network.labels[key] == value
+                        } else {
+                            return network.labels[labelFilter] != nil
+                        }
+                    }
+                    if !matchesLabels {
+                        continue
+                    }
+                }
+
+                // Delete the network
+                do {
+                    try await networkManager.deleteNetwork(id: network.id)
+                    deletedNetworkIDs.append(network.id)
+                    logger.info("Pruned network", metadata: ["id": "\(network.id)", "name": "\(network.name)"])
+                } catch {
+                    logger.warning("Failed to prune network", metadata: [
+                        "id": "\(network.id)",
+                        "error": "\(error)"
+                    ])
+                }
+            }
+
+            logger.info("Networks pruned", metadata: ["count": "\(deletedNetworkIDs.count)"])
+            return .success(NetworkPruneResponse(networksDeleted: deletedNetworkIDs))
+
+        } catch {
+            logger.error("Failed to prune networks", metadata: ["error": "\(error)"])
+            return .failure(NetworkError.pruneFailed(errorDescription(error)))
+        }
+    }
+
+    /// Parse timestamp from string (Unix timestamp, RFC3339, or Go duration)
+    private func parseTimestamp(_ str: String) -> Date? {
+        // Try Unix timestamp
+        if let timestamp = TimeInterval(str) {
+            return Date(timeIntervalSince1970: timestamp)
+        }
+
+        // Try RFC3339
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: str) {
+            return date
+        }
+
+        // Try Go duration (e.g. "24h", "1h30m")
+        if let duration = parseDuration(str) {
+            return Date(timeIntervalSinceNow: -duration)
+        }
+
+        return nil
+    }
+
+    /// Parse Go duration string (e.g. "24h", "1h30m", "10m")
+    private func parseDuration(_ str: String) -> TimeInterval? {
+        var remaining = str
+        var totalSeconds: TimeInterval = 0
+
+        let units: [(suffix: String, multiplier: TimeInterval)] = [
+            ("h", 3600),
+            ("m", 60),
+            ("s", 1)
+        ]
+
+        for (suffix, multiplier) in units {
+            if let range = remaining.range(of: suffix) {
+                let numberStr = String(remaining[..<range.lowerBound])
+                if let number = Double(numberStr) {
+                    totalSeconds += number * multiplier
+                    remaining = String(remaining[range.upperBound...])
+                }
+            }
+        }
+
+        return totalSeconds > 0 ? totalSeconds : nil
+    }
 }
 
 // MARK: - Network Errors
@@ -409,6 +534,7 @@ public enum NetworkError: Error, CustomStringConvertible {
     case deleteFailed(String)
     case connectFailed(String)
     case disconnectFailed(String)
+    case pruneFailed(String)
 
     public var description: String {
         switch self {
@@ -430,6 +556,8 @@ public enum NetworkError: Error, CustomStringConvertible {
             return "failed to connect container to network: \(message)"
         case .disconnectFailed(let message):
             return "failed to disconnect container from network: \(message)"
+        case .pruneFailed(let message):
+            return "failed to prune networks: \(message)"
         }
     }
 }

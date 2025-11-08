@@ -257,3 +257,16 @@ public struct EndpointIPAMConfig: Codable {
         case linkLocalIPs = "LinkLocalIPs"
     }
 }
+
+/// Response for POST /networks/prune endpoint
+public struct NetworkPruneResponse: Codable {
+    public let networksDeleted: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case networksDeleted = "NetworksDeleted"
+    }
+
+    public init(networksDeleted: [String]) {
+        self.networksDeleted = networksDeleted
+    }
+}

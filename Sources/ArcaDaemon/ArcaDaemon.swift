@@ -1174,6 +1174,23 @@ public final class ArcaDaemon: @unchecked Sendable {
                     return .standard(HTTPResponse.badRequest("Invalid or missing request body"))
                 }
             }
+
+            _ = builder.post("/networks/prune") { request in
+                do {
+                    let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
+
+                    let result = await networkHandlers.handlePruneNetworks(filters: filters)
+
+                    switch result {
+                    case .success(let response):
+                        return .standard(HTTPResponse.ok(response))
+                    case .failure(let error):
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                } catch {
+                    return .standard(HTTPResponse.badRequest("Invalid filters parameter"))
+                }
+            }
         }
 
         // Volume routes (if VolumeManager is available)

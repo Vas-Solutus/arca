@@ -142,7 +142,8 @@ public actor WireGuardNetworkBackend {
         gateway: String?,
         ipRange: String?,
         options: [String: String],
-        labels: [String: String]
+        labels: [String: String],
+        isDefault: Bool = false
     ) async throws -> NetworkMetadata {
         logger.info("Creating WireGuard bridge network", metadata: [
             "network_id": "\(id)",
@@ -196,7 +197,7 @@ public actor WireGuardNetworkBackend {
             created: createdDate,
             options: options,
             labels: labels,
-            isDefault: false
+            isDefault: isDefault
         )
 
         networks[id] = metadata
@@ -218,7 +219,7 @@ public actor WireGuardNetworkBackend {
                 ipRange: ipRange,
                 optionsJSON: String(data: optionsJSON, encoding: .utf8),
                 labelsJSON: String(data: labelsJSON, encoding: .utf8),
-                isDefault: false
+                isDefault: isDefault
             )
 
             logger.debug("WireGuard network persisted to database", metadata: ["network_id": "\(id)"])

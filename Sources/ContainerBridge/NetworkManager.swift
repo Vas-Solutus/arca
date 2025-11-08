@@ -72,7 +72,7 @@ public actor NetworkManager {
         logger.info("NetworkManager initialized successfully")
     }
 
-    /// Create default Docker networks (bridge, none)
+    /// Create default Docker networks (bridge, vmnet, none)
     /// This is idempotent - only creates networks that don't already exist
     private func createDefaultNetworks() async throws {
         logger.info("Creating default networks (if not exist)")
@@ -95,7 +95,25 @@ public actor NetworkManager {
             logger.info("Default 'bridge' network already exists")
         }
 
-        // 2. Create "none" network (null driver - no network interfaces)
+        // 2. Create "vmnet" network (192.168.67.0/24 - Arca's host equivalent)
+        if await getNetworkByName(name: "vmnet") == nil {
+            logger.info("Creating default 'vmnet' network (192.168.67.0/24)")
+            let _ = try await createNetwork(
+                name: "vmnet",
+                driver: "vmnet",
+                subnet: "192.168.67.0/24",
+                gateway: "192.168.67.1",
+                ipRange: nil,
+                options: [:],
+                labels: [:],
+                isDefault: true
+            )
+            logger.info("Created default 'vmnet' network")
+        } else {
+            logger.info("Default 'vmnet' network already exists")
+        }
+
+        // 3. Create "none" network (null driver - no network interfaces)
         if await getNetworkByName(name: "none") == nil {
             logger.info("Creating default 'none' network (null driver)")
             let _ = try await createNetwork(
@@ -162,7 +180,8 @@ public actor NetworkManager {
                 gateway: gateway,
                 ipRange: ipRange,
                 options: options,
-                labels: labels
+                labels: labels,
+                isDefault: isDefault
             )
 
             // Register in mappings
@@ -186,7 +205,8 @@ public actor NetworkManager {
                 gateway: gateway,
                 ipRange: ipRange,
                 options: options,
-                labels: labels
+                labels: labels,
+                isDefault: isDefault
             )
 
             // Register in mappings
@@ -238,8 +258,18 @@ public actor NetworkManager {
             throw NetworkManagerError.networkNotFound(id)
         }
 
-        // Get network name for cleanup (do this before deletion)
-        let networkName = await getNetwork(id: id)?.name
+        // Get metadata to check if it's a default network
+        guard let metadata = await getNetwork(id: id) else {
+            throw NetworkManagerError.networkNotFound(id)
+        }
+
+        // Prevent deletion of default networks
+        if metadata.isDefault {
+            throw NetworkManagerError.cannotDeleteDefault(metadata.name)
+        }
+
+        // Get network name for cleanup
+        let networkName = metadata.name
 
         // Route to appropriate backend based on driver
         switch driver {
@@ -268,9 +298,7 @@ public actor NetworkManager {
 
         // Remove from mappings after successful deletion
         networkDrivers.removeValue(forKey: id)
-        if let name = networkName {
-            networkNames.removeValue(forKey: name)
-        }
+        networkNames.removeValue(forKey: networkName)
     }
 
     // MARK: - Container Attachment
@@ -591,7 +619,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case ambiguousID(String, Int)
     case unsupportedDriver(String)
     case hasActiveEndpoints(String, Int)
-    case cannotDeleteDefault
+    case cannotDeleteDefault(String)
     case alreadyConnected(String, String)
     case notConnected(String, String)
     case ipAllocationFailed(String)
@@ -613,8 +641,8 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "network driver \(driver) not supported"
         case .hasActiveEndpoints(let name, let count):
             return "network \(name) has active endpoints (\(count) containers connected)"
-        case .cannotDeleteDefault:
-            return "cannot remove the default bridge network"
+        case .cannotDeleteDefault(let name):
+            return "cannot remove default network '\(name)'"
         case .alreadyConnected(let containerID, let networkName):
             return "container \(containerID) is already connected to network \(networkName)"
         case .notConnected(let containerID, let networkName):

@@ -36,7 +36,8 @@ public actor VmnetNetworkBackend {
         gateway: String?,
         ipRange: String?,
         options: [String: String],
-        labels: [String: String]
+        labels: [String: String],
+        isDefault: Bool = false
     ) throws -> NetworkMetadata {
         logger.info("Creating vmnet bridge network", metadata: [
             "network_id": "\(id)",
@@ -69,7 +70,7 @@ public actor VmnetNetworkBackend {
             created: Date(),
             options: options,
             labels: labels,
-            isDefault: false
+            isDefault: isDefault
         )
         networkMetadata[id] = metadata
 
@@ -201,6 +202,11 @@ public actor VmnetNetworkBackend {
 
     /// Allocate a unique subnet from 10.0.0.0/8 space
     /// Uses /24 subnets: 10.0.N.0/24 where N increments
+    ///
+    /// **Reserved Subnets:**
+    /// - 172.17.0.0/16 - Default bridge network (WireGuard backend)
+    /// - 192.168.67.0/24 - Default vmnet network
+    /// - 10.x.x.x - User-created vmnet networks (auto-allocated)
     private func allocateSubnet() throws -> String {
         guard nextSubnetIndex < 255 else {
             throw NetworkManagerError.ipAllocationFailed("Subnet pool exhausted (255 /24 networks allocated)")
