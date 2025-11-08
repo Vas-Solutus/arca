@@ -33,7 +33,7 @@ public struct NetworkHandlers: Sendable {
     /// Lists all networks
     ///
     /// Query parameters:
-    /// - filters: JSON encoded filters (name, id, driver, type, label)
+    /// - filters: JSON encoded filters (name, id, driver, type, label, dangling, scope)
     public func handleListNetworks(filters: [String: [String]] = [:]) async -> Result<[Network], NetworkError> {
         logger.debug("Handling list networks request", metadata: [
             "filters": "\(filters)"
@@ -43,8 +43,23 @@ public struct NetworkHandlers: Sendable {
         // No failure case for listing (empty array on no networks)
         let allNetworks = await networkManager.listNetworks()
 
-        // Apply filters
-        let filteredMetadata = applyFilters(allNetworks, filters: filters)
+        // Apply sync filters first
+        var filteredMetadata = applyFilters(allNetworks, filters: filters)
+
+        // Apply dangling filter (async - requires checking attachments)
+        if let danglingValues = filters["dangling"], !danglingValues.isEmpty {
+            if let dangling = parseBool(danglingValues[0]) {
+                var danglingFiltered: [NetworkMetadata] = []
+                for network in filteredMetadata {
+                    let attachments = await networkManager.getNetworkAttachments(networkID: network.id)
+                    let isDangling = attachments.isEmpty
+                    if dangling == isDangling {
+                        danglingFiltered.append(network)
+                    }
+                }
+                filteredMetadata = danglingFiltered
+            }
+        }
 
         // Convert to Docker API format
         var networks: [Network] = []
@@ -58,8 +73,30 @@ public struct NetworkHandlers: Sendable {
 
     /// Handle GET /networks/{id}
     /// Inspects a network
-    public func handleInspectNetwork(id: String) async -> Result<Network, NetworkError> {
-        logger.debug("Handling inspect network request", metadata: ["id": "\(id)"])
+    ///
+    /// Query parameters:
+    /// - verbose: Include detailed information (not yet implemented)
+    /// - scope: Filter by scope (not yet implemented)
+    public func handleInspectNetwork(
+        id: String,
+        verbose: Bool = false,
+        scope: String? = nil
+    ) async -> Result<Network, NetworkError> {
+        logger.debug("Handling inspect network request", metadata: [
+            "id": "\(id)",
+            "verbose": "\(verbose)",
+            "scope": "\(scope ?? "none")"
+        ])
+
+        // TODO: Implement verbose mode (include peer info, services)
+        if verbose {
+            logger.warning("Verbose mode not yet implemented for network inspect")
+        }
+
+        // TODO: Implement scope filtering
+        if let scope = scope {
+            logger.warning("Scope filtering not yet implemented", metadata: ["scope": "\(scope)"])
+        }
 
         // Try resolving as name or ID
         let resolvedID = await networkManager.resolveNetworkID(id) ?? id
@@ -85,6 +122,26 @@ public struct NetworkHandlers: Sendable {
             "name": "\(request.name)",
             "driver": "\(request.driver ?? "bridge")"
         ])
+
+        // Log warnings for unsupported fields
+        if let scope = request.scope, scope != "local" {
+            logger.warning("Scope '\(scope)' not supported, using 'local'", metadata: ["network": "\(request.name)"])
+        }
+
+        if request.configOnly == true {
+            logger.warning("ConfigOnly networks not supported", metadata: ["network": "\(request.name)"])
+            return .failure(NetworkError.invalidRequest("ConfigOnly networks not supported"))
+        }
+
+        if request.configFrom != nil {
+            logger.warning("ConfigFrom not supported", metadata: ["network": "\(request.name)"])
+            return .failure(NetworkError.invalidRequest("ConfigFrom not supported"))
+        }
+
+        if request.enableIPv4 == false {
+            logger.warning("Disabling IPv4 not supported", metadata: ["network": "\(request.name)"])
+            return .failure(NetworkError.invalidRequest("IPv4 cannot be disabled"))
+        }
 
         // Extract IPAM configuration
         let subnet = request.ipam?.config?.first?.subnet
@@ -186,7 +243,7 @@ public struct NetworkHandlers: Sendable {
         ])
 
         // Extract IPv4 address and aliases from endpoint config
-        let _ = endpointConfig?.ipamConfig?.ipv4Address  // TODO: Support user-specified IP addresses
+        let userIP = endpointConfig?.ipamConfig?.ipv4Address
         let aliases = endpointConfig?.aliases ?? []
 
         do {
@@ -209,7 +266,8 @@ public struct NetworkHandlers: Sendable {
                 container: container,
                 networkID: resolvedNetworkID,
                 containerName: containerName,
-                aliases: aliases
+                aliases: aliases,
+                userSpecifiedIP: userIP
             )
 
             // Record the attachment in ContainerManager (triggers DNS push)
@@ -346,6 +404,27 @@ public struct NetworkHandlers: Sendable {
             }
         }
 
+        // Filter by scope (local, swarm, global)
+        if let scopes = filters["scope"], !scopes.isEmpty {
+            filtered = filtered.filter { network in
+                // For now, all networks are "local" scope (no swarm support)
+                scopes.contains("local")
+            }
+        }
+
+        // Filter by type (custom, builtin)
+        if let types = filters["type"], !types.isEmpty {
+            filtered = filtered.filter { network in
+                if types.contains("builtin") && network.isDefault {
+                    return true
+                }
+                if types.contains("custom") && !network.isDefault {
+                    return true
+                }
+                return false
+            }
+        }
+
         return filtered
     }
 
@@ -392,7 +471,11 @@ public struct NetworkHandlers: Sendable {
             ingress: false,
             containers: containers,
             options: metadata.options,
-            labels: metadata.labels
+            labels: metadata.labels,
+            enableIPv4: true,        // Always true for now
+            configFrom: nil,          // Not supported yet
+            configOnly: false,        // Not supported yet
+            peers: nil                // No overlay networks
         )
     }
 
@@ -421,10 +504,10 @@ public struct NetworkHandlers: Sendable {
             // Get all networks from NetworkManager
             let allNetworks = await networkManager.listNetworks()
 
-            var deletedNetworkIDs: [String] = []
+            var deletedNetworkNames: [String] = []
 
             for network in allNetworks {
-                // Skip default networks (bridge, vmnet, none)
+                // Skip default networks (bridge, host, none)
                 if network.isDefault {
                     continue
                 }
@@ -457,7 +540,7 @@ public struct NetworkHandlers: Sendable {
                 // Delete the network
                 do {
                     try await networkManager.deleteNetwork(id: network.id)
-                    deletedNetworkIDs.append(network.id)
+                    deletedNetworkNames.append(network.name)  // Docker returns names, not IDs
                     logger.info("Pruned network", metadata: ["id": "\(network.id)", "name": "\(network.name)"])
                 } catch {
                     logger.warning("Failed to prune network", metadata: [
@@ -467,8 +550,8 @@ public struct NetworkHandlers: Sendable {
                 }
             }
 
-            logger.info("Networks pruned", metadata: ["count": "\(deletedNetworkIDs.count)"])
-            return .success(NetworkPruneResponse(networksDeleted: deletedNetworkIDs))
+            logger.info("Networks pruned", metadata: ["count": "\(deletedNetworkNames.count)"])
+            return .success(NetworkPruneResponse(networksDeleted: deletedNetworkNames))
 
         } catch {
             logger.error("Failed to prune networks", metadata: ["error": "\(error)"])
@@ -519,6 +602,20 @@ public struct NetworkHandlers: Sendable {
         }
 
         return totalSeconds > 0 ? totalSeconds : nil
+    }
+
+    /// Parse boolean value from string (true, false, 1, 0)
+    private func parseBool(_ str: String) -> Bool? {
+        if let boolVal = Bool(str) {
+            return boolVal
+        }
+        if str == "1" || str.lowercased() == "true" {
+            return true
+        }
+        if str == "0" || str.lowercased() == "false" {
+            return false
+        }
+        return nil
     }
 }
 

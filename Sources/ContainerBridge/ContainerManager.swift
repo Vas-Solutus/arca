@@ -283,7 +283,8 @@ public actor ContainerManager {
                 tty: config.tty,
                 needsCreate: false,
                 networkAttachments: networkAttachments,
-                anonymousVolumes: []  // Anonymous volumes loaded from volume_mounts table
+                anonymousVolumes: [],  // Anonymous volumes loaded from volume_mounts table
+                initialNetworkUserIP: nil  // Only relevant during container creation, not restoration
             )
 
             // Store in containers map
@@ -484,9 +485,9 @@ public actor ContainerManager {
             }
         }
 
-        // For vmnet containers, add vmnet network information
-        // vmnet containers use Apple's framework-managed networking and don't have networkAttachments
-        if info.hostConfig.networkMode == "vmnet", let nativeContainer = nativeContainers[dockerID] {
+        // For host network (vmnet driver) containers, add network information
+        // host network containers use Apple's vmnet framework and don't have networkAttachments
+        if info.hostConfig.networkMode == "host", let nativeContainer = nativeContainers[dockerID] {
             // Get all vmnet interfaces from native container
             // Try to cast each interface to ContainerManager.VmnetNetwork.Interface
             var vmnetIndex = 0
@@ -499,8 +500,8 @@ public actor ContainerManager {
 
                     let gatewayString = vmnetInterface.gateway
 
-                    // Use "vmnet" for the first interface, "vmnet1", "vmnet2" for additional ones
-                    let networkName = vmnetIndex == 0 ? "vmnet" : "vmnet\(vmnetIndex)"
+                    // Use "host" for the first interface, "host1", "host2" for additional ones
+                    let networkName = vmnetIndex == 0 ? "host" : "host\(vmnetIndex)"
 
                     networks[networkName] = EndpointSettings(
                         ipamConfig: nil,
@@ -601,7 +602,7 @@ public actor ContainerManager {
 
         // Determine if network namespace is needed by checking network driver
         var tempNeedsNetworkNamespace = false
-        if let networkMode = normalizedNetworkMode, networkMode != "vmnet" && networkMode != "none" {
+        if let networkMode = normalizedNetworkMode, networkMode != "host" && networkMode != "none" {
             // Look up network to check its driver
             if let network = await networkManager?.getNetworkByName(name: networkMode) {
                 tempNeedsNetworkNamespace = (network.driver == "wireguard" || network.driver == "bridge")
@@ -761,7 +762,8 @@ public actor ContainerManager {
         restartPolicy: RestartPolicy? = nil,
         binds: [String]? = nil,
         volumes: [String: Any]? = nil,  // Anonymous volumes: {"/container/path": {}}
-        portBindings: [String: [PortBinding]]? = nil  // Port mappings: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]}
+        portBindings: [String: [PortBinding]]? = nil,  // Port mappings: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]}
+        initialNetworkUserIP: String? = nil  // User-specified IP for initial network (from docker run --ip)
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -943,7 +945,8 @@ public actor ContainerManager {
             tty: tty,
             needsCreate: shouldDeferCreate,
             networkAttachments: [:],  // Start with no network attachments
-            anonymousVolumes: anonymousVolumeNames  // Track anonymous volumes for cleanup
+            anonymousVolumes: anonymousVolumeNames,  // Track anonymous volumes for cleanup
+            initialNetworkUserIP: initialNetworkUserIP  // User-specified IP for initial network
         )
 
         containers[dockerID] = containerInfo
@@ -1246,8 +1249,9 @@ public actor ContainerManager {
            info.networkAttachments.isEmpty {
             let networkMode = info.hostConfig.networkMode
 
-            // Only auto-attach if networkMode is not "none"
-            if networkMode != "none" {
+            // Only auto-attach if networkMode is not "none" or "host"
+            // "host" network (vmnet driver) interfaces are created during VM creation, not at start time
+            if networkMode != "none" && networkMode != "host" {
                 // Normalize networkMode: empty, "default", or "bridge" all mean the default bridge network
                 let targetNetwork: String
                 if networkMode.isEmpty || networkMode == "default" {
@@ -1278,7 +1282,8 @@ public actor ContainerManager {
                         container: nativeContainer,
                         networkID: resolvedNetworkID,
                         containerName: containerName,
-                        aliases: []
+                        aliases: [],
+                        userSpecifiedIP: info.initialNetworkUserIP  // Pass user-specified IP for validation
                     )
 
                     // Record the attachment in ContainerManager
@@ -1296,9 +1301,27 @@ public actor ContainerManager {
                         "resolved_id": "\(resolvedNetworkID)",
                         "ip": "\(attachment.ip)"
                     ])
+                } catch let error as NetworkManagerError {
+                    // User validation errors should fail container start
+                    switch error {
+                    case .invalidIPAddress, .ipAlreadyInUse, .alreadyConnected:
+                        logger.error("Container start failed due to network validation error", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(targetNetwork)",
+                            "error": "\(error)"
+                        ])
+                        throw error
+                    default:
+                        // Infrastructure errors (network not found, backend not ready, etc.)
+                        // Log warning but don't fail container start - networking is optional
+                        logger.warning("Failed to auto-attach container to network", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(targetNetwork)",
+                            "error": "\(error)"
+                        ])
+                    }
                 } catch {
-                    // Log the error but don't fail the container start
-                    // Networking is optional - container can run without it
+                    // Unknown errors - log warning but don't fail
                     logger.warning("Failed to auto-attach container to network", metadata: [
                         "container": "\(dockerID)",
                         "network": "\(targetNetwork)",
@@ -1306,8 +1329,9 @@ public actor ContainerManager {
                     ])
                 }
             } else {
-                logger.debug("Container networkMode is 'none', skipping auto-attachment", metadata: [
-                    "container": "\(dockerID)"
+                logger.debug("Container networkMode is 'none' or 'host', skipping auto-attachment", metadata: [
+                    "container": "\(dockerID)",
+                    "networkMode": "\(networkMode)"
                 ])
             }
         } else if let networkManager = networkManager,
@@ -2694,6 +2718,7 @@ public actor ContainerManager {
         var needsCreate: Bool  // Whether .create() was deferred (for attached containers)
         var networkAttachments: [String: NetworkAttachment]  // Network ID -> Attachment details
         var anonymousVolumes: [String]  // Names of anonymous volumes to delete on container removal
+        let initialNetworkUserIP: String?  // User-specified IP for initial network (from docker run --ip)
     }
 
     /// Network attachment details for a container

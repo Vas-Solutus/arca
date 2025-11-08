@@ -72,7 +72,7 @@ public actor NetworkManager {
         logger.info("NetworkManager initialized successfully")
     }
 
-    /// Create default Docker networks (bridge, vmnet, none)
+    /// Create default Docker networks (bridge, host, none)
     /// This is idempotent - only creates networks that don't already exist
     private func createDefaultNetworks() async throws {
         logger.info("Creating default networks (if not exist)")
@@ -95,22 +95,25 @@ public actor NetworkManager {
             logger.info("Default 'bridge' network already exists")
         }
 
-        // 2. Create "vmnet" network (192.168.67.0/24 - Arca's host equivalent)
-        if await getNetworkByName(name: "vmnet") == nil {
-            logger.info("Creating default 'vmnet' network (192.168.67.0/24)")
+        // 2. Create "host" network (vmnet driver - Arca's host networking equivalent)
+        // Apple's vmnet framework auto-allocates subnets (e.g., 192.168.64.0/24)
+        // This provides direct host networking similar to Docker's "host" mode but with an IP
+        // Also serves as the underlay for WireGuard bridge network traffic (firewalled)
+        if await getNetworkByName(name: "host") == nil {
+            logger.info("Creating default 'host' network (vmnet driver, auto-allocated subnet)")
             let _ = try await createNetwork(
-                name: "vmnet",
+                name: "host",
                 driver: "vmnet",
-                subnet: "192.168.67.0/24",
-                gateway: "192.168.67.1",
+                subnet: nil,  // Apple auto-allocates
+                gateway: nil,  // Apple auto-allocates
                 ipRange: nil,
                 options: [:],
                 labels: [:],
                 isDefault: true
             )
-            logger.info("Created default 'vmnet' network")
+            logger.info("Created default 'host' network")
         } else {
-            logger.info("Default 'vmnet' network already exists")
+            logger.info("Default 'host' network already exists")
         }
 
         // 3. Create "none" network (null driver - no network interfaces)
@@ -309,7 +312,8 @@ public actor NetworkManager {
         container: Containerization.LinuxContainer,
         networkID: String,
         containerName: String,
-        aliases: [String] = []
+        aliases: [String] = [],
+        userSpecifiedIP: String? = nil
     ) async throws -> NetworkAttachment {
         // Look up driver from central mapping
         guard let driver = networkDrivers[networkID] else {
@@ -328,12 +332,17 @@ public actor NetworkManager {
                 container: container,
                 networkID: networkID,
                 containerName: containerName,
-                aliases: aliases
+                aliases: aliases,
+                userSpecifiedIP: userSpecifiedIP
             )
 
         case "vmnet":
             guard let backend = vmnetBackend else {
                 throw NetworkManagerError.unsupportedDriver("vmnet (backend not initialized)")
+            }
+            // vmnet backend doesn't support user-specified IPs or dynamic attach
+            if userSpecifiedIP != nil {
+                throw NetworkManagerError.unsupportedFeature("vmnet backend does not support user-specified IPs")
             }
             // vmnet backend doesn't support dynamic attach
             try await backend.attachContainer(
@@ -626,6 +635,9 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case backendNotReady
     case containerNotFound(String)
     case dynamicAttachNotSupported(backend: String, suggestion: String)
+    case invalidIPAddress(String)
+    case ipAlreadyInUse(String)
+    case unsupportedFeature(String)
 
     public var description: String {
         switch self {
@@ -655,6 +667,12 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "Container not found: \(id)"
         case .dynamicAttachNotSupported(let backend, let suggestion):
             return "\(backend) backend does not support 'docker network connect' after container creation.\n\(suggestion)"
+        case .invalidIPAddress(let message):
+            return "Invalid IP address: \(message)"
+        case .ipAlreadyInUse(let ip):
+            return "IP address \(ip) is already in use"
+        case .unsupportedFeature(let message):
+            return "Unsupported feature: \(message)"
         }
     }
 }

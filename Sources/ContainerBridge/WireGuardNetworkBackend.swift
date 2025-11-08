@@ -281,7 +281,8 @@ public actor WireGuardNetworkBackend {
         container: Containerization.LinuxContainer,
         networkID: String,
         containerName: String,
-        aliases: [String]
+        aliases: [String],
+        userSpecifiedIP: String? = nil
     ) async throws -> NetworkAttachment {
         guard var metadata = networks[networkID] else {
             throw NetworkManagerError.networkNotFound(networkID)
@@ -290,7 +291,8 @@ public actor WireGuardNetworkBackend {
         logger.info("Attaching container to WireGuard network", metadata: [
             "container_id": "\(containerID)",
             "network_id": "\(networkID)",
-            "container_name": "\(containerName)"
+            "container_name": "\(containerName)",
+            "user_specified_ip": "\(userSpecifiedIP ?? "auto")"
         ])
 
         // Check if already attached
@@ -299,7 +301,31 @@ public actor WireGuardNetworkBackend {
         }
 
         // Allocate IP address for this container in this network
-        let ipAddress = try allocateIP(networkID: networkID, subnet: metadata.subnet)
+        let ipAddress: String
+        if let userIP = userSpecifiedIP {
+            // Validate user-specified IP is within subnet
+            guard isIPInSubnet(userIP, subnet: metadata.subnet) else {
+                throw NetworkManagerError.invalidIPAddress("IP \(userIP) not in subnet \(metadata.subnet)")
+            }
+
+            // Check if IP is already allocated
+            let existingAttachments = containerAttachments[networkID] ?? [:]
+            for (_, attachment) in existingAttachments {
+                if attachment.ip == userIP {
+                    throw NetworkManagerError.ipAlreadyInUse(userIP)
+                }
+            }
+
+            // Use user-specified IP
+            ipAddress = userIP
+            logger.info("Using user-specified IP address", metadata: [
+                "ip": "\(ipAddress)",
+                "network_id": "\(networkID)"
+            ])
+        } else {
+            // Auto-allocate IP (existing logic)
+            ipAddress = try allocateIP(networkID: networkID, subnet: metadata.subnet)
+        }
 
         // Get or create WireGuard client for this container
         let wgClient = try await getOrCreateWireGuardClient(containerID: containerID, container: container)
@@ -808,5 +834,42 @@ public actor WireGuardNetworkBackend {
         // Encode as base64 (WireGuard key format)
         let keyData = Data(keyBytes)
         return keyData.base64EncodedString()
+    }
+
+    /// Check if an IP address is within a subnet (CIDR)
+    private func isIPInSubnet(_ ip: String, subnet: String) -> Bool {
+        let parts = subnet.split(separator: "/")
+        guard parts.count == 2,
+              let cidr = Int(parts[1]) else {
+            return false
+        }
+
+        let subnetIP = String(parts[0])
+
+        // Parse both IPs into octets
+        let ipOctets = ip.split(separator: ".").compactMap { Int($0) }
+        let subnetOctets = subnetIP.split(separator: ".").compactMap { Int($0) }
+
+        guard ipOctets.count == 4, subnetOctets.count == 4 else {
+            return false
+        }
+
+        // Convert CIDR to number of bits to check
+        let bitsToCheck = cidr
+
+        // Check bit by bit
+        for bit in 0..<bitsToCheck {
+            let octetIndex = bit / 8
+            let bitIndex = 7 - (bit % 8)
+
+            let ipBit = (ipOctets[octetIndex] >> bitIndex) & 1
+            let subnetBit = (subnetOctets[octetIndex] >> bitIndex) & 1
+
+            if ipBit != subnetBit {
+                return false
+            }
+        }
+
+        return true
     }
 }

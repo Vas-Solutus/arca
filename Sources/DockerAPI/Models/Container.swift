@@ -222,6 +222,7 @@ public struct ContainerCreateRequest: Codable, Sendable {
     public let entrypoint: [String]?
     public let labels: [String: String]?
     public let hostConfig: HostConfigCreate?
+    public let networkingConfig: NetworkingConfig?  // For docker run --ip support
 
     enum CodingKeys: String, CodingKey {
         case hostname = "Hostname"
@@ -241,6 +242,7 @@ public struct ContainerCreateRequest: Codable, Sendable {
         case entrypoint = "Entrypoint"
         case labels = "Labels"
         case hostConfig = "HostConfig"
+        case networkingConfig = "NetworkingConfig"
     }
 }
 

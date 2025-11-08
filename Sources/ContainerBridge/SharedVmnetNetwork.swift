@@ -13,8 +13,11 @@ public final class SharedVmnetNetwork: @unchecked Sendable {
     private var network: Containerization.ContainerManager.VmnetNetwork
     private let lock = NSLock()
 
-    public init(subnet: String) throws {
-        self.network = try Containerization.ContainerManager.VmnetNetwork(subnet: subnet)
+    /// Initialize with auto-allocated subnet from Apple's vmnet framework
+    /// Apple's vmnet framework auto-allocates subnets and ignores custom subnet requests.
+    /// The actual subnet can be queried via the `subnet` property after initialization.
+    public init() throws {
+        self.network = try Containerization.ContainerManager.VmnetNetwork()
     }
 
     /// Create a new network interface for the given container ID

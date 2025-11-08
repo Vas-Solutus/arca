@@ -15,6 +15,10 @@ public struct NetworkCreateRequest: Codable {
     public let enableIPv6: Bool?
     public let options: [String: String]?
     public let labels: [String: String]?
+    public let scope: String?
+    public let configOnly: Bool?
+    public let configFrom: ConfigReference?
+    public let enableIPv4: Bool?
 
     enum CodingKeys: String, CodingKey {
         case name = "Name"
@@ -27,6 +31,10 @@ public struct NetworkCreateRequest: Codable {
         case enableIPv6 = "EnableIPv6"
         case options = "Options"
         case labels = "Labels"
+        case scope = "Scope"
+        case configOnly = "ConfigOnly"
+        case configFrom = "ConfigFrom"
+        case enableIPv4 = "EnableIPv4"
     }
 }
 
@@ -61,6 +69,10 @@ public struct Network: Codable {
     public let containers: [String: NetworkContainer]
     public let options: [String: String]
     public let labels: [String: String]
+    public let enableIPv4: Bool
+    public let configFrom: ConfigReference?
+    public let configOnly: Bool
+    public let peers: [PeerInfo]?
 
     enum CodingKeys: String, CodingKey {
         case name = "Name"
@@ -76,6 +88,10 @@ public struct Network: Codable {
         case containers = "Containers"
         case options = "Options"
         case labels = "Labels"
+        case enableIPv4 = "EnableIPv4"
+        case configFrom = "ConfigFrom"
+        case configOnly = "ConfigOnly"
+        case peers = "Peers"
     }
 
     public init(
@@ -91,7 +107,11 @@ public struct Network: Codable {
         ingress: Bool = false,
         containers: [String: NetworkContainer] = [:],
         options: [String: String] = [:],
-        labels: [String: String] = [:]
+        labels: [String: String] = [:],
+        enableIPv4: Bool = true,
+        configFrom: ConfigReference? = nil,
+        configOnly: Bool = false,
+        peers: [PeerInfo]? = nil
     ) {
         self.name = name
         self.id = id
@@ -106,6 +126,10 @@ public struct Network: Codable {
         self.containers = containers
         self.options = options
         self.labels = labels
+        self.enableIPv4 = enableIPv4
+        self.configFrom = configFrom
+        self.configOnly = configOnly
+        self.peers = peers
     }
 }
 
@@ -212,8 +236,22 @@ public struct NetworkDisconnectRequest: Codable {
     }
 }
 
+/// Networking configuration for container creation (docker run --network, --ip, etc.)
+public struct NetworkingConfig: Codable, Sendable {
+    /// Map of network name to endpoint configuration
+    public let endpointsConfig: [String: EndpointConfig]?
+
+    enum CodingKeys: String, CodingKey {
+        case endpointsConfig = "EndpointsConfig"
+    }
+
+    public init(endpointsConfig: [String: EndpointConfig]?) {
+        self.endpointsConfig = endpointsConfig
+    }
+}
+
 /// Endpoint configuration for container network attachment
-public struct EndpointConfig: Codable {
+public struct EndpointConfig: Codable, Sendable {
     public let ipamConfig: EndpointIPAMConfig?
     public let links: [String]?
     public let aliases: [String]?
@@ -246,7 +284,7 @@ public struct EndpointConfig: Codable {
 }
 
 /// IPAM configuration for an endpoint
-public struct EndpointIPAMConfig: Codable {
+public struct EndpointIPAMConfig: Codable, Sendable {
     public let ipv4Address: String?
     public let ipv6Address: String?
     public let linkLocalIPs: [String]?
@@ -255,6 +293,35 @@ public struct EndpointIPAMConfig: Codable {
         case ipv4Address = "IPv4Address"
         case ipv6Address = "IPv6Address"
         case linkLocalIPs = "LinkLocalIPs"
+    }
+}
+
+/// Config reference for config-only networks
+public struct ConfigReference: Codable {
+    public let network: String
+
+    enum CodingKeys: String, CodingKey {
+        case network = "Network"
+    }
+
+    public init(network: String) {
+        self.network = network
+    }
+}
+
+/// Peer information for overlay networks
+public struct PeerInfo: Codable {
+    public let name: String
+    public let ip: String
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case ip = "IP"
+    }
+
+    public init(name: String, ip: String) {
+        self.name = name
+        self.ip = ip
     }
 }
 

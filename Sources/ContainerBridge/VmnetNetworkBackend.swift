@@ -29,6 +29,13 @@ public actor VmnetNetworkBackend {
     // MARK: - Network Management
 
     /// Create a new bridge network using vmnet
+    ///
+    /// **IMPORTANT**: Only ONE vmnet network is allowed (the default "host" network).
+    /// Apple's vmnet framework provides a single shared network underlay used for:
+    /// 1. WireGuard bridge network traffic (firewalled)
+    /// 2. Direct host networking (like Docker's host mode but with an IP)
+    ///
+    /// User attempts to create additional vmnet networks will be rejected.
     public func createBridgeNetwork(
         id: String,
         name: String,
@@ -42,30 +49,50 @@ public actor VmnetNetworkBackend {
         logger.info("Creating vmnet bridge network", metadata: [
             "network_id": "\(id)",
             "network_name": "\(name)",
-            "subnet": "\(subnet ?? "auto")"
+            "subnet": "\(subnet ?? "auto")",
+            "isDefault": "\(isDefault)"
         ])
 
-        // Determine subnet (use provided or auto-allocate)
-        let effectiveSubnet: String
-        if let subnet = subnet {
-            effectiveSubnet = subnet
-        } else {
-            // Auto-allocate from 10.0.0.0/8 space to avoid collisions
-            effectiveSubnet = try allocateSubnet()
+        // Only allow ONE vmnet network (the default "host" network)
+        if !isDefault && !networks.isEmpty {
+            throw NetworkManagerError.unsupportedFeature(
+                "Only one vmnet network is allowed (the default 'host' network). " +
+                "The vmnet driver provides a single shared network underlay for WireGuard traffic and direct host networking. " +
+                "Use the 'bridge' driver (WireGuard) for additional isolated networks."
+            )
         }
 
-        // Create VmnetNetwork for this bridge
-        let vmnet = try SharedVmnetNetwork(subnet: effectiveSubnet)
+        // Apple's vmnet framework auto-allocates subnets from its pool (e.g., 192.168.64.0/24)
+        // Custom subnet requests are not supported
+        if let requestedSubnet = subnet {
+            logger.warning("Custom subnet requested for vmnet network, but Apple's vmnet auto-allocates subnets", metadata: [
+                "requested_subnet": "\(requestedSubnet)",
+                "network_id": "\(id)"
+            ])
+        }
+
+        // Create VmnetNetwork - Apple will auto-allocate the subnet
+        let vmnet = try SharedVmnetNetwork()
         networks[id] = vmnet
 
-        // Create metadata
+        // Query the ACTUAL subnet that Apple allocated
+        let actualSubnet = vmnet.subnet
+        let actualGateway = vmnet.gateway
+
+        logger.info("Apple allocated vmnet subnet", metadata: [
+            "network_id": "\(id)",
+            "actual_subnet": "\(actualSubnet)",
+            "actual_gateway": "\(actualGateway)"
+        ])
+
+        // Create metadata with Apple's allocated subnet
         let metadata = NetworkMetadata(
             id: id,
             name: name,
             driver: "vmnet",
-            subnet: vmnet.subnet,
-            gateway: vmnet.gateway,
-            ipRange: ipRange,  // vmnet doesn't use ipRange for allocation, but store for API compatibility
+            subnet: actualSubnet,
+            gateway: actualGateway,
+            ipRange: nil,  // vmnet doesn't use ipRange (Apple controls allocation)
             containers: [],
             created: Date(),
             options: options,
@@ -76,8 +103,8 @@ public actor VmnetNetworkBackend {
 
         logger.info("vmnet bridge network created", metadata: [
             "network_id": "\(id)",
-            "subnet": "\(vmnet.subnet)",
-            "gateway": "\(vmnet.gateway)"
+            "subnet": "\(actualSubnet)",
+            "gateway": "\(actualGateway)"
         ])
 
         return metadata

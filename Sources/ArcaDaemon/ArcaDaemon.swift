@@ -1044,7 +1044,14 @@ public final class ArcaDaemon: @unchecked Sendable {
                     return .standard(HTTPResponse.badRequest("Missing network ID"))
                 }
 
-                let result = await networkHandlers.handleInspectNetwork(id: id)
+                let verbose = request.queryBool("verbose", default: false)
+                let scope = request.queryString("scope")
+
+                let result = await networkHandlers.handleInspectNetwork(
+                    id: id,
+                    verbose: verbose,
+                    scope: scope
+                )
 
                 switch result {
                 case .success(let network):

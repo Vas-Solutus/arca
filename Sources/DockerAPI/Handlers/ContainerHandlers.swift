@@ -155,6 +155,17 @@ public struct ContainerHandlers: Sendable {
                 }
             }
 
+            // Extract user-specified IP from NetworkingConfig (if provided)
+            var initialNetworkUserIP: String? = nil
+            if let networkingConfig = request.networkingConfig,
+               let endpointsConfig = networkingConfig.endpointsConfig {
+                // Get the network mode to find the correct endpoint config
+                let networkMode = request.hostConfig?.networkMode ?? "bridge"
+                if let endpointConfig = endpointsConfig[networkMode] {
+                    initialNetworkUserIP = endpointConfig.ipamConfig?.ipv4Address
+                }
+            }
+
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
@@ -172,7 +183,8 @@ public struct ContainerHandlers: Sendable {
                 restartPolicy: restartPolicy,
                 binds: request.hostConfig?.binds,
                 volumes: request.volumes?.mapValues { $0.value },  // Convert AnyCodable to Any
-                portBindings: portBindings
+                portBindings: portBindings,
+                initialNetworkUserIP: initialNetworkUserIP
             )
 
             logger.info("Container created", metadata: [
