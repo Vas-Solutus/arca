@@ -647,7 +647,12 @@ final class DockerRawStreamHandler: ChannelInboundHandler, RemovableChannelHandl
         logger.error("Error in Docker raw stream handler", metadata: ["error": "\(error)"])
         // Close stdin stream if active
         stdinContinuation?.finish()
-        context.close(promise: nil)
+
+        // Only close if channel is still active to avoid "Bad file descriptor" errors
+        // when the channel is already closing/closed
+        if context.channel.isActive {
+            context.close(promise: nil)
+        }
     }
 
     func channelInactive(context: ChannelHandlerContext) {

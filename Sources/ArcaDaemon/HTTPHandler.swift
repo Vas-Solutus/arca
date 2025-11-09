@@ -265,7 +265,12 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
         logger.error("Error caught in HTTP handler", metadata: [
             "error": "\(error)"
         ])
-        context.close(promise: nil)
+
+        // Only close if channel is still active to avoid "Bad file descriptor" errors
+        // when the channel is already closing/closed
+        if context.channel.isActive {
+            context.close(promise: nil)
+        }
     }
 }
 
