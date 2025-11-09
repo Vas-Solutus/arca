@@ -255,6 +255,13 @@ public struct HostConfigCreate: Codable, Sendable {
     public let autoRemove: Bool?
     public let privileged: Bool?
 
+    // Memory Limits (Phase 5 - Task 5.1)
+    public let memory: Int64?              // --memory in bytes
+    public let memoryReservation: Int64?   // --memory-reservation (soft limit)
+    public let memorySwap: Int64?          // --memory-swap (-1 = unlimited)
+    public let memorySwappiness: Int?      // 0-100, -1 = use system default
+    public let shmSize: Int64?             // /dev/shm size in bytes
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -262,6 +269,11 @@ public struct HostConfigCreate: Codable, Sendable {
         case restartPolicy = "RestartPolicy"
         case autoRemove = "AutoRemove"
         case privileged = "Privileged"
+        case memory = "Memory"
+        case memoryReservation = "MemoryReservation"
+        case memorySwap = "MemorySwap"
+        case memorySwappiness = "MemorySwappiness"
+        case shmSize = "ShmSize"
     }
 }
 
@@ -465,6 +477,13 @@ public struct HostConfigInspect: Codable {
     public let autoRemove: Bool
     public let privileged: Bool
 
+    // Memory Limits (Phase 5 - Task 5.1)
+    public let memory: Int64
+    public let memoryReservation: Int64
+    public let memorySwap: Int64
+    public let memorySwappiness: Int
+    public let shmSize: Int64
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -472,6 +491,11 @@ public struct HostConfigInspect: Codable {
         case restartPolicy = "RestartPolicy"
         case autoRemove = "AutoRemove"
         case privileged = "Privileged"
+        case memory = "Memory"
+        case memoryReservation = "MemoryReservation"
+        case memorySwap = "MemorySwap"
+        case memorySwappiness = "MemorySwappiness"
+        case shmSize = "ShmSize"
     }
 
     public init(
@@ -480,7 +504,12 @@ public struct HostConfigInspect: Codable {
         portBindings: [String: [PortBindingInspect]]? = nil,
         restartPolicy: RestartPolicyInspect = RestartPolicyInspect(name: "no"),
         autoRemove: Bool = false,
-        privileged: Bool = false
+        privileged: Bool = false,
+        memory: Int64 = 0,
+        memoryReservation: Int64 = 0,
+        memorySwap: Int64 = 0,
+        memorySwappiness: Int = -1,
+        shmSize: Int64 = 67108864  // Default: 64MB
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -488,6 +517,11 @@ public struct HostConfigInspect: Codable {
         self.restartPolicy = restartPolicy
         self.autoRemove = autoRemove
         self.privileged = privileged
+        self.memory = memory
+        self.memoryReservation = memoryReservation
+        self.memorySwap = memorySwap
+        self.memorySwappiness = memorySwappiness
+        self.shmSize = shmSize
     }
 }
 

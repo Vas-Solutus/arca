@@ -215,6 +215,12 @@ public struct HostConfig: Sendable {
     public let volumeDriver: String
     public let privileged: Bool
 
+    // Memory Limits (Phase 5 - Task 5.1)
+    public let memory: Int64
+    public let memoryReservation: Int64
+    public let memorySwap: Int64
+    public let memorySwappiness: Int
+
     public init(
         binds: [String] = [],
         networkMode: String = "default",
@@ -222,7 +228,11 @@ public struct HostConfig: Sendable {
         restartPolicy: RestartPolicy = RestartPolicy(name: "no"),
         autoRemove: Bool = false,
         volumeDriver: String = "",
-        privileged: Bool = false
+        privileged: Bool = false,
+        memory: Int64 = 0,
+        memoryReservation: Int64 = 0,
+        memorySwap: Int64 = 0,
+        memorySwappiness: Int = -1
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -231,6 +241,10 @@ public struct HostConfig: Sendable {
         self.autoRemove = autoRemove
         self.volumeDriver = volumeDriver
         self.privileged = privileged
+        self.memory = memory
+        self.memoryReservation = memoryReservation
+        self.memorySwap = memorySwap
+        self.memorySwappiness = memorySwappiness
     }
 }
 

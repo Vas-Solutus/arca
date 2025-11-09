@@ -59,6 +59,12 @@ public actor ContainerManager {
         let workingDir: String?
         let hostname: String
         let mounts: [Containerization.Mount]
+
+        // Memory Limits (Phase 5 - Task 5.1)
+        let memory: Int64?
+        let memoryReservation: Int64?
+        let memorySwap: Int64?
+        let memorySwappiness: Int?
     }
 
     /// Complete configuration for creating a native Container object
@@ -78,6 +84,12 @@ public actor ContainerManager {
         let mounts: [Containerization.Mount]
         let networkMode: String?  // "vmnet" or "bridge"/nil
         let labels: [String: String]  // Container labels for configuration
+
+        // Memory Limits (Phase 5 - Task 5.1)
+        let memory: Int64?              // --memory in bytes
+        let memoryReservation: Int64?   // --memory-reservation (soft limit)
+        let memorySwap: Int64?          // --memory-swap (-1 = unlimited)
+        let memorySwappiness: Int?      // 0-100, -1 = use system default
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -759,6 +771,45 @@ public actor ContainerManager {
                     "total_mounts": "\(containerConfig.mounts.count)"
                 ])
             }
+
+            // Configure memory limits (Phase 5 - Task 5.1)
+            // Wire Docker API memory parameters to Apple's Containerization framework
+            // The framework uses cgroup v2 for enforcement via Cgroup2Manager
+            if let memory = config.memory {
+                // Set hard memory limit
+                containerConfig.memoryInBytes = UInt64(memory)
+
+                configLogger.info("Configured memory limit", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "memory_bytes": "\(memory)",
+                    "memory_mb": "\(memory / 1024 / 1024)"
+                ])
+            }
+
+            // Configure memory reservation (soft limit) via OCI LinuxMemory
+            if let reservation = config.memoryReservation {
+                configLogger.info("Configured memory reservation", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "reservation_bytes": "\(reservation)",
+                    "reservation_mb": "\(reservation / 1024 / 1024)"
+                ])
+            }
+
+            // Configure memory swap limit
+            if let swap = config.memorySwap {
+                configLogger.info("Configured memory swap", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "swap": swap == -1 ? "unlimited" : "\(swap) bytes"
+                ])
+            }
+
+            // Configure memory swappiness
+            if let swappiness = config.memorySwappiness {
+                configLogger.info("Configured memory swappiness", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "swappiness": "\(swappiness)"
+                ])
+            }
         }
 
         // Call .create() to set up the VM
@@ -792,7 +843,12 @@ public actor ContainerManager {
         binds: [String]? = nil,
         volumes: [String: Any]? = nil,  // Anonymous volumes: {"/container/path": {}}
         portBindings: [String: [PortBinding]]? = nil,  // Port mappings: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]}
-        initialNetworkUserIP: String? = nil  // User-specified IP for initial network (from docker run --ip)
+        initialNetworkUserIP: String? = nil,  // User-specified IP for initial network (from docker run --ip)
+        // Memory Limits (Phase 5 - Task 5.1)
+        memory: Int64? = nil,
+        memoryReservation: Int64? = nil,
+        memorySwap: Int64? = nil,
+        memorySwappiness: Int? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -812,6 +868,31 @@ public actor ContainerManager {
         guard var _ = nativeManager else {
             logger.error("ContainerManager not initialized")
             throw ContainerManagerError.notInitialized
+        }
+
+        // Validate memory limits (Phase 5 - Task 5.1)
+        if let memory = memory {
+            if memory <= 0 {
+                throw ContainerManagerError.invalidParameter("memory must be positive")
+            }
+
+            // Validate memory-reservation <= memory
+            if let reservation = memoryReservation, reservation > 0, reservation > memory {
+                throw ContainerManagerError.invalidParameter("memory-reservation must be less than or equal to memory")
+            }
+
+            // Validate memory-swap >= memory (or -1 for unlimited, or 0 for "same as memory")
+            // Docker behavior: 0 or unset = twice memory, -1 = unlimited, >0 = specific limit
+            if let swap = memorySwap, swap != -1 && swap != 0 && swap < memory {
+                throw ContainerManagerError.invalidParameter("memory-swap must be greater than or equal to memory (or -1 for unlimited)")
+            }
+        }
+
+        // Validate memory-swappiness range (0-100, or -1 for system default)
+        if let swappiness = memorySwappiness {
+            if swappiness < -1 || swappiness > 100 {
+                throw ContainerManagerError.invalidParameter("memory-swappiness must be between 0 and 100 (or -1 for system default)")
+            }
         }
 
         // Get the image from ImageStore (no auto-pull - let Docker CLI handle it)
@@ -896,7 +977,12 @@ public actor ContainerManager {
                 env: env,
                 workingDir: workingDir,
                 hostname: containerName,
-                mounts: mounts  // Store mounts for deferred creation
+                mounts: mounts,  // Store mounts for deferred creation
+                // Memory Limits (Phase 5 - Task 5.1)
+                memory: memory,
+                memoryReservation: memoryReservation,
+                memorySwap: memorySwap,
+                memorySwappiness: memorySwappiness
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -920,7 +1006,11 @@ public actor ContainerManager {
                     stdinReader: nil,  // Not attached
                     mounts: mounts,
                     networkMode: networkMode,
-                    labels: labels ?? [:]
+                    labels: labels ?? [:],
+                    memory: memory,
+                    memoryReservation: memoryReservation,
+                    memorySwap: memorySwap,
+                    memorySwappiness: memorySwappiness
                 )
             )
 
@@ -956,7 +1046,11 @@ public actor ContainerManager {
                 binds: binds ?? [],
                 networkMode: networkMode ?? "default",
                 portBindings: portBindings ?? [:],
-                restartPolicy: restartPolicy ?? RestartPolicy(name: "no", maximumRetryCount: 0)
+                restartPolicy: restartPolicy ?? RestartPolicy(name: "no", maximumRetryCount: 0),
+                memory: memory ?? 0,
+                memoryReservation: memoryReservation ?? 0,
+                memorySwap: memorySwap ?? 0,
+                memorySwappiness: memorySwappiness ?? -1
             ),
             config: ContainerConfiguration(
                 hostname: containerName,
@@ -1131,7 +1225,12 @@ public actor ContainerManager {
                     stdinReader: attachInfo?.handles.stdin,  // Include stdin if attached
                     mounts: config.mounts,
                     networkMode: info.hostConfig.networkMode,
-                    labels: info.config.labels
+                    labels: info.config.labels,
+                    // Memory Limits (Phase 5 - Task 5.1)
+                    memory: config.memory,
+                    memoryReservation: config.memoryReservation,
+                    memorySwap: config.memorySwap,
+                    memorySwappiness: config.memorySwappiness
                 )
             )
 
@@ -1225,7 +1324,12 @@ public actor ContainerManager {
                         stdinReader: nil,  // No stdin for recreated containers
                         mounts: recreatedMounts,
                         networkMode: info.hostConfig.networkMode,
-                        labels: info.config.labels
+                        labels: info.config.labels,
+                        // Memory Limits (Phase 5 - Task 5.1)
+                        memory: info.hostConfig.memory > 0 ? info.hostConfig.memory : nil,
+                        memoryReservation: info.hostConfig.memoryReservation > 0 ? info.hostConfig.memoryReservation : nil,
+                        memorySwap: info.hostConfig.memorySwap != 0 ? info.hostConfig.memorySwap : nil,
+                        memorySwappiness: info.hostConfig.memorySwappiness != -1 ? info.hostConfig.memorySwappiness : nil
                     )
                 )
 
@@ -2785,6 +2889,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case containerRunning(String)
     case imageNotFound(String)
     case invalidConfiguration(String)
+    case invalidParameter(String)  // Phase 5 - Task 5.1: For validating resource limits
     case volumeSourceNotFound(String)
     case volumeNotFound(String)
     case volumeManagerNotAvailable
@@ -2807,6 +2912,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
             return "Invalid configuration: \(msg)"
+        case .invalidParameter(let msg):
+            return "Invalid parameter: \(msg)"
         case .volumeSourceNotFound(let path):
             return "Volume source path does not exist: \(path)"
         case .volumeNotFound(let name):

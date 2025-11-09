@@ -184,7 +184,12 @@ public struct ContainerHandlers: Sendable {
                 binds: request.hostConfig?.binds,
                 volumes: request.volumes?.mapValues { $0.value },  // Convert AnyCodable to Any
                 portBindings: portBindings,
-                initialNetworkUserIP: initialNetworkUserIP
+                initialNetworkUserIP: initialNetworkUserIP,
+                // Memory Limits (Phase 5 - Task 5.1)
+                memory: request.hostConfig?.memory,
+                memoryReservation: request.hostConfig?.memoryReservation,
+                memorySwap: request.hostConfig?.memorySwap,
+                memorySwappiness: request.hostConfig?.memorySwappiness
             )
 
             logger.info("Container created", metadata: [
@@ -857,7 +862,12 @@ public struct ContainerHandlers: Sendable {
                         maximumRetryCount: container.hostConfig.restartPolicy.maximumRetryCount
                     ),
                     autoRemove: container.hostConfig.autoRemove,
-                    privileged: container.hostConfig.privileged
+                    privileged: container.hostConfig.privileged,
+                    // Memory Limits (Phase 5 - Task 5.1)
+                    memory: container.hostConfig.memory,
+                    memoryReservation: container.hostConfig.memoryReservation,
+                    memorySwap: container.hostConfig.memorySwap,
+                    memorySwappiness: container.hostConfig.memorySwappiness
                 ),
                 config: ContainerConfigInspect(
                     hostname: container.config.hostname,
