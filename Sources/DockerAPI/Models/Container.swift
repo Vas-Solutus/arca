@@ -270,6 +270,9 @@ public struct HostConfigCreate: Codable, Sendable {
     public let cpusetCpus: String?         // --cpuset-cpus (CPUs allowed: "0-3,5")
     public let cpusetMems: String?         // --cpuset-mems (Memory nodes: "0,1")
 
+    // User/UID Support (Phase 5 - Task 5.3)
+    public let groupAdd: [String]?         // --group-add (additional groups by name or GID)
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -288,6 +291,7 @@ public struct HostConfigCreate: Codable, Sendable {
         case cpuQuota = "CpuQuota"
         case cpusetCpus = "CpusetCpus"
         case cpusetMems = "CpusetMems"
+        case groupAdd = "GroupAdd"
     }
 }
 
@@ -506,6 +510,9 @@ public struct HostConfigInspect: Codable {
     public let cpusetCpus: String
     public let cpusetMems: String
 
+    // User/UID Support (Phase 5 - Task 5.3)
+    public let groupAdd: [String]
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -524,6 +531,7 @@ public struct HostConfigInspect: Codable {
         case cpuQuota = "CpuQuota"
         case cpusetCpus = "CpusetCpus"
         case cpusetMems = "CpusetMems"
+        case groupAdd = "GroupAdd"
     }
 
     public init(
@@ -543,7 +551,8 @@ public struct HostConfigInspect: Codable {
         cpuPeriod: Int64 = 0,
         cpuQuota: Int64 = 0,
         cpusetCpus: String = "",
-        cpusetMems: String = ""
+        cpusetMems: String = "",
+        groupAdd: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -562,6 +571,7 @@ public struct HostConfigInspect: Codable {
         self.cpuQuota = cpuQuota
         self.cpusetCpus = cpusetCpus
         self.cpusetMems = cpusetMems
+        self.groupAdd = groupAdd
     }
 }
 

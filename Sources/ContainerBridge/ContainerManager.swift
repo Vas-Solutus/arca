@@ -73,6 +73,10 @@ public actor ContainerManager {
         let cpuQuota: Int64?
         let cpusetCpus: String?
         let cpusetMems: String?
+
+        // User/UID Support (Phase 5 - Task 5.3)
+        let user: String?
+        let groupAdd: [String]?
     }
 
     /// Complete configuration for creating a native Container object
@@ -106,6 +110,10 @@ public actor ContainerManager {
         let cpuQuota: Int64?            // --cpu-quota
         let cpusetCpus: String?         // --cpuset-cpus
         let cpusetMems: String?         // --cpuset-mems
+
+        // User/UID Support (Phase 5 - Task 5.3)
+        let user: String?               // -u, --user (username, uid, uid:gid, username:gid)
+        let groupAdd: [String]?         // --group-add (additional groups)
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -885,6 +893,32 @@ public actor ContainerManager {
                     "cpuset_mems": "\(cpusetMems)"
                 ])
             }
+
+            // Configure User/UID (Phase 5 - Task 5.3)
+            // Pass user string to vminitd which will resolve username → UID/GID
+            // using /etc/passwd and /etc/group from the container's filesystem
+            if let user = config.user {
+                // Set process.user.username to the Docker user string
+                // vminitd will parse formats: "username", "uid", "uid:gid", "username:gid"
+                // and resolve to actual UID/GID using ContainerizationOS.User.getExecUser()
+                containerConfig.process.user.username = user
+                configLogger.info("Configured user", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "user": "\(user)"
+                ])
+            }
+
+            // Configure additional groups (--group-add)
+            // Pass group names/GIDs to vminitd via environment variable for resolution
+            if let groupAdd = config.groupAdd, !groupAdd.isEmpty {
+                // Pass groups to vminitd for resolution via environment variable
+                // vminitd will resolve group names using /etc/group and add GIDs to additionalGids
+                containerConfig.process.environmentVariables.append("ARCA_GROUP_ADD=\(groupAdd.joined(separator: ","))")
+                configLogger.info("Configured additional groups", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "groups": "\(groupAdd.joined(separator: ","))"
+                ])
+            }
         }
 
         // Call .create() to set up the VM
@@ -930,7 +964,10 @@ public actor ContainerManager {
         cpuPeriod: Int64? = nil,
         cpuQuota: Int64? = nil,
         cpusetCpus: String? = nil,
-        cpusetMems: String? = nil
+        cpusetMems: String? = nil,
+        // User/UID Support (Phase 5 - Task 5.3)
+        user: String? = nil,
+        groupAdd: [String]? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -1078,7 +1115,10 @@ public actor ContainerManager {
                 cpuPeriod: cpuPeriod,
                 cpuQuota: cpuQuota,
                 cpusetCpus: cpusetCpus,
-                cpusetMems: cpusetMems
+                cpusetMems: cpusetMems,
+                // User/UID Support (Phase 5 - Task 5.3)
+                user: user,
+                groupAdd: groupAdd
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -1112,7 +1152,9 @@ public actor ContainerManager {
                     cpuPeriod: cpuPeriod,
                     cpuQuota: cpuQuota,
                     cpusetCpus: cpusetCpus,
-                    cpusetMems: cpusetMems
+                    cpusetMems: cpusetMems,
+                    user: user,
+                    groupAdd: groupAdd
                 )
             )
 
@@ -1345,7 +1387,10 @@ public actor ContainerManager {
                     cpuPeriod: config.cpuPeriod,
                     cpuQuota: config.cpuQuota,
                     cpusetCpus: config.cpusetCpus,
-                    cpusetMems: config.cpusetMems
+                    cpusetMems: config.cpusetMems,
+                    // User/UID Support (Phase 5 - Task 5.3)
+                    user: config.user,
+                    groupAdd: config.groupAdd
                 )
             )
 
@@ -1451,7 +1496,10 @@ public actor ContainerManager {
                         cpuPeriod: info.hostConfig.cpuPeriod > 0 ? info.hostConfig.cpuPeriod : nil,
                         cpuQuota: info.hostConfig.cpuQuota != 0 ? info.hostConfig.cpuQuota : nil,
                         cpusetCpus: !info.hostConfig.cpusetCpus.isEmpty ? info.hostConfig.cpusetCpus : nil,
-                        cpusetMems: !info.hostConfig.cpusetMems.isEmpty ? info.hostConfig.cpusetMems : nil
+                        cpusetMems: !info.hostConfig.cpusetMems.isEmpty ? info.hostConfig.cpusetMems : nil,
+                        // User/UID Support (Phase 5 - Task 5.3)
+                        user: !info.config.user.isEmpty ? info.config.user : nil,
+                        groupAdd: !info.hostConfig.groupAdd.isEmpty ? info.hostConfig.groupAdd : nil
                     )
                 )
 

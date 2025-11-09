@@ -229,6 +229,9 @@ public struct HostConfig: Sendable {
     public let cpusetCpus: String
     public let cpusetMems: String
 
+    // User/UID Support (Phase 5 - Task 5.3)
+    public let groupAdd: [String]
+
     public init(
         binds: [String] = [],
         networkMode: String = "default",
@@ -246,7 +249,8 @@ public struct HostConfig: Sendable {
         cpuPeriod: Int64 = 0,
         cpuQuota: Int64 = 0,
         cpusetCpus: String = "",
-        cpusetMems: String = ""
+        cpusetMems: String = "",
+        groupAdd: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -265,6 +269,7 @@ public struct HostConfig: Sendable {
         self.cpuQuota = cpuQuota
         self.cpusetCpus = cpusetCpus
         self.cpusetMems = cpusetMems
+        self.groupAdd = groupAdd
     }
 }
 

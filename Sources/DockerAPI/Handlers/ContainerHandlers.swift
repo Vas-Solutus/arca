@@ -196,7 +196,10 @@ public struct ContainerHandlers: Sendable {
                 cpuPeriod: request.hostConfig?.cpuPeriod,
                 cpuQuota: request.hostConfig?.cpuQuota,
                 cpusetCpus: request.hostConfig?.cpusetCpus,
-                cpusetMems: request.hostConfig?.cpusetMems
+                cpusetMems: request.hostConfig?.cpusetMems,
+                // User/UID Support (Phase 5 - Task 5.3)
+                user: request.user,
+                groupAdd: request.hostConfig?.groupAdd
             )
 
             logger.info("Container created", metadata: [
@@ -881,7 +884,9 @@ public struct ContainerHandlers: Sendable {
                     cpuPeriod: container.hostConfig.cpuPeriod,
                     cpuQuota: container.hostConfig.cpuQuota,
                     cpusetCpus: container.hostConfig.cpusetCpus,
-                    cpusetMems: container.hostConfig.cpusetMems
+                    cpusetMems: container.hostConfig.cpusetMems,
+                    // User/UID Support (Phase 5 - Task 5.3)
+                    groupAdd: container.hostConfig.groupAdd
                 ),
                 config: ContainerConfigInspect(
                     hostname: container.config.hostname,
