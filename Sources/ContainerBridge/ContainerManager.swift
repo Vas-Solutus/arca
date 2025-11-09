@@ -65,6 +65,14 @@ public actor ContainerManager {
         let memoryReservation: Int64?
         let memorySwap: Int64?
         let memorySwappiness: Int?
+
+        // CPU Limits (Phase 5 - Task 5.2)
+        let nanoCpus: Int64?
+        let cpuShares: Int64?
+        let cpuPeriod: Int64?
+        let cpuQuota: Int64?
+        let cpusetCpus: String?
+        let cpusetMems: String?
     }
 
     /// Complete configuration for creating a native Container object
@@ -90,6 +98,14 @@ public actor ContainerManager {
         let memoryReservation: Int64?   // --memory-reservation (soft limit)
         let memorySwap: Int64?          // --memory-swap (-1 = unlimited)
         let memorySwappiness: Int?      // 0-100, -1 = use system default
+
+        // CPU Limits (Phase 5 - Task 5.2)
+        let nanoCpus: Int64?            // --cpus as nanocpus
+        let cpuShares: Int64?           // --cpu-shares
+        let cpuPeriod: Int64?           // --cpu-period
+        let cpuQuota: Int64?            // --cpu-quota
+        let cpusetCpus: String?         // --cpuset-cpus
+        let cpusetMems: String?         // --cpuset-mems
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -775,14 +791,20 @@ public actor ContainerManager {
             // Configure memory limits (Phase 5 - Task 5.1)
             // Wire Docker API memory parameters to Apple's Containerization framework
             // The framework uses cgroup v2 for enforcement via Cgroup2Manager
-            if let memory = config.memory {
-                // Set hard memory limit
-                containerConfig.memoryInBytes = UInt64(memory)
+            // Apple requires minimum 512MB, use 1GB default if not specified
+            let effectiveMemory = config.memory.map { $0 > 0 ? $0 : 1024 * 1024 * 1024 } ?? 1024 * 1024 * 1024
+            containerConfig.memoryInBytes = UInt64(effectiveMemory)
 
+            if let memory = config.memory, memory > 0 {
                 configLogger.info("Configured memory limit", metadata: [
                     "docker_id": "\(dockerID)",
                     "memory_bytes": "\(memory)",
                     "memory_mb": "\(memory / 1024 / 1024)"
+                ])
+            } else {
+                configLogger.debug("Using default memory limit", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "memory_mb": "1024"
                 ])
             }
 
@@ -808,6 +830,59 @@ public actor ContainerManager {
                 configLogger.info("Configured memory swappiness", metadata: [
                     "docker_id": "\(dockerID)",
                     "swappiness": "\(swappiness)"
+                ])
+            }
+
+            // Configure CPU limits (Phase 5 - Task 5.2)
+            // Wire Docker API CPU parameters to Apple's Containerization framework
+            if let nanoCpus = config.nanoCpus {
+                // Convert nanocpus to number of CPUs
+                // nanoCpus is in units of 1e-9 CPUs, so 1 CPU = 1_000_000_000 nanocpus
+                let cpus = Int(nanoCpus / 1_000_000_000)
+                if cpus > 0 {
+                    containerConfig.cpus = cpus
+                    configLogger.info("Configured CPU limit", metadata: [
+                        "docker_id": "\(dockerID)",
+                        "nano_cpus": "\(nanoCpus)",
+                        "cpus": "\(cpus)"
+                    ])
+                }
+            }
+
+            // Log other CPU parameters (not directly supported by containerConfig.cpus)
+            // These would require cgroup configuration via OCI runtime spec
+            if let cpuShares = config.cpuShares {
+                configLogger.info("CPU shares specified (requires cgroup support)", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "cpu_shares": "\(cpuShares)"
+                ])
+            }
+
+            if let cpuPeriod = config.cpuPeriod {
+                configLogger.info("CPU period specified (requires cgroup support)", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "cpu_period": "\(cpuPeriod)"
+                ])
+            }
+
+            if let cpuQuota = config.cpuQuota {
+                configLogger.info("CPU quota specified (requires cgroup support)", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "cpu_quota": "\(cpuQuota)"
+                ])
+            }
+
+            if let cpusetCpus = config.cpusetCpus {
+                configLogger.info("CPUset CPUs specified (requires cgroup support)", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "cpuset_cpus": "\(cpusetCpus)"
+                ])
+            }
+
+            if let cpusetMems = config.cpusetMems {
+                configLogger.info("CPUset MEMs specified (requires cgroup support)", metadata: [
+                    "docker_id": "\(dockerID)",
+                    "cpuset_mems": "\(cpusetMems)"
                 ])
             }
         }
@@ -848,7 +923,14 @@ public actor ContainerManager {
         memory: Int64? = nil,
         memoryReservation: Int64? = nil,
         memorySwap: Int64? = nil,
-        memorySwappiness: Int? = nil
+        memorySwappiness: Int? = nil,
+        // CPU Limits (Phase 5 - Task 5.2)
+        nanoCpus: Int64? = nil,
+        cpuShares: Int64? = nil,
+        cpuPeriod: Int64? = nil,
+        cpuQuota: Int64? = nil,
+        cpusetCpus: String? = nil,
+        cpusetMems: String? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -871,11 +953,8 @@ public actor ContainerManager {
         }
 
         // Validate memory limits (Phase 5 - Task 5.1)
-        if let memory = memory {
-            if memory <= 0 {
-                throw ContainerManagerError.invalidParameter("memory must be positive")
-            }
-
+        // Only validate if memory is explicitly set (> 0), Docker CLI sends 0 for unspecified
+        if let memory = memory, memory > 0 {
             // Validate memory-reservation <= memory
             if let reservation = memoryReservation, reservation > 0, reservation > memory {
                 throw ContainerManagerError.invalidParameter("memory-reservation must be less than or equal to memory")
@@ -892,6 +971,16 @@ public actor ContainerManager {
         if let swappiness = memorySwappiness {
             if swappiness < -1 || swappiness > 100 {
                 throw ContainerManagerError.invalidParameter("memory-swappiness must be between 0 and 100 (or -1 for system default)")
+            }
+        }
+
+        // Validate CPU limits (Phase 5 - Task 5.2)
+        // Docker CLI sends 0 for unspecified values, only validate non-zero cpuset-cpus format
+        if let cpusetCpus = cpusetCpus, !cpusetCpus.isEmpty {
+            // Validate cpuset-cpus format: "0-3,5" or "0,1,2"
+            let validChars = CharacterSet(charactersIn: "0123456789,-")
+            if !cpusetCpus.unicodeScalars.allSatisfy({ validChars.contains($0) }) {
+                throw ContainerManagerError.invalidParameter("cpuset-cpus must be in format '0-3,5' or '0,1,2'")
             }
         }
 
@@ -982,7 +1071,14 @@ public actor ContainerManager {
                 memory: memory,
                 memoryReservation: memoryReservation,
                 memorySwap: memorySwap,
-                memorySwappiness: memorySwappiness
+                memorySwappiness: memorySwappiness,
+                // CPU Limits (Phase 5 - Task 5.2)
+                nanoCpus: nanoCpus,
+                cpuShares: cpuShares,
+                cpuPeriod: cpuPeriod,
+                cpuQuota: cpuQuota,
+                cpusetCpus: cpusetCpus,
+                cpusetMems: cpusetMems
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -1010,7 +1106,13 @@ public actor ContainerManager {
                     memory: memory,
                     memoryReservation: memoryReservation,
                     memorySwap: memorySwap,
-                    memorySwappiness: memorySwappiness
+                    memorySwappiness: memorySwappiness,
+                    nanoCpus: nanoCpus,
+                    cpuShares: cpuShares,
+                    cpuPeriod: cpuPeriod,
+                    cpuQuota: cpuQuota,
+                    cpusetCpus: cpusetCpus,
+                    cpusetMems: cpusetMems
                 )
             )
 
@@ -1050,7 +1152,13 @@ public actor ContainerManager {
                 memory: memory ?? 0,
                 memoryReservation: memoryReservation ?? 0,
                 memorySwap: memorySwap ?? 0,
-                memorySwappiness: memorySwappiness ?? -1
+                memorySwappiness: memorySwappiness ?? -1,
+                nanoCpus: nanoCpus ?? 0,
+                cpuShares: cpuShares ?? 0,
+                cpuPeriod: cpuPeriod ?? 0,
+                cpuQuota: cpuQuota ?? 0,
+                cpusetCpus: cpusetCpus ?? "",
+                cpusetMems: cpusetMems ?? ""
             ),
             config: ContainerConfiguration(
                 hostname: containerName,
@@ -1230,7 +1338,14 @@ public actor ContainerManager {
                     memory: config.memory,
                     memoryReservation: config.memoryReservation,
                     memorySwap: config.memorySwap,
-                    memorySwappiness: config.memorySwappiness
+                    memorySwappiness: config.memorySwappiness,
+                    // CPU Limits (Phase 5 - Task 5.2)
+                    nanoCpus: config.nanoCpus,
+                    cpuShares: config.cpuShares,
+                    cpuPeriod: config.cpuPeriod,
+                    cpuQuota: config.cpuQuota,
+                    cpusetCpus: config.cpusetCpus,
+                    cpusetMems: config.cpusetMems
                 )
             )
 
@@ -1329,7 +1444,14 @@ public actor ContainerManager {
                         memory: info.hostConfig.memory > 0 ? info.hostConfig.memory : nil,
                         memoryReservation: info.hostConfig.memoryReservation > 0 ? info.hostConfig.memoryReservation : nil,
                         memorySwap: info.hostConfig.memorySwap != 0 ? info.hostConfig.memorySwap : nil,
-                        memorySwappiness: info.hostConfig.memorySwappiness != -1 ? info.hostConfig.memorySwappiness : nil
+                        memorySwappiness: info.hostConfig.memorySwappiness != -1 ? info.hostConfig.memorySwappiness : nil,
+                        // CPU Limits (Phase 5 - Task 5.2)
+                        nanoCpus: info.hostConfig.nanoCpus > 0 ? info.hostConfig.nanoCpus : nil,
+                        cpuShares: info.hostConfig.cpuShares > 0 ? info.hostConfig.cpuShares : nil,
+                        cpuPeriod: info.hostConfig.cpuPeriod > 0 ? info.hostConfig.cpuPeriod : nil,
+                        cpuQuota: info.hostConfig.cpuQuota != 0 ? info.hostConfig.cpuQuota : nil,
+                        cpusetCpus: !info.hostConfig.cpusetCpus.isEmpty ? info.hostConfig.cpusetCpus : nil,
+                        cpusetMems: !info.hostConfig.cpusetMems.isEmpty ? info.hostConfig.cpusetMems : nil
                     )
                 )
 

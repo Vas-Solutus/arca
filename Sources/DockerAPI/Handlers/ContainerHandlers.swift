@@ -189,7 +189,14 @@ public struct ContainerHandlers: Sendable {
                 memory: request.hostConfig?.memory,
                 memoryReservation: request.hostConfig?.memoryReservation,
                 memorySwap: request.hostConfig?.memorySwap,
-                memorySwappiness: request.hostConfig?.memorySwappiness
+                memorySwappiness: request.hostConfig?.memorySwappiness,
+                // CPU Limits (Phase 5 - Task 5.2)
+                nanoCpus: request.hostConfig?.nanoCpus,
+                cpuShares: request.hostConfig?.cpuShares,
+                cpuPeriod: request.hostConfig?.cpuPeriod,
+                cpuQuota: request.hostConfig?.cpuQuota,
+                cpusetCpus: request.hostConfig?.cpusetCpus,
+                cpusetMems: request.hostConfig?.cpusetMems
             )
 
             logger.info("Container created", metadata: [
@@ -867,7 +874,14 @@ public struct ContainerHandlers: Sendable {
                     memory: container.hostConfig.memory,
                     memoryReservation: container.hostConfig.memoryReservation,
                     memorySwap: container.hostConfig.memorySwap,
-                    memorySwappiness: container.hostConfig.memorySwappiness
+                    memorySwappiness: container.hostConfig.memorySwappiness,
+                    // CPU Limits (Phase 5 - Task 5.2)
+                    nanoCpus: container.hostConfig.nanoCpus,
+                    cpuShares: container.hostConfig.cpuShares,
+                    cpuPeriod: container.hostConfig.cpuPeriod,
+                    cpuQuota: container.hostConfig.cpuQuota,
+                    cpusetCpus: container.hostConfig.cpusetCpus,
+                    cpusetMems: container.hostConfig.cpusetMems
                 ),
                 config: ContainerConfigInspect(
                     hostname: container.config.hostname,

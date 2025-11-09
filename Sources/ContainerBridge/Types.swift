@@ -221,6 +221,14 @@ public struct HostConfig: Sendable {
     public let memorySwap: Int64
     public let memorySwappiness: Int
 
+    // CPU Limits (Phase 5 - Task 5.2)
+    public let nanoCpus: Int64
+    public let cpuShares: Int64
+    public let cpuPeriod: Int64
+    public let cpuQuota: Int64
+    public let cpusetCpus: String
+    public let cpusetMems: String
+
     public init(
         binds: [String] = [],
         networkMode: String = "default",
@@ -232,7 +240,13 @@ public struct HostConfig: Sendable {
         memory: Int64 = 0,
         memoryReservation: Int64 = 0,
         memorySwap: Int64 = 0,
-        memorySwappiness: Int = -1
+        memorySwappiness: Int = -1,
+        nanoCpus: Int64 = 0,
+        cpuShares: Int64 = 0,
+        cpuPeriod: Int64 = 0,
+        cpuQuota: Int64 = 0,
+        cpusetCpus: String = "",
+        cpusetMems: String = ""
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -245,6 +259,12 @@ public struct HostConfig: Sendable {
         self.memoryReservation = memoryReservation
         self.memorySwap = memorySwap
         self.memorySwappiness = memorySwappiness
+        self.nanoCpus = nanoCpus
+        self.cpuShares = cpuShares
+        self.cpuPeriod = cpuPeriod
+        self.cpuQuota = cpuQuota
+        self.cpusetCpus = cpusetCpus
+        self.cpusetMems = cpusetMems
     }
 }
 

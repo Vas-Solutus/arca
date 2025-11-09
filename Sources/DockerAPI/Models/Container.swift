@@ -262,6 +262,14 @@ public struct HostConfigCreate: Codable, Sendable {
     public let memorySwappiness: Int?      // 0-100, -1 = use system default
     public let shmSize: Int64?             // /dev/shm size in bytes
 
+    // CPU Limits (Phase 5 - Task 5.2)
+    public let nanoCpus: Int64?            // --cpus as nanocpus (e.g., 1.5 CPUs = 1500000000)
+    public let cpuShares: Int64?           // -c, --cpu-shares (relative weight, default: 1024)
+    public let cpuPeriod: Int64?           // --cpu-period (CPU CFS period in microseconds)
+    public let cpuQuota: Int64?            // --cpu-quota (CPU CFS quota in microseconds)
+    public let cpusetCpus: String?         // --cpuset-cpus (CPUs allowed: "0-3,5")
+    public let cpusetMems: String?         // --cpuset-mems (Memory nodes: "0,1")
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -274,6 +282,12 @@ public struct HostConfigCreate: Codable, Sendable {
         case memorySwap = "MemorySwap"
         case memorySwappiness = "MemorySwappiness"
         case shmSize = "ShmSize"
+        case nanoCpus = "NanoCpus"
+        case cpuShares = "CpuShares"
+        case cpuPeriod = "CpuPeriod"
+        case cpuQuota = "CpuQuota"
+        case cpusetCpus = "CpusetCpus"
+        case cpusetMems = "CpusetMems"
     }
 }
 
@@ -484,6 +498,14 @@ public struct HostConfigInspect: Codable {
     public let memorySwappiness: Int
     public let shmSize: Int64
 
+    // CPU Limits (Phase 5 - Task 5.2)
+    public let nanoCpus: Int64
+    public let cpuShares: Int64
+    public let cpuPeriod: Int64
+    public let cpuQuota: Int64
+    public let cpusetCpus: String
+    public let cpusetMems: String
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -496,6 +518,12 @@ public struct HostConfigInspect: Codable {
         case memorySwap = "MemorySwap"
         case memorySwappiness = "MemorySwappiness"
         case shmSize = "ShmSize"
+        case nanoCpus = "NanoCpus"
+        case cpuShares = "CpuShares"
+        case cpuPeriod = "CpuPeriod"
+        case cpuQuota = "CpuQuota"
+        case cpusetCpus = "CpusetCpus"
+        case cpusetMems = "CpusetMems"
     }
 
     public init(
@@ -509,7 +537,13 @@ public struct HostConfigInspect: Codable {
         memoryReservation: Int64 = 0,
         memorySwap: Int64 = 0,
         memorySwappiness: Int = -1,
-        shmSize: Int64 = 67108864  // Default: 64MB
+        shmSize: Int64 = 67108864,  // Default: 64MB
+        nanoCpus: Int64 = 0,
+        cpuShares: Int64 = 0,
+        cpuPeriod: Int64 = 0,
+        cpuQuota: Int64 = 0,
+        cpusetCpus: String = "",
+        cpusetMems: String = ""
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -522,6 +556,12 @@ public struct HostConfigInspect: Codable {
         self.memorySwap = memorySwap
         self.memorySwappiness = memorySwappiness
         self.shmSize = shmSize
+        self.nanoCpus = nanoCpus
+        self.cpuShares = cpuShares
+        self.cpuPeriod = cpuPeriod
+        self.cpuQuota = cpuQuota
+        self.cpusetCpus = cpusetCpus
+        self.cpusetMems = cpusetMems
     }
 }
 
