@@ -1,4 +1,4 @@
-.PHONY: clean clean-state install uninstall debug release run all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc
+.PHONY: clean clean-state install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -91,6 +91,21 @@ run-release:
 	@rm -f /tmp/arca.sock
 	@.build/release/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
 
+# Setup buildx builder with default-load=true (run after daemon is started)
+setup-builder:
+	@echo "Setting up Arca buildx builder..."
+	@DOCKER_HOST=unix:///tmp/arca.sock ./scripts/setup-builder.sh
+
+# Run daemon in background and automatically setup builder
+run-with-setup: codesign
+	@echo "Starting Arca daemon in background (debug)..."
+	@rm -f /tmp/arca.sock
+	@$(BUILD_DIR)/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug > /tmp/arca-daemon.log 2>&1 &
+	@echo "Daemon started in background (PID: $$!)"
+	@echo "Logs: tail -f /tmp/arca-daemon.log"
+	@echo ""
+	@DOCKER_HOST=unix:///tmp/arca.sock ./scripts/setup-builder.sh
+
 # Build kernel with TUN support
 kernel:
 	@echo "Building Linux kernel with TUN support..."
@@ -163,20 +178,22 @@ help:
 	@echo "Arca Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              - Build and codesign debug binary (incremental)"
-	@echo "  make debug        - Build and codesign debug binary"
-	@echo "  make release      - Build and codesign release binary"
-	@echo "  make run          - Build, sign, and run daemon (debug) at /tmp/arca.sock"
-	@echo "  make run-release  - Build, sign, and run daemon (release) at /tmp/arca.sock"
-	@echo "  make test         - Run all tests"
-	@echo "  make clean        - Remove all build artifacts"
-	@echo "  make clean-state  - Remove state database (fresh start)"
-	@echo "  make install      - Install release binary to /usr/local/bin"
-	@echo "  make uninstall    - Remove binary from /usr/local/bin"
-	@echo "  make kernel       - Build Linux kernel with TUN support (10-15 min)"
-	@echo "  make vminit       - Build custom vminit:latest (release, production use)"
-	@echo "  make vminit-debug - Build custom vminit:latest (debug, better logging)"
-	@echo "  make gen-grpc     - Generate gRPC code from proto files"
+	@echo "  make                 - Build and codesign debug binary (incremental)"
+	@echo "  make debug           - Build and codesign debug binary"
+	@echo "  make release         - Build and codesign release binary"
+	@echo "  make run             - Build, sign, and run daemon (debug) at /tmp/arca.sock"
+	@echo "  make run-with-setup  - Start daemon in background + auto-configure buildx"
+	@echo "  make setup-builder   - Setup buildx builder with default-load=true"
+	@echo "  make run-release     - Build, sign, and run daemon (release) at /tmp/arca.sock"
+	@echo "  make test            - Run all tests"
+	@echo "  make clean           - Remove all build artifacts"
+	@echo "  make clean-state     - Remove state database (fresh start)"
+	@echo "  make install         - Install release binary to /usr/local/bin"
+	@echo "  make uninstall       - Remove binary from /usr/local/bin"
+	@echo "  make kernel          - Build Linux kernel with TUN support (10-15 min)"
+	@echo "  make vminit          - Build custom vminit:latest (release, production use)"
+	@echo "  make vminit-debug    - Build custom vminit:latest (debug, better logging)"
+	@echo "  make gen-grpc        - Generate gRPC code from proto files"
 	@echo "  make install-grpc-plugin - Install protoc-gen-grpc-swift v1.27.0"
 	@echo "  make verify-entitlements - Display entitlements of built binary"
 	@echo ""
