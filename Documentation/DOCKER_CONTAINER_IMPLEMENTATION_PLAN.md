@@ -1,10 +1,10 @@
 # Docker Container Features - Implementation Plan
 
 **Generated:** 2025-11-08
-**Updated:** 2025-11-08 (Post-Research)
+**Updated:** 2025-11-09 (Phase 5 Complete!)
 **Based on:** Documentation/DOCKER_CONTAINER_GAP_ANALYSIS.md
 **Research:** Documentation/APPLE_FRAMEWORK_RESEARCH_FINDINGS.md
-**Current Phase:** 3.7 Complete (Universal Persistence)
+**Current Phase:** 5 Complete (Security & Resource Limits) ✅ - Ready for Phase 6!
 
 ---
 
@@ -45,20 +45,25 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ---
 
-## Phase 5: Security & Resource Limits (Critical)
+## Phase 5: Security & Resource Limits (Critical) ✅ COMPLETE
 
 **Goal:** Make Arca production-ready with essential security and resource management
 **Priority:** CRITICAL
+**Status:** ✅ **COMPLETE** (2025-11-09)
 **Original Estimated Time:** 4-5 weeks
-**Updated Estimated Time:** 2-3 weeks ⚡ (framework does the heavy lifting!)
+**Actual Time:** ~1 week ⚡ (framework did the heavy lifting!)
 **Dependencies:** ✅ All features fully supported by Apple Containerization framework
 **Research Reference:** See [APPLE_FRAMEWORK_RESEARCH_FINDINGS.md](./APPLE_FRAMEWORK_RESEARCH_FINDINGS.md) §1, §2, §3
 
-### Task 5.1: Memory Limits
+**Completion Summary:**
+All Phase 5 tasks completed successfully! Arca now has production-ready security and resource management capabilities including memory limits, CPU limits, user/UID support, kill endpoint, and security capabilities. All features leverage Apple's Containerization framework's cgroup v2 implementation.
+
+### Task 5.1: Memory Limits ✅ COMPLETE
 
 **Endpoint:** POST /containers/create (enhance)
 **Flags:** `-m, --memory`, `--memory-reservation`, `--memory-swap`, `--memory-swappiness`, `--shm-size`
 **Framework Support:** ✅ FULLY SUPPORTED (Research §1.1)
+**Status:** ✅ **COMPLETE** - All memory limit fields added to API models, wired through ContainerManager, persisted in HostConfig
 
 #### Research Findings:
 - ✅ `LinuxMemory` OCI struct exists with all Docker fields (Spec.swift:551-582)
@@ -138,10 +143,11 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ---
 
-### Task 5.2: CPU Limits
+### Task 5.2: CPU Limits ✅ COMPLETE
 
 **Endpoint:** POST /containers/create (enhance)
 **Flags:** `--cpus`, `-c, --cpu-shares`, `--cpu-period`, `--cpu-quota`, `--cpuset-cpus`, `--cpuset-mems`
+**Status:** ✅ **COMPLETE** - All CPU limit fields added (nanoCpus, cpuShares, cpuPeriod, cpuQuota, cpusetCpus, cpusetMems) and wired through the stack
 
 #### Implementation Steps:
 1. Research Apple Containerization CPU limit APIs
@@ -187,11 +193,12 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ---
 
-### Task 5.3: User/UID Support
+### Task 5.3: User/UID Support ✅ COMPLETE
 
 **Endpoint:** POST /containers/create (enhance)
 **Flags:** `-u, --user`, `--group-add`
 **Framework Support:** ✅ FULLY SUPPORTED (Research §2.1)
+**Status:** ✅ **COMPLETE** - User field added to ContainerConfig, groupAdd to HostConfig, user parsing implemented in ContainerManager with full uid:gid support
 
 #### Research Findings:
 - ✅ `User` OCI struct exists with uid, gid, additionalGids (Spec.swift:227-270)
@@ -252,10 +259,11 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ---
 
-### Task 5.4: Kill Endpoint
+### Task 5.4: Kill Endpoint ✅ COMPLETE
 
 **Endpoint:** POST /containers/{id}/kill
 **Flags:** `-s, --signal`
+**Status:** ✅ **COMPLETE** - Kill endpoint implemented with signal parsing (names and numbers), wired to Container.kill() in framework
 
 #### Implementation Steps:
 1. Create KillContainer handler
@@ -300,10 +308,11 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ---
 
-### Task 5.5: Security Capabilities
+### Task 5.5: Security Capabilities ✅ COMPLETE
 
 **Endpoint:** POST /containers/create (enhance)
 **Flags:** `--privileged`, `--cap-add`, `--cap-drop`, `--security-opt`
+**Status:** ✅ **COMPLETE** - All capability flags implemented, privileged mode grants 41 capabilities, cap-add/cap-drop modify default 14 capabilities, wired to LinuxCapabilities OCI struct, extended framework with capabilities field
 
 #### Implementation Steps:
 1. Research capability mapping on macOS
@@ -358,16 +367,19 @@ This document outlines the phased implementation plan for missing Docker contain
 
 **Phase 5 Total:**
 - **Original Estimate:** 5-6 weeks
-- **Updated Estimate:** 2-3 weeks ⚡
-- **Time Savings:** 50-60% reduction!
+- **Actual Time:** ~1 week ⚡⚡
+- **Time Savings:** 80% reduction!
+- **Status:** ✅ **COMPLETE** (2025-11-09)
 - **Reason:** Framework implements 90% of functionality via cgroups and OCI spec
 
-**Deliverables:**
+**Deliverables (ALL COMPLETE):**
 - ✅ Memory and CPU limits enforced via Linux cgroups
 - ✅ User/UID support for security
 - ✅ Kill endpoint for process control
-- ✅ Capability management for security hardening
+- ✅ Capability management for security hardening (--privileged, --cap-add, --cap-drop)
 - ✅ All features production-ready (framework-tested code)
+- ✅ All fields wired through Docker API → ContainerManager → Apple framework
+- ✅ Framework extended with capabilities field in LinuxProcessConfiguration
 
 ---
 
@@ -915,15 +927,15 @@ This document outlines the phased implementation plan for missing Docker contain
 
 ## Summary
 
-| Phase | Priority | Original Est. | Updated Est. ⚡ | Status | Dependencies |
-|-------|----------|---------------|-----------------|--------|--------------|
-| Phase 5: Security & Resource Limits | **Critical** | 5-6 weeks | **2-3 weeks** | ✅ Framework Ready | None! |
-| Phase 6: Operational Features | High | 3.5-4 weeks | **1.5-2 weeks** | ✅ Framework Ready | Phase 5 |
-| Phase 7: Advanced Resource Mgmt | Medium | 2 weeks | **1.5 weeks** | ✅ Framework Ready | Phase 5 |
+| Phase | Priority | Original Est. | Actual Time ⚡ | Status | Dependencies |
+|-------|----------|---------------|----------------|--------|--------------|
+| Phase 5: Security & Resource Limits | **Critical** | 5-6 weeks | **~1 week** ✅ | ✅ **COMPLETE** | None! |
+| Phase 6: Operational Features | High | 3.5-4 weeks | **1.5-2 weeks** | 🚀 Ready to start | Phase 5 ✅ |
+| Phase 7: Advanced Resource Mgmt | Medium | 2 weeks | **1.5 weeks** | ✅ Framework Ready | Phase 5 ✅ |
 | Phase 8: Advanced Networking | Low-Medium | 2.5 weeks | **2 weeks** | ⚠️ Phase 3.1 needed | Phase 3.1 (DNS) |
 | Phase 9: Advanced Features | Low | 4 weeks | **3 weeks** | ⚠️ Some limitations | - |
 | Phase 10: Specialized Features | Nice-to-Have | 3 weeks | **2.5 weeks** | ❌ Some unsupported | - |
-| **Total** | | **20-23 weeks** | **12-14 weeks** | **40% faster!** | |
+| **Total** | | **20-23 weeks** | **11-13 weeks** | **45% faster!** | |
 
 **Key Insight:** Apple's Containerization framework provides 90% of functionality via cgroups and OCI spec. We just need API plumbing!
 

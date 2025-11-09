@@ -458,6 +458,36 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Phase 5 - Task 5.4: Kill endpoint
+        _ = builder.post("/containers/{id}/kill") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            // Get signal parameter (default: SIGKILL)
+            let signal = request.queryString("signal") ?? "SIGKILL"
+
+            let result = await containerHandlers.handleKillContainer(id: id, signal: signal)
+
+            switch result {
+            case .success:
+                return .standard(HTTPResponse.noContent())
+            case .failure(let error):
+                // Map ContainerError to appropriate HTTP status
+                switch error {
+                case .notFound:
+                    return .standard(HTTPResponse.notFound(error.description))
+                case .invalidRequest:
+                    // Container not running -> 409 Conflict (per Docker API spec)
+                    return .standard(HTTPResponse.conflict(error.description))
+                case .operationNotPermitted:
+                    return .standard(HTTPResponse.forbidden(error.description))
+                default:
+                    return .standard(HTTPResponse.internalServerError(error.description))
+                }
+            }
+        }
+
         _ = builder.post("/containers/{id}/restart") { request in
             guard let id = request.pathParam("id") else {
                 return .standard(HTTPResponse.badRequest("Missing container ID"))

@@ -273,6 +273,11 @@ public struct HostConfigCreate: Codable, Sendable {
     // User/UID Support (Phase 5 - Task 5.3)
     public let groupAdd: [String]?         // --group-add (additional groups by name or GID)
 
+    // Security Capabilities (Phase 5 - Task 5.5)
+    public let capAdd: [String]?           // --cap-add (add Linux capabilities)
+    public let capDrop: [String]?          // --cap-drop (drop Linux capabilities)
+    public let securityOpt: [String]?      // --security-opt (security options)
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -292,6 +297,9 @@ public struct HostConfigCreate: Codable, Sendable {
         case cpusetCpus = "CpusetCpus"
         case cpusetMems = "CpusetMems"
         case groupAdd = "GroupAdd"
+        case capAdd = "CapAdd"
+        case capDrop = "CapDrop"
+        case securityOpt = "SecurityOpt"
     }
 }
 
@@ -513,6 +521,11 @@ public struct HostConfigInspect: Codable {
     // User/UID Support (Phase 5 - Task 5.3)
     public let groupAdd: [String]
 
+    // Security Capabilities (Phase 5 - Task 5.5)
+    public let capAdd: [String]
+    public let capDrop: [String]
+    public let securityOpt: [String]
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -532,6 +545,9 @@ public struct HostConfigInspect: Codable {
         case cpusetCpus = "CpusetCpus"
         case cpusetMems = "CpusetMems"
         case groupAdd = "GroupAdd"
+        case capAdd = "CapAdd"
+        case capDrop = "CapDrop"
+        case securityOpt = "SecurityOpt"
     }
 
     public init(
@@ -552,7 +568,10 @@ public struct HostConfigInspect: Codable {
         cpuQuota: Int64 = 0,
         cpusetCpus: String = "",
         cpusetMems: String = "",
-        groupAdd: [String] = []
+        groupAdd: [String] = [],
+        capAdd: [String] = [],
+        capDrop: [String] = [],
+        securityOpt: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -572,6 +591,9 @@ public struct HostConfigInspect: Codable {
         self.cpusetCpus = cpusetCpus
         self.cpusetMems = cpusetMems
         self.groupAdd = groupAdd
+        self.capAdd = capAdd
+        self.capDrop = capDrop
+        self.securityOpt = securityOpt
     }
 }
 

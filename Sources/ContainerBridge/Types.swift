@@ -232,6 +232,11 @@ public struct HostConfig: Sendable {
     // User/UID Support (Phase 5 - Task 5.3)
     public let groupAdd: [String]
 
+    // Security Capabilities (Phase 5 - Task 5.5)
+    public let capAdd: [String]
+    public let capDrop: [String]
+    public let securityOpt: [String]
+
     public init(
         binds: [String] = [],
         networkMode: String = "default",
@@ -250,7 +255,10 @@ public struct HostConfig: Sendable {
         cpuQuota: Int64 = 0,
         cpusetCpus: String = "",
         cpusetMems: String = "",
-        groupAdd: [String] = []
+        groupAdd: [String] = [],
+        capAdd: [String] = [],
+        capDrop: [String] = [],
+        securityOpt: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -270,6 +278,9 @@ public struct HostConfig: Sendable {
         self.cpusetCpus = cpusetCpus
         self.cpusetMems = cpusetMems
         self.groupAdd = groupAdd
+        self.capAdd = capAdd
+        self.capDrop = capDrop
+        self.securityOpt = securityOpt
     }
 }
 

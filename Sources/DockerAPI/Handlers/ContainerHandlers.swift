@@ -199,7 +199,12 @@ public struct ContainerHandlers: Sendable {
                 cpusetMems: request.hostConfig?.cpusetMems,
                 // User/UID Support (Phase 5 - Task 5.3)
                 user: request.user,
-                groupAdd: request.hostConfig?.groupAdd
+                groupAdd: request.hostConfig?.groupAdd,
+                // Security Capabilities (Phase 5 - Task 5.5)
+                privileged: request.hostConfig?.privileged ?? false,
+                capAdd: request.hostConfig?.capAdd,
+                capDrop: request.hostConfig?.capDrop,
+                securityOpt: request.hostConfig?.securityOpt
             )
 
             logger.info("Container created", metadata: [
@@ -287,6 +292,59 @@ public struct ContainerHandlers: Sendable {
             ])
 
             return .failure(ContainerError.stopFailed(errorDescription(error)))
+        }
+    }
+
+    /// Handle POST /containers/{id}/kill (Phase 5 - Task 5.4)
+    /// Sends a signal to a container
+    public func handleKillContainer(id: String, signal: String = "SIGKILL") async -> Result<Void, ContainerError> {
+        logger.info("Handling kill container request", metadata: [
+            "id": "\(id)",
+            "signal": "\(signal)"
+        ])
+
+        // Protect control plane from being killed by users
+        if await isControlPlane(id: id) {
+            logger.warning("Attempted to kill control plane container", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.operationNotPermitted(
+                "Cannot kill the control plane container 'arca-control-plane'. " +
+                "This container is managed by the Arca daemon and uses restart policy 'always'."
+            ))
+        }
+
+        do {
+            try await containerManager.killContainer(id: id, signal: signal)
+
+            logger.info("Container killed", metadata: [
+                "id": "\(id)",
+                "signal": "\(signal)"
+            ])
+
+            return .success(())
+        } catch let error as ContainerManagerError {
+            logger.error("Failed to kill container", metadata: [
+                "id": "\(id)",
+                "signal": "\(signal)",
+                "error": "\(error)"
+            ])
+
+            // Map ContainerManagerError to appropriate ContainerError
+            switch error {
+            case .containerNotFound:
+                return .failure(ContainerError.notFound(id))
+            case .containerNotRunning:
+                return .failure(ContainerError.invalidRequest("Container is not running"))
+            default:
+                return .failure(ContainerError.killFailed(error.description))
+            }
+        } catch {
+            logger.error("Failed to kill container", metadata: [
+                "id": "\(id)",
+                "signal": "\(signal)",
+                "error": "\(error)"
+            ])
+
+            return .failure(ContainerError.killFailed(errorDescription(error)))
         }
     }
 
@@ -886,7 +944,11 @@ public struct ContainerHandlers: Sendable {
                     cpusetCpus: container.hostConfig.cpusetCpus,
                     cpusetMems: container.hostConfig.cpusetMems,
                     // User/UID Support (Phase 5 - Task 5.3)
-                    groupAdd: container.hostConfig.groupAdd
+                    groupAdd: container.hostConfig.groupAdd,
+                    // Security Capabilities (Phase 5 - Task 5.5)
+                    capAdd: container.hostConfig.capAdd,
+                    capDrop: container.hostConfig.capDrop,
+                    securityOpt: container.hostConfig.securityOpt
                 ),
                 config: ContainerConfigInspect(
                     hostname: container.config.hostname,
@@ -1768,6 +1830,7 @@ public enum ContainerError: Error, CustomStringConvertible {
     case creationFailed(String)
     case startFailed(String)
     case stopFailed(String)
+    case killFailed(String)  // Phase 5 - Task 5.4: Kill endpoint
     case restartFailed(String)
     case renameFailed(String)
     case pauseFailed(String)
@@ -1790,6 +1853,8 @@ public enum ContainerError: Error, CustomStringConvertible {
             return "Failed to start container: \(msg)"
         case .stopFailed(let msg):
             return "Failed to stop container: \(msg)"
+        case .killFailed(let msg):
+            return "Failed to kill container: \(msg)"
         case .restartFailed(let msg):
             return "Failed to restart container: \(msg)"
         case .renameFailed(let msg):

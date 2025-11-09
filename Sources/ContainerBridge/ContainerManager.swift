@@ -77,6 +77,11 @@ public actor ContainerManager {
         // User/UID Support (Phase 5 - Task 5.3)
         let user: String?
         let groupAdd: [String]?
+
+        // Security Capabilities (Phase 5 - Task 5.5)
+        let privileged: Bool
+        let capAdd: [String]?
+        let capDrop: [String]?
     }
 
     /// Complete configuration for creating a native Container object
@@ -114,6 +119,11 @@ public actor ContainerManager {
         // User/UID Support (Phase 5 - Task 5.3)
         let user: String?               // -u, --user (username, uid, uid:gid, username:gid)
         let groupAdd: [String]?         // --group-add (additional groups)
+
+        // Security Capabilities (Phase 5 - Task 5.5)
+        let privileged: Bool            // --privileged (grant all capabilities)
+        let capAdd: [String]?           // --cap-add (add Linux capabilities)
+        let capDrop: [String]?          // --cap-drop (drop Linux capabilities)
     }
 
     /// Handles for an attached container (stdin/stdout/stderr streams)
@@ -600,6 +610,87 @@ public actor ContainerManager {
 
     // MARK: - Container Creation Helpers
 
+    /// Build LinuxCapabilities from Docker capability parameters
+    /// Docker semantics:
+    /// - privileged=true: Grant ALL capabilities (CAP_CHOWN, CAP_NET_ADMIN, etc.)
+    /// - Otherwise: Start with Docker's default caps, then apply cap-add/cap-drop
+    private func buildLinuxCapabilities(
+        privileged: Bool,
+        capAdd: [String]?,
+        capDrop: [String]?
+    ) -> ContainerizationOCI.LinuxCapabilities {
+        // Full list of all Linux capabilities (as of Linux 5.x)
+        let allCapabilities = [
+            "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER",
+            "CAP_FSETID", "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
+            "CAP_LINUX_IMMUTABLE", "CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST",
+            "CAP_NET_ADMIN", "CAP_NET_RAW", "CAP_IPC_LOCK", "CAP_IPC_OWNER",
+            "CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT", "CAP_SYS_PTRACE",
+            "CAP_SYS_PACCT", "CAP_SYS_ADMIN", "CAP_SYS_BOOT", "CAP_SYS_NICE",
+            "CAP_SYS_RESOURCE", "CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD",
+            "CAP_LEASE", "CAP_AUDIT_WRITE", "CAP_AUDIT_CONTROL", "CAP_SETFCAP",
+            "CAP_MAC_OVERRIDE", "CAP_MAC_ADMIN", "CAP_SYSLOG", "CAP_WAKE_ALARM",
+            "CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ", "CAP_PERFMON", "CAP_BPF",
+            "CAP_CHECKPOINT_RESTORE"
+        ]
+
+        // Docker's default capabilities (matches Docker 20.10+)
+        // These are the capabilities granted to non-privileged containers
+        let dockerDefaultCapabilities = [
+            "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID", "CAP_FOWNER",
+            "CAP_MKNOD", "CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID",
+            "CAP_SETFCAP", "CAP_SETPCAP", "CAP_NET_BIND_SERVICE",
+            "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"
+        ]
+
+        var caps: [String]
+
+        if privileged {
+            // Privileged mode: Grant ALL capabilities
+            caps = allCapabilities
+            logger.debug("Privileged mode enabled - granting all capabilities", metadata: [
+                "capability_count": "\(allCapabilities.count)"
+            ])
+        } else {
+            // Normal mode: Start with Docker default capabilities
+            caps = dockerDefaultCapabilities
+        }
+
+        // Apply cap-add (add capabilities)
+        if let add = capAdd, !add.isEmpty {
+            for cap in add {
+                let normalizedCap = cap.hasPrefix("CAP_") ? cap : "CAP_\(cap.uppercased())"
+                if !caps.contains(normalizedCap) {
+                    caps.append(normalizedCap)
+                }
+            }
+            logger.debug("Added capabilities", metadata: [
+                "added": "\(add.joined(separator: ", "))"
+            ])
+        }
+
+        // Apply cap-drop (remove capabilities)
+        if let drop = capDrop, !drop.isEmpty {
+            for cap in drop {
+                let normalizedCap = cap.hasPrefix("CAP_") ? cap : "CAP_\(cap.uppercased())"
+                caps.removeAll { $0 == normalizedCap }
+            }
+            logger.debug("Dropped capabilities", metadata: [
+                "dropped": "\(drop.joined(separator: ", "))"
+            ])
+        }
+
+        // LinuxCapabilities has 5 sets: bounding, effective, inheritable, permitted, ambient
+        // Docker's behavior: Set the same capabilities in all sets for simplicity
+        return ContainerizationOCI.LinuxCapabilities(
+            bounding: caps,
+            effective: caps,
+            inheritable: caps,
+            permitted: caps,
+            ambient: caps
+        )
+    }
+
     /// Create a native LinuxContainer from configuration
     /// This is the core container creation logic, used by:
     /// 1. createContainer() - initial container creation from API request
@@ -670,6 +761,13 @@ public actor ContainerManager {
         let imageConfig = try await config.image.config(for: imagePlatform)
         let imageEntrypoint = imageConfig.config?.entrypoint ?? []
         let imageCmd = imageConfig.config?.cmd ?? []
+
+        // Build capabilities before closure for @Sendable capture
+        let capabilities = buildLinuxCapabilities(
+            privileged: config.privileged,
+            capAdd: config.capAdd,
+            capDrop: config.capDrop
+        )
 
         let container = try await manager.create(
             dockerID,
@@ -919,6 +1017,15 @@ public actor ContainerManager {
                     "groups": "\(groupAdd.joined(separator: ","))"
                 ])
             }
+
+            // Configure Security Capabilities (Phase 5 - Task 5.5)
+            // Wire Docker capability parameters to OCI LinuxCapabilities
+            containerConfig.process.capabilities = capabilities
+            configLogger.info("Configured security capabilities", metadata: [
+                "docker_id": "\(dockerID)",
+                "privileged": "\(config.privileged)",
+                "cap_count": "\(capabilities.bounding.count)"
+            ])
         }
 
         // Call .create() to set up the VM
@@ -967,7 +1074,12 @@ public actor ContainerManager {
         cpusetMems: String? = nil,
         // User/UID Support (Phase 5 - Task 5.3)
         user: String? = nil,
-        groupAdd: [String]? = nil
+        groupAdd: [String]? = nil,
+        // Security Capabilities (Phase 5 - Task 5.5)
+        privileged: Bool = false,
+        capAdd: [String]? = nil,
+        capDrop: [String]? = nil,
+        securityOpt: [String]? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -1118,7 +1230,11 @@ public actor ContainerManager {
                 cpusetMems: cpusetMems,
                 // User/UID Support (Phase 5 - Task 5.3)
                 user: user,
-                groupAdd: groupAdd
+                groupAdd: groupAdd,
+                // Security Capabilities (Phase 5 - Task 5.5)
+                privileged: privileged,
+                capAdd: capAdd,
+                capDrop: capDrop
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -1154,7 +1270,10 @@ public actor ContainerManager {
                     cpusetCpus: cpusetCpus,
                     cpusetMems: cpusetMems,
                     user: user,
-                    groupAdd: groupAdd
+                    groupAdd: groupAdd,
+                    privileged: privileged,
+                    capAdd: capAdd,
+                    capDrop: capDrop
                 )
             )
 
@@ -1191,6 +1310,7 @@ public actor ContainerManager {
                 networkMode: networkMode ?? "default",
                 portBindings: portBindings ?? [:],
                 restartPolicy: restartPolicy ?? RestartPolicy(name: "no", maximumRetryCount: 0),
+                privileged: privileged,
                 memory: memory ?? 0,
                 memoryReservation: memoryReservation ?? 0,
                 memorySwap: memorySwap ?? 0,
@@ -1200,7 +1320,11 @@ public actor ContainerManager {
                 cpuPeriod: cpuPeriod ?? 0,
                 cpuQuota: cpuQuota ?? 0,
                 cpusetCpus: cpusetCpus ?? "",
-                cpusetMems: cpusetMems ?? ""
+                cpusetMems: cpusetMems ?? "",
+                groupAdd: groupAdd ?? [],
+                capAdd: capAdd ?? [],
+                capDrop: capDrop ?? [],
+                securityOpt: securityOpt ?? []
             ),
             config: ContainerConfiguration(
                 hostname: containerName,
@@ -1390,7 +1514,11 @@ public actor ContainerManager {
                     cpusetMems: config.cpusetMems,
                     // User/UID Support (Phase 5 - Task 5.3)
                     user: config.user,
-                    groupAdd: config.groupAdd
+                    groupAdd: config.groupAdd,
+                    // Security Capabilities (Phase 5 - Task 5.5)
+                    privileged: config.privileged,
+                    capAdd: config.capAdd,
+                    capDrop: config.capDrop
                 )
             )
 
@@ -1499,7 +1627,11 @@ public actor ContainerManager {
                         cpusetMems: !info.hostConfig.cpusetMems.isEmpty ? info.hostConfig.cpusetMems : nil,
                         // User/UID Support (Phase 5 - Task 5.3)
                         user: !info.config.user.isEmpty ? info.config.user : nil,
-                        groupAdd: !info.hostConfig.groupAdd.isEmpty ? info.hostConfig.groupAdd : nil
+                        groupAdd: !info.hostConfig.groupAdd.isEmpty ? info.hostConfig.groupAdd : nil,
+                        // Security Capabilities (Phase 5 - Task 5.5)
+                        privileged: info.hostConfig.privileged,
+                        capAdd: !info.hostConfig.capAdd.isEmpty ? info.hostConfig.capAdd : nil,
+                        capDrop: !info.hostConfig.capDrop.isEmpty ? info.hostConfig.capDrop : nil
                     )
                 )
 
@@ -1872,6 +2004,89 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "state": "exited"
         ])
+    }
+
+    /// Kill a container by sending a signal (Phase 5 - Task 5.4)
+    public func killContainer(id: String, signal: String = "SIGKILL") async throws {
+        logger.info("Killing container", metadata: [
+            "id": "\(id)",
+            "signal": "\(signal)"
+        ])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard let info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Verify container is running
+        guard info.state == "running" else {
+            logger.error("Container is not running", metadata: [
+                "id": "\(dockerID)",
+                "state": "\(info.state)"
+            ])
+            throw ContainerManagerError.containerNotRunning(id)
+        }
+
+        // Get the native container object
+        guard let nativeContainer = nativeContainers[dockerID] else {
+            logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        // Parse signal string to Int32
+        let signalNumber = parseSignal(signal)
+
+        logger.info("Sending signal to container", metadata: [
+            "id": "\(dockerID)",
+            "signal": "\(signal)",
+            "signal_number": "\(signalNumber)"
+        ])
+
+        // Send signal to container using Containerization API
+        try await nativeContainer.kill(signalNumber)
+
+        logger.info("Signal sent to container successfully", metadata: [
+            "id": "\(dockerID)",
+            "signal": "\(signal)"
+        ])
+    }
+
+    /// Parse signal string to Int32 signal number
+    private func parseSignal(_ signal: String) -> Int32 {
+        // Remove SIG prefix if present
+        let normalizedSignal = signal.uppercased().hasPrefix("SIG")
+            ? String(signal.uppercased().dropFirst(3))
+            : signal.uppercased()
+
+        // Try parsing as number first
+        if let num = Int32(normalizedSignal) {
+            return num
+        }
+
+        // Map common signal names to numbers
+        switch normalizedSignal {
+        case "HUP": return 1
+        case "INT": return 2
+        case "QUIT": return 3
+        case "KILL": return 9
+        case "TERM": return 15
+        case "USR1": return 10
+        case "USR2": return 12
+        case "ALRM": return 14
+        case "CONT": return 18
+        case "STOP": return 19
+        case "TSTP": return 20
+        case "TTIN": return 21
+        case "TTOU": return 22
+        default:
+            // Default to SIGKILL if unknown
+            logger.warning("Unknown signal name, defaulting to SIGKILL", metadata: ["signal": "\(signal)"])
+            return 9
+        }
     }
 
     /// Pause a running container
@@ -3057,6 +3272,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case kernelNotFound(String)
     case containerNotFound(String)
     case containerRunning(String)
+    case containerNotRunning(String)  // Phase 5 - Task 5.4: For kill endpoint validation
     case imageNotFound(String)
     case invalidConfiguration(String)
     case invalidParameter(String)  // Phase 5 - Task 5.1: For validating resource limits
@@ -3078,6 +3294,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such container: \(id)"
         case .containerRunning(let id):
             return "Container is running: \(id). Stop the container before removing it or use force."
+        case .containerNotRunning(let id):
+            return "Container is not running: \(id)"
         case .imageNotFound(let ref):
             return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
