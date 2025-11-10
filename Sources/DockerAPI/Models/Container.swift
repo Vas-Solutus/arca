@@ -1,4 +1,5 @@
 import Foundation
+import ContainerBridge  // For HealthConfig, Health, HealthcheckResult types
 
 // MARK: - Docker API Container Models
 // Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
@@ -221,6 +222,7 @@ public struct ContainerCreateRequest: Codable, Sendable {
     public let workingDir: String?
     public let entrypoint: [String]?
     public let labels: [String: String]?
+    public let healthcheck: HealthConfig?  // Phase 6 - Task 6.2: Health check configuration
     public let hostConfig: HostConfigCreate?
     public let networkingConfig: NetworkingConfig?  // For docker run --ip support
 
@@ -241,6 +243,7 @@ public struct ContainerCreateRequest: Codable, Sendable {
         case workingDir = "WorkingDir"
         case entrypoint = "Entrypoint"
         case labels = "Labels"
+        case healthcheck = "Healthcheck"
         case hostConfig = "HostConfig"
         case networkingConfig = "NetworkingConfig"
     }
@@ -452,6 +455,7 @@ public struct ContainerStateInspect: Codable {
     public let error: String
     public let startedAt: String
     public let finishedAt: String
+    public let health: Health?  // Phase 6 - Task 6.2: Health check status
 
     enum CodingKeys: String, CodingKey {
         case status = "Status"
@@ -465,6 +469,7 @@ public struct ContainerStateInspect: Codable {
         case error = "Error"
         case startedAt = "StartedAt"
         case finishedAt = "FinishedAt"
+        case health = "Health"
     }
 
     public init(
@@ -478,7 +483,8 @@ public struct ContainerStateInspect: Codable {
         exitCode: Int,
         error: String = "",
         startedAt: String,
-        finishedAt: String
+        finishedAt: String,
+        health: Health? = nil
     ) {
         self.status = status
         self.running = running
@@ -491,6 +497,7 @@ public struct ContainerStateInspect: Codable {
         self.error = error
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.health = health
     }
 }
 
@@ -647,6 +654,7 @@ public struct ContainerConfigInspect: Codable {
     public let workingDir: String
     public let entrypoint: [String]?
     public let labels: [String: String]?
+    public let healthcheck: HealthConfig?  // Phase 6 - Task 6.2: Health check configuration
 
     enum CodingKeys: String, CodingKey {
         case hostname = "Hostname"
@@ -665,6 +673,7 @@ public struct ContainerConfigInspect: Codable {
         case workingDir = "WorkingDir"
         case entrypoint = "Entrypoint"
         case labels = "Labels"
+        case healthcheck = "Healthcheck"
     }
 
     public init(
@@ -683,7 +692,8 @@ public struct ContainerConfigInspect: Codable {
         volumes: [String: AnyCodable]? = nil,
         workingDir: String = "",
         entrypoint: [String]? = nil,
-        labels: [String: String]? = nil
+        labels: [String: String]? = nil,
+        healthcheck: HealthConfig? = nil
     ) {
         self.hostname = hostname
         self.domainname = domainname
@@ -701,6 +711,7 @@ public struct ContainerConfigInspect: Codable {
         self.workingDir = workingDir
         self.entrypoint = entrypoint
         self.labels = labels
+        self.healthcheck = healthcheck
     }
 }
 
@@ -838,6 +849,68 @@ public struct MountInspect: Codable {
         self.mode = mode
         self.rw = rw
         self.propagation = propagation
+    }
+}
+
+// MARK: - Container Update Request/Response
+
+/// Request body for POST /containers/{id}/update
+/// Allows updating resource limits and restart policy on running containers
+public struct ContainerUpdateRequest: Codable, Sendable {
+    // Memory Limits
+    public let memory: Int64?
+    public let memoryReservation: Int64?
+    public let memorySwap: Int64?
+    public let memorySwappiness: Int?
+
+    // CPU Limits
+    public let nanoCpus: Int64?
+    public let cpuShares: Int64?
+    public let cpuPeriod: Int64?
+    public let cpuQuota: Int64?
+    public let cpusetCpus: String?
+    public let cpusetMems: String?
+
+    // Process Limits
+    public let pidsLimit: Int64?
+
+    // Block I/O Limits
+    public let blkioWeight: Int?
+
+    // OOM Control
+    public let oomKillDisable: Bool?
+
+    // Restart Policy
+    public let restartPolicy: RestartPolicyCreate?
+
+    enum CodingKeys: String, CodingKey {
+        case memory = "Memory"
+        case memoryReservation = "MemoryReservation"
+        case memorySwap = "MemorySwap"
+        case memorySwappiness = "MemorySwappiness"
+        case nanoCpus = "NanoCpus"
+        case cpuShares = "CpuShares"
+        case cpuPeriod = "CpuPeriod"
+        case cpuQuota = "CpuQuota"
+        case cpusetCpus = "CpusetCpus"
+        case cpusetMems = "CpusetMems"
+        case pidsLimit = "PidsLimit"
+        case blkioWeight = "BlkioWeight"
+        case oomKillDisable = "OomKillDisable"
+        case restartPolicy = "RestartPolicy"
+    }
+}
+
+/// Response for POST /containers/{id}/update
+public struct ContainerUpdateResponse: Codable {
+    public let warnings: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case warnings = "Warnings"
+    }
+
+    public init(warnings: [String]? = nil) {
+        self.warnings = warnings
     }
 }
 

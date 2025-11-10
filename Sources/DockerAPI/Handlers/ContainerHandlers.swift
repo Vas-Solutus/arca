@@ -166,6 +166,14 @@ public struct ContainerHandlers: Sendable {
                 }
             }
 
+            logger.debug("Container create request resource limits", metadata: [
+                "memory": "\(request.hostConfig?.memory?.description ?? "nil")",
+                "memoryReservation": "\(request.hostConfig?.memoryReservation?.description ?? "nil")",
+                "memorySwap": "\(request.hostConfig?.memorySwap?.description ?? "nil")",
+                "cpuShares": "\(request.hostConfig?.cpuShares?.description ?? "nil")",
+                "nanoCpus": "\(request.hostConfig?.nanoCpus?.description ?? "nil")"
+            ])
+
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
@@ -204,7 +212,9 @@ public struct ContainerHandlers: Sendable {
                 privileged: request.hostConfig?.privileged ?? false,
                 capAdd: request.hostConfig?.capAdd,
                 capDrop: request.hostConfig?.capDrop,
-                securityOpt: request.hostConfig?.securityOpt
+                securityOpt: request.hostConfig?.securityOpt,
+                // Health Check (Phase 6 - Task 6.2)
+                healthcheck: request.healthcheck
             )
 
             logger.info("Container created", metadata: [
@@ -913,7 +923,8 @@ public struct ContainerHandlers: Sendable {
                     exitCode: container.state.exitCode,
                     error: container.state.error,
                     startedAt: container.state.startedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "0001-01-01T00:00:00Z",
-                    finishedAt: container.state.finishedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "0001-01-01T00:00:00Z"
+                    finishedAt: container.state.finishedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "0001-01-01T00:00:00Z",
+                    health: container.state.health
                 ),
                 image: container.image,
                 name: "/\(container.name)",
@@ -966,7 +977,8 @@ public struct ContainerHandlers: Sendable {
                     volumes: nil,
                     workingDir: container.config.workingDir,
                     entrypoint: container.config.entrypoint,
-                    labels: container.config.labels
+                    labels: container.config.labels,
+                    healthcheck: container.config.healthcheck
                 ),
                 networkSettings: NetworkSettingsInspect(
                     ipAddress: container.networkSettings.ipAddress,
@@ -1647,6 +1659,67 @@ public struct ContainerHandlers: Sendable {
     }
 
     // MARK: - Archive Operations
+
+    /// Handle POST /containers/{id}/update
+    /// Updates resource configuration of a container
+    ///
+    /// Phase 6 - Task 6.1: Container Update Endpoint
+    /// Allows updating memory, CPU, restart policy, and other resource limits at runtime
+    public func handleUpdateContainer(id: String, request: ContainerUpdateRequest) async -> Result<ContainerUpdateResponse, ContainerError> {
+        logger.info("Handling update container request", metadata: [
+            "container_id": "\(id)",
+            "memory": "\(request.memory?.description ?? "nil")",
+            "memoryReservation": "\(request.memoryReservation?.description ?? "nil")",
+            "memorySwap": "\(request.memorySwap?.description ?? "nil")",
+            "nanoCpus": "\(request.nanoCpus?.description ?? "nil")",
+            "cpuShares": "\(request.cpuShares?.description ?? "nil")"
+        ])
+
+        // Resolve container ID
+        guard let containerID = await containerManager.resolveContainer(idOrName: id) else {
+            return .failure(.notFound(id))
+        }
+
+        // Get current container state
+        guard let container = try? await containerManager.getContainer(id: containerID) else {
+            return .failure(.notFound(id))
+        }
+
+        do {
+            // Update container with new configuration
+            let warnings = try await containerManager.updateContainer(
+                id: containerID,
+                memory: request.memory,
+                memoryReservation: request.memoryReservation,
+                memorySwap: request.memorySwap,
+                memorySwappiness: request.memorySwappiness,
+                nanoCpus: request.nanoCpus,
+                cpuShares: request.cpuShares,
+                cpuPeriod: request.cpuPeriod,
+                cpuQuota: request.cpuQuota,
+                cpusetCpus: request.cpusetCpus,
+                cpusetMems: request.cpusetMems,
+                pidsLimit: request.pidsLimit,
+                blkioWeight: request.blkioWeight,
+                oomKillDisable: request.oomKillDisable,
+                restartPolicyName: request.restartPolicy?.name,
+                restartPolicyMaxRetryCount: request.restartPolicy?.maximumRetryCount
+            )
+
+            logger.info("Container updated successfully", metadata: [
+                "container_id": "\(id)",
+                "warnings_count": "\(warnings.count)"
+            ])
+
+            return .success(ContainerUpdateResponse(warnings: warnings.isEmpty ? nil : warnings))
+        } catch {
+            logger.error("Failed to update container", metadata: [
+                "container_id": "\(id)",
+                "error": "\(errorDescription(error))"
+            ])
+            return .failure(.invalidRequest(errorDescription(error)))
+        }
+    }
 
     /// Get an archive of a filesystem resource in a container (GET /containers/{id}/archive)
     /// TODO: Implement file extraction from container VM filesystem

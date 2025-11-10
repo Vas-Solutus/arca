@@ -38,6 +38,9 @@ public actor ContainerManager {
     // Optional NetworkManager reference for auto-attachment to networks
     private var networkManager: NetworkManager?
 
+    // Optional HealthChecker reference for health check management (Phase 6 - Task 6.2)
+    private var healthChecker: HealthChecker?
+
     // Optional VolumeManager reference for named volume resolution
     private var volumeManager: VolumeManager?
 
@@ -82,6 +85,9 @@ public actor ContainerManager {
         let privileged: Bool
         let capAdd: [String]?
         let capDrop: [String]?
+
+        // Health Check (Phase 6 - Task 6.2)
+        let healthcheck: HealthConfig?
     }
 
     /// Complete configuration for creating a native Container object
@@ -162,6 +168,11 @@ public actor ContainerManager {
     /// Set the NetworkManager (called after NetworkManager is initialized)
     public func setNetworkManager(_ manager: NetworkManager) {
         self.networkManager = manager
+    }
+
+    /// Set the HealthChecker (called after HealthChecker is initialized) - Phase 6, Task 6.2
+    public func setHealthChecker(_ checker: HealthChecker) {
+        self.healthChecker = checker
     }
 
     /// Set the VolumeManager (called after VolumeManager is initialized)
@@ -580,6 +591,14 @@ public actor ContainerManager {
             networks: networks
         )
 
+        // Get health status if health checker is available (Phase 6 - Task 6.2)
+        let health: Health?
+        if let healthChecker = healthChecker {
+            health = await healthChecker.getStatus(containerID: dockerID)
+        } else {
+            health = nil
+        }
+
         return Container(
             id: dockerID,
             nativeID: info.nativeID,
@@ -597,7 +616,8 @@ public actor ContainerManager {
                 exitCode: info.exitCode,
                 error: "",
                 startedAt: info.startedAt,
-                finishedAt: info.finishedAt
+                finishedAt: info.finishedAt,
+                health: health
             ),
             image: info.image,
             name: info.name ?? "",
@@ -1079,7 +1099,9 @@ public actor ContainerManager {
         privileged: Bool = false,
         capAdd: [String]? = nil,
         capDrop: [String]? = nil,
-        securityOpt: [String]? = nil
+        securityOpt: [String]? = nil,
+        // Health Check (Phase 6 - Task 6.2)
+        healthcheck: HealthConfig? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -1234,7 +1256,9 @@ public actor ContainerManager {
                 // Security Capabilities (Phase 5 - Task 5.5)
                 privileged: privileged,
                 capAdd: capAdd,
-                capDrop: capDrop
+                capDrop: capDrop,
+                // Health Check (Phase 6 - Task 6.2)
+                healthcheck: healthcheck
             )
 
             // Use Docker ID as native ID for deferred containers
@@ -1332,7 +1356,8 @@ public actor ContainerManager {
                 cmd: command ?? [],
                 image: image,
                 workingDir: workingDir ?? "",
-                labels: labels ?? [:]
+                labels: labels ?? [:],
+                healthcheck: healthcheck
             ),
             networkSettings: NetworkSettings(),
             pid: 0,
@@ -1865,6 +1890,44 @@ public actor ContainerManager {
             }
         }
 
+        // Start health checks if configured (Phase 6 - Task 6.2)
+        if let deferred = deferredConfigs[dockerID],
+           let healthConfig = deferred.healthcheck,
+           let healthChecker = healthChecker {
+            // Don't start health checks for NONE healthcheck
+            if healthConfig.test != ["NONE"] {
+                logger.info("Starting health checks for container", metadata: [
+                    "container": "\(dockerID)",
+                    "interval": "\(healthConfig.interval ?? 30_000_000_000)ns"
+                ])
+
+                await healthChecker.start(
+                    containerID: dockerID,
+                    config: healthConfig,
+                    containerStartTime: info.startedAt ?? Date()
+                )
+            } else {
+                logger.debug("Health checks disabled (NONE) for container", metadata: ["container": "\(dockerID)"])
+            }
+        } else if let hostConfigHealthcheck = info.config.healthcheck,
+                  let healthChecker = healthChecker {
+            // Health check from persisted config (after daemon restart)
+            if hostConfigHealthcheck.test != ["NONE"] {
+                logger.info("Starting health checks for restarted container", metadata: [
+                    "container": "\(dockerID)",
+                    "interval": "\(hostConfigHealthcheck.interval ?? 30_000_000_000)ns"
+                ])
+
+                await healthChecker.start(
+                    containerID: dockerID,
+                    config: hostConfigHealthcheck,
+                    containerStartTime: info.startedAt ?? Date()
+                )
+            } else {
+                logger.debug("Health checks disabled (NONE) for restarted container", metadata: ["container": "\(dockerID)"])
+            }
+        }
+
         // Spawn background monitoring task to detect when container exits
         // The task waits for the container to exit, then calls back into the actor to update state
         let monitoringTask = Task { [weak self, logger, attachInfo] in
@@ -1950,6 +2013,12 @@ public actor ContainerManager {
         // Cancel monitoring task if running
         if let task = monitoringTasks.removeValue(forKey: dockerID) {
             task.cancel()
+        }
+
+        // Stop health checks if running (Phase 6 - Task 6.2)
+        if let healthChecker = healthChecker {
+            await healthChecker.stop(containerID: dockerID)
+            logger.debug("Stopped health checks for container", metadata: ["container": "\(dockerID)"])
         }
 
         // Stop the container using Containerization API
@@ -2482,6 +2551,145 @@ public actor ContainerManager {
         ])
 
         return Int(exitStatus.exitCode)
+    }
+
+    /// Update a container's resource configuration
+    /// Phase 6 - Task 6.1: Container Update Endpoint
+    ///
+    /// Updates resource limits and restart policy. Returns warnings if some updates
+    /// cannot be applied immediately (e.g., to running containers).
+    public func updateContainer(
+        id: String,
+        memory: Int64? = nil,
+        memoryReservation: Int64? = nil,
+        memorySwap: Int64? = nil,
+        memorySwappiness: Int? = nil,
+        nanoCpus: Int64? = nil,
+        cpuShares: Int64? = nil,
+        cpuPeriod: Int64? = nil,
+        cpuQuota: Int64? = nil,
+        cpusetCpus: String? = nil,
+        cpusetMems: String? = nil,
+        pidsLimit: Int64? = nil,
+        blkioWeight: Int? = nil,
+        oomKillDisable: Bool? = nil,
+        restartPolicyName: String? = nil,
+        restartPolicyMaxRetryCount: Int? = nil
+    ) async throws -> [String] {
+        logger.info("Updating container", metadata: ["id": "\(id)"])
+
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard var info = containers[dockerID] else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        logger.debug("Container hostConfig before update", metadata: [
+            "memory": "\(info.hostConfig.memory)",
+            "memoryReservation": "\(info.hostConfig.memoryReservation)",
+            "memorySwap": "\(info.hostConfig.memorySwap)",
+            "cpuShares": "\(info.hostConfig.cpuShares)",
+            "nanoCpus": "\(info.hostConfig.nanoCpus)"
+        ])
+
+        var warnings: [String] = []
+
+        // Determine effective memory and memory reservation values after update
+        // Docker sends 0 for "don't change this value" in update requests
+        // Only use new value if it's non-nil AND non-zero (except memorySwap where -1 = unlimited, 0 = don't change)
+        let effectiveMemory = (memory != nil && memory! > 0) ? memory! : info.hostConfig.memory
+        let effectiveMemoryReservation = (memoryReservation != nil && memoryReservation! > 0) ? memoryReservation! : info.hostConfig.memoryReservation
+        let effectiveMemorySwap = (memorySwap != nil && memorySwap! != 0) ? memorySwap! : info.hostConfig.memorySwap
+
+        logger.debug("Validating memory limits", metadata: [
+            "effectiveMemory": "\(effectiveMemory)",
+            "effectiveMemoryReservation": "\(effectiveMemoryReservation)",
+            "requestMemory": "\(memory?.description ?? "nil")",
+            "requestMemoryReservation": "\(memoryReservation?.description ?? "nil")"
+        ])
+
+        // Validate memory limits against effective values
+        if effectiveMemory > 0 && effectiveMemoryReservation > 0 && effectiveMemoryReservation > effectiveMemory {
+            logger.error("Memory reservation validation failed", metadata: [
+                "effectiveMemory": "\(effectiveMemory)",
+                "effectiveMemoryReservation": "\(effectiveMemoryReservation)"
+            ])
+            throw ContainerManagerError.invalidParameter("Memory reservation cannot be greater than memory limit")
+        }
+
+        if effectiveMemory > 0 && effectiveMemorySwap > 0 && effectiveMemorySwap < effectiveMemory {
+            throw ContainerManagerError.invalidParameter("Memory swap must be greater than or equal to memory limit")
+        }
+
+        // Validate CPU limits if provided
+        if let cpuQuota = cpuQuota, let cpuPeriod = cpuPeriod {
+            if cpuPeriod > 0 && cpuQuota > 0 && cpuQuota > cpuPeriod {
+                warnings.append("CPU quota should not exceed CPU period")
+            }
+        }
+
+        // Create updated HostConfig with merged values
+        let updatedRestartPolicy: RestartPolicy
+        if let policyName = restartPolicyName {
+            updatedRestartPolicy = RestartPolicy(
+                name: policyName,
+                maximumRetryCount: restartPolicyMaxRetryCount ?? 0
+            )
+        } else {
+            updatedRestartPolicy = info.hostConfig.restartPolicy
+        }
+
+        let updatedHostConfig = HostConfig(
+            binds: info.hostConfig.binds,
+            networkMode: info.hostConfig.networkMode,
+            portBindings: info.hostConfig.portBindings,
+            restartPolicy: updatedRestartPolicy,
+            autoRemove: info.hostConfig.autoRemove,
+            volumeDriver: info.hostConfig.volumeDriver,
+            privileged: info.hostConfig.privileged,
+            // Use effectiveMemory values calculated above (treats 0 as "don't change")
+            memory: effectiveMemory,
+            memoryReservation: effectiveMemoryReservation,
+            memorySwap: effectiveMemorySwap,
+            memorySwappiness: (memorySwappiness != nil && memorySwappiness! >= -1) ? memorySwappiness! : info.hostConfig.memorySwappiness,
+            nanoCpus: (nanoCpus != nil && nanoCpus! > 0) ? nanoCpus! : info.hostConfig.nanoCpus,
+            cpuShares: (cpuShares != nil && cpuShares! > 0) ? cpuShares! : info.hostConfig.cpuShares,
+            cpuPeriod: (cpuPeriod != nil && cpuPeriod! > 0) ? cpuPeriod! : info.hostConfig.cpuPeriod,
+            cpuQuota: (cpuQuota != nil && cpuQuota! > 0) ? cpuQuota! : info.hostConfig.cpuQuota,
+            cpusetCpus: (cpusetCpus != nil && !cpusetCpus!.isEmpty) ? cpusetCpus! : info.hostConfig.cpusetCpus,
+            cpusetMems: (cpusetMems != nil && !cpusetMems!.isEmpty) ? cpusetMems! : info.hostConfig.cpusetMems,
+            groupAdd: info.hostConfig.groupAdd,
+            capAdd: info.hostConfig.capAdd,
+            capDrop: info.hostConfig.capDrop,
+            securityOpt: info.hostConfig.securityOpt
+        )
+
+        // Update container info with new HostConfig
+        info.hostConfig = updatedHostConfig
+        containers[dockerID] = info
+
+        // Persist the updated configuration to database
+        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
+
+        // Add warning about runtime updates
+        if info.state == "running" {
+            // According to Docker, some updates can be applied hot to running containers
+            // However, with Apple's Containerization framework, we may have limitations
+            if memory != nil || memoryReservation != nil || memorySwap != nil ||
+               nanoCpus != nil || cpuShares != nil || cpuPeriod != nil || cpuQuota != nil {
+                warnings.append("Resource limit updates will take effect on next container restart")
+            }
+        }
+
+        logger.info("Container updated successfully", metadata: [
+            "id": "\(dockerID)",
+            "warnings": "\(warnings.count)"
+        ])
+
+        return warnings
     }
 
     // MARK: - Background Monitoring Helpers
@@ -3232,7 +3440,7 @@ public actor ContainerManager {
         let workingDir: String
         let labels: [String: String]
         let ports: [PortMapping]
-        let hostConfig: HostConfig
+        var hostConfig: HostConfig  // Phase 6 - Task 6.1: Mutable for update endpoint
         let config: ContainerConfiguration
         let networkSettings: NetworkSettings
         var pid: Int

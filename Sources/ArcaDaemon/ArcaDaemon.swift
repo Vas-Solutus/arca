@@ -189,6 +189,19 @@ public final class ArcaDaemon: @unchecked Sendable {
         )
         self.containerManager = containerManager
 
+        // Initialize ExecManager (needed for health checks)
+        let execManager = ExecManager(containerManager: containerManager, logger: logger)
+        self.execManager = execManager
+
+        // Initialize HealthChecker BEFORE containerManager.initialize()
+        // This ensures health checks are available when containers are auto-restarted via restart policies
+        logger.info("Initializing health checker...")
+        let healthChecker = HealthChecker(logger: logger, execManager: execManager)
+        await containerManager.setHealthChecker(healthChecker)
+        logger.debug("ContainerManager configured with HealthChecker")
+
+        // Now initialize ContainerManager - this will restore containers and apply restart policies
+        // Health checks will be started automatically for containers with healthcheck config
         do {
             try await containerManager.initialize()
         } catch {
@@ -197,10 +210,6 @@ public final class ArcaDaemon: @unchecked Sendable {
             ])
             throw error
         }
-
-        // Initialize ExecManager
-        let execManager = ExecManager(containerManager: containerManager, logger: logger)
-        self.execManager = execManager
 
         // Initialize NetworkManager with WireGuard backend
         logger.info("Initializing network manager (WireGuard default)...")
@@ -547,6 +556,36 @@ public final class ArcaDaemon: @unchecked Sendable {
                 default:
                     return .standard(HTTPResponse.internalServerError(error.description))
                 }
+            }
+        }
+
+        // Phase 6 - Task 6.1: Update endpoint
+        _ = builder.post("/containers/{id}/update") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            // Parse request body
+            do {
+                let updateRequest = try request.jsonBody(ContainerUpdateRequest.self)
+                let result = await containerHandlers.handleUpdateContainer(id: id, request: updateRequest)
+
+                switch result {
+                case .success(let response):
+                    return .standard(HTTPResponse.ok(response))
+                case .failure(let error):
+                    // Map ContainerError to appropriate HTTP status
+                    switch error {
+                    case .notFound:
+                        return .standard(HTTPResponse.notFound(error.description))
+                    case .invalidRequest:
+                        return .standard(HTTPResponse.badRequest(error.description))
+                    default:
+                        return .standard(HTTPResponse.internalServerError(error.description))
+                    }
+                }
+            } catch {
+                return .standard(HTTPResponse.badRequest("Invalid request body: \(error.localizedDescription)"))
             }
         }
 

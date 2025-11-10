@@ -121,6 +121,7 @@ public struct ContainerState: Sendable {
     public let error: String
     public let startedAt: Date?
     public let finishedAt: Date?
+    public let health: Health?  // Phase 6 - Task 6.2: Health check status
 
     public init(
         status: String,
@@ -133,7 +134,8 @@ public struct ContainerState: Sendable {
         exitCode: Int,
         error: String,
         startedAt: Date?,
-        finishedAt: Date?
+        finishedAt: Date?,
+        health: Health? = nil
     ) {
         self.status = status
         self.running = running
@@ -146,6 +148,7 @@ public struct ContainerState: Sendable {
         self.error = error
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.health = health
     }
 }
 
@@ -167,6 +170,7 @@ public struct ContainerConfiguration: @unchecked Sendable {
     public let workingDir: String
     public let entrypoint: [String]?
     public let labels: [String: String]
+    public let healthcheck: HealthConfig?  // Phase 6 - Task 6.2: Health check configuration
 
     public init(
         hostname: String = "",
@@ -184,7 +188,8 @@ public struct ContainerConfiguration: @unchecked Sendable {
         volumes: [String: Any] = [:],
         workingDir: String = "",
         entrypoint: [String]? = nil,
-        labels: [String: String] = [:]
+        labels: [String: String] = [:],
+        healthcheck: HealthConfig? = nil
     ) {
         self.hostname = hostname
         self.domainname = domainname
@@ -202,6 +207,7 @@ public struct ContainerConfiguration: @unchecked Sendable {
         self.workingDir = workingDir
         self.entrypoint = entrypoint
         self.labels = labels
+        self.healthcheck = healthcheck
     }
 }
 
@@ -403,7 +409,7 @@ extension ContainerConfiguration: Codable {
         case hostname, domainname, user
         case attachStdin, attachStdout, attachStderr
         case tty, openStdin, stdinOnce
-        case env, cmd, image, workingDir, entrypoint, labels
+        case env, cmd, image, workingDir, entrypoint, labels, healthcheck
     }
 
     public init(from decoder: Decoder) throws {
@@ -423,6 +429,7 @@ extension ContainerConfiguration: Codable {
         workingDir = try container.decode(String.self, forKey: .workingDir)
         entrypoint = try container.decodeIfPresent([String].self, forKey: .entrypoint)
         labels = try container.decode([String: String].self, forKey: .labels)
+        healthcheck = try container.decodeIfPresent(HealthConfig.self, forKey: .healthcheck)
         volumes = [:]  // Not persisted for now
     }
 
@@ -443,6 +450,7 @@ extension ContainerConfiguration: Codable {
         try container.encode(workingDir, forKey: .workingDir)
         try container.encodeIfPresent(entrypoint, forKey: .entrypoint)
         try container.encode(labels, forKey: .labels)
+        try container.encodeIfPresent(healthcheck, forKey: .healthcheck)
         // volumes intentionally not encoded (not supported for persistence yet)
     }
 }
