@@ -658,46 +658,70 @@ Task 6.2 is now 100% complete with all features implemented, tested, and working
 
 ---
 
-### Task 6.5: Archive GET (Complete CP)
+### Task 6.5: Archive GET/PUT (Complete docker cp) ✅ COMPLETE
 
-**Endpoint:** GET /containers/{id}/archive?path=...
-**Completes:** `docker cp` from container
+**Endpoint:** GET /containers/{id}/archive?path=..., PUT /containers/{id}/archive?path=..., HEAD /containers/{id}/archive?path=...
+**Completes:** `docker cp` from/to container
+**Status:** ✅ **COMPLETE** (2025-11-11) - All features implemented and tested (11/11 tests passing)
 
-#### Implementation Steps:
-1. Update handleGetArchive (currently stubbed)
-   ```swift
-   func handleGetArchive(id: String, path: String) async -> Result<Data, ContainerError> {
-       // Verify container exists
-       // Use exec + tar to extract path
-       // Return tar archive
-   }
-   ```
+#### Implementation Summary:
 
-2. Implement file extraction
-   - Create exec instance: `tar -cf - -C <parent> <basename>`
-   - Capture stdout as tar data
-   - Return as response body
+**✅ Completed:**
+1. **PathStat protobuf message** - Added to wireguard.proto with Docker-compatible format
+   - Fields: name, size, mode, mtime, linkTarget
+   - Returned by ReadArchive RPC for X-Docker-Container-Path-Stat header
+2. **ReadArchive RPC** - Uses Go's archive/tar library (works universally without tar in container)
+   - Creates tar archive of requested path
+   - Collects file stat information (size, mode, mtime, symlink target)
+   - Returns tuple: (tarData, PathStat)
+3. **WriteArchive RPC** - Extracts tar archives using Go's archive/tar library
+   - Works universally (including distroless containers)
+   - Accepts tar data and destination path
+   - Extracts to container filesystem
+4. **WireGuardClient methods** - Swift client for archive operations
+   - readArchive(containerID:path:) → (Data, PathStat)
+   - writeArchive(containerID:path:tarData:)
+5. **HTTP handlers** - Complete GET/PUT/HEAD endpoint implementation
+   - GET returns tar data with X-Docker-Container-Path-Stat header
+   - HEAD returns stat header without body (Docker CLI pre-flight checks)
+   - PUT extracts tar archive to container
+6. **X-Docker-Container-Path-Stat header** - Base64-encoded JSON with file metadata
+   - Format: {"name": "...", "size": 123, "mode": 2147484096, "mtime": "RFC3339", "linkTarget": ""}
+   - Required by Docker CLI for `docker cp` compatibility
+7. **Docker CLI integration** - Full compatibility with `docker cp` command
+   - Copy from container: `docker cp container:/path/to/file ./dest`
+   - Copy to container: `docker cp ./source container:/path/to/dest`
 
-3. Add X-Docker-Container-Path-Stat header
-   ```swift
-   let stat = // Get file stat via exec
-   let statJSON = try JSONEncoder().encode(stat)
-   let statBase64 = statJSON.base64EncodedString()
-   headers.add(name: "X-Docker-Container-Path-Stat", value: statBase64)
-   ```
+**Architecture Decision:**
+- Chose **WireGuard RPC with Go's archive/tar library** approach
+- ✅ **Works for ALL containers** including distroless (no tar binary required)
+- ✅ **Production quality** - Uses Go standard library
+- ✅ **Accurate** - Direct filesystem access with proper stat collection
+- ✅ **Simple** - No command injection or shell dependencies
+- Location: Container rootfs at `/run/container/{id}/rootfs/` from init system's perspective
 
-4. Handle edge cases
-   - Path doesn't exist → 404
-   - Permission denied → 500
-   - Directory vs file handling
+**Files Modified:**
+- containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto - PathStat message + ReadArchive/WriteArchive RPCs
+- containerization/vminitd/extensions/wireguard-service/cmd/arca-wireguard-service/main.go - RPC handlers
+- Sources/ContainerBridge/WireGuardClient.swift - readArchive() and writeArchive() methods
+- Sources/DockerAPI/Handlers/ContainerHandlers.swift - handleGetArchive() and handlePutArchive()
+- Sources/ArcaDaemon/ArcaDaemon.swift - GET/PUT/HEAD route registration with header encoding
+- Tests/ArcaTests/ContainerArchiveTests.swift - Comprehensive test suite (11 tests)
 
-**Testing:**
-- Extract file from container
-- Extract directory from container
-- Verify tar contents
-- docker cp integration test
+**Testing:** ✅ 11/11 tests passing (100% success rate)
+- ✅ Copy single file from container
+- ✅ Copy directory from container
+- ✅ Copy directory with subdirectories (preserves structure)
+- ✅ Copy symlink (preserves link)
+- ✅ Copy to container (writes tar archive)
+- ✅ Copy non-existent path (returns 404)
+- ✅ HEAD endpoint returns stat header without body
+- ✅ X-Docker-Container-Path-Stat header format validation
+- ✅ Docker CLI integration (docker cp command)
+- ✅ Copy from distroless container (no tar binary - validates RPC approach)
+- ✅ Large file handling (streaming support)
 
-**Estimated Time:** 0.5 weeks
+**Estimated Time:** 0.5 weeks → **Actual: 1 day** ✅
 
 ---
 

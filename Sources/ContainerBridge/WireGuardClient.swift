@@ -406,4 +406,71 @@ public actor WireGuardClient {
 
         logger.debug("Filesystem synced successfully")
     }
+
+    /// Read archive from container filesystem (Phase 6.5)
+    /// Creates tar archive of path using Go's archive/tar library
+    /// Works universally without requiring tar in container
+    /// - Parameter containerID: Container ID (for resolving /run/container/{id}/rootfs path)
+    /// - Parameter path: Path to file or directory to archive (e.g., "/tmp/myfile.txt" or "/etc")
+    /// - Returns: Tuple of (tar data, path stat) for archive and X-Docker-Container-Path-Stat header
+    public func readArchive(containerID: String, path: String) async throws -> (tarData: Data, stat: Arca_Wireguard_V1_PathStat) {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.info("Reading archive from container", metadata: [
+            "containerID": "\(containerID)",
+            "path": "\(path)"
+        ])
+
+        var request = Arca_Wireguard_V1_ReadArchiveRequest()
+        request.containerID = containerID
+        request.path = path
+
+        let call = client.readArchive(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.info("Archive read successfully", metadata: [
+            "path": "\(path)",
+            "size": "\(response.tarData.count) bytes"
+        ])
+
+        return (response.tarData, response.stat)
+    }
+
+    /// Write archive to container filesystem (Phase 6.5)
+    /// Extracts tar archive using Go's archive/tar library
+    /// Works universally without requiring tar in container
+    /// - Parameter containerID: Container ID (for resolving /run/container/{id}/rootfs path)
+    /// - Parameter path: Destination path where archive should be extracted (e.g., "/tmp")
+    /// - Parameter tarData: Tar archive data to extract
+    public func writeArchive(containerID: String, path: String, tarData: Data) async throws {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.info("Writing archive to container", metadata: [
+            "containerID": "\(containerID)",
+            "path": "\(path)",
+            "size": "\(tarData.count) bytes"
+        ])
+
+        var request = Arca_Wireguard_V1_WriteArchiveRequest()
+        request.containerID = containerID
+        request.path = path
+        request.tarData = tarData
+
+        let call = client.writeArchive(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.info("Archive written successfully", metadata: ["path": "\(path)"])
+    }
 }

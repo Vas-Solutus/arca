@@ -1722,34 +1722,62 @@ public struct ContainerHandlers: Sendable {
     }
 
     /// Get an archive of a filesystem resource in a container (GET /containers/{id}/archive)
-    /// TODO: Implement file extraction from container VM filesystem
-    public func handleGetArchive(id: String, path: String) async -> Result<Data, ContainerError> {
+    /// Uses WireGuard RPC to create tar archive via Go's archive/tar library
+    /// Works universally without requiring tar in container (Phase 6.5)
+    public func handleGetArchive(id: String, path: String) async -> Result<(tarData: Data, stat: Arca_Wireguard_V1_PathStat), ContainerError> {
         logger.info("Getting archive from container", metadata: [
             "container_id": "\(id)",
             "path": "\(path)"
         ])
 
         // Resolve container ID
-        guard let _ = await containerManager.resolveContainer(idOrName: id) else {
+        guard let containerID = await containerManager.resolveContainer(idOrName: id) else {
             return .failure(.notFound(id))
         }
 
-        // TODO: Implement file extraction
-        // Options:
-        // 1. Extend vminitd tap-forwarder with ReadFile RPC
-        // 2. Use temporary VirtioFS share
-        // 3. Use vsock file transfer protocol
-        return .failure(.invalidRequest("Archive extraction not yet implemented"))
+        // Get container to access native container
+        guard let containerInfo = try? await containerManager.getContainer(id: containerID),
+              let nativeContainer = await containerManager.getNativeContainer(id: containerID) else {
+            return .failure(.notFound(id))
+        }
+
+        // Container must be running to use RPC
+        guard containerInfo.state.running else {
+            return .failure(.invalidRequest("Container must be running to extract archive"))
+        }
+
+        // Connect to WireGuard service and read archive via RPC
+        do {
+            let client = WireGuardClient(logger: logger)
+            try await client.connect(container: nativeContainer, vsockPort: 51820)
+            defer {
+                Task {
+                    try? await client.disconnect()
+                }
+            }
+
+            let (tarData, stat) = try await client.readArchive(containerID: containerID, path: path)
+
+            logger.info("Archive extracted successfully", metadata: [
+                "container_id": "\(id)",
+                "path": "\(path)",
+                "size": "\(tarData.count) bytes"
+            ])
+
+            return .success((tarData, stat))
+        } catch {
+            logger.error("Failed to extract archive", metadata: [
+                "container_id": "\(id)",
+                "path": "\(path)",
+                "error": "\(error.localizedDescription)"
+            ])
+            return .failure(.invalidRequest("Failed to extract archive: \(error.localizedDescription)"))
+        }
     }
 
     /// Extract an archive to a directory in a container (PUT /containers/{id}/archive)
-    ///
-    /// Implementation notes:
-    /// - Uses exec + tar for extraction (requires tar in container)
-    /// - Temporarily starts containers in "created" state for injection
-    /// - Returns container to original state after injection
-    ///
-    /// TODO: Implement generic file transfer via vminitd RPCs for containers without tar
+    /// Uses WireGuard RPC to extract tar archive via Go's archive/tar library
+    /// Works universally without requiring tar in container (Phase 6.5)
     public func handlePutArchive(id: String, path: String, tarData: Data) async -> Result<Void, ContainerError> {
         logger.info("Putting archive to container", metadata: [
             "container_id": "\(id)",
@@ -1762,109 +1790,43 @@ public struct ContainerHandlers: Sendable {
             return .failure(.notFound(id))
         }
 
-        // Get container state to check if we need to start it
-        guard let containerState = try? await containerManager.getContainer(id: containerID) else {
+        // Get container to access native container
+        guard let containerInfo = try? await containerManager.getContainer(id: containerID),
+              let nativeContainer = await containerManager.getNativeContainer(id: containerID) else {
             return .failure(.notFound(id))
         }
 
-        // Check container state - start if not running
-        let wasCreated = containerState.state.status == "created" && !containerState.state.running
-        if wasCreated {
-            logger.info("Container in created state, temporarily starting for archive injection", metadata: [
-                "container_id": "\(id)"
+        // Container must be running to use RPC
+        guard containerInfo.state.running else {
+            return .failure(.invalidRequest("Container must be running to write archive"))
+        }
+
+        // Connect to WireGuard service and write archive via RPC
+        do {
+            let client = WireGuardClient(logger: logger)
+            try await client.connect(container: nativeContainer, vsockPort: 51820)
+            defer {
+                Task {
+                    try? await client.disconnect()
+                }
+            }
+
+            try await client.writeArchive(containerID: containerID, path: path, tarData: tarData)
+
+            logger.info("Archive written successfully", metadata: [
+                "container_id": "\(id)",
+                "path": "\(path)"
             ])
 
-            do {
-                try await containerManager.startContainer(id: containerID)
-            } catch {
-                return .failure(.startFailed("Failed to start container for archive injection: \(error.localizedDescription)"))
-            }
-
-            // Wait a moment for container to fully start
-            try? await Task.sleep(for: .seconds(1))
-        }
-
-        // Create exec instance for tar extraction
-        let execId: String
-        do {
-            execId = try await execManager.createExec(
-                containerID: containerID,
-                cmd: ["tar", "-xf", "-", "-C", path],
-                env: nil,
-                workingDir: nil,
-                user: nil,
-                tty: false,
-                attachStdin: true,
-                attachStdout: true,
-                attachStderr: true
-            )
+            return .success(())
         } catch {
-            // If we started the container, stop it before returning error
-            if wasCreated {
-                try? await containerManager.stopContainer(id: containerID, timeout: 5)
-            }
-            return .failure(.invalidRequest("Failed to create exec for tar extraction: \(error.localizedDescription)"))
-        }
-
-        logger.debug("Created exec instance for tar extraction", metadata: [
-            "exec_id": "\(execId)",
-            "container_id": "\(id)"
-        ])
-
-        // Create a ReaderStream from the tar data
-        let stdinReader = DataReaderStream(data: tarData)
-        let stdoutWriter = DataWriter()
-        let stderrWriter = DataWriter()
-
-        // Start exec and stream tar data to stdin
-        do {
-            try await execManager.startExec(
-                execID: execId,
-                detach: false,
-                tty: false,
-                stdin: stdinReader,
-                stdout: stdoutWriter,
-                stderr: stderrWriter
-            )
-        } catch {
-            // If we started the container, stop it before returning error
-            if wasCreated {
-                try? await containerManager.stopContainer(id: containerID, timeout: 5)
-            }
-
-            // Log stderr if tar command failed
-            if !stderrWriter.data.isEmpty {
-                logger.error("Tar extraction failed", metadata: [
-                    "stderr": "\(String(data: stderrWriter.data, encoding: .utf8) ?? "<binary>")"
-                ])
-            }
-
-            return .failure(.invalidRequest("Failed to extract tar archive: \(error.localizedDescription)"))
-        }
-
-        logger.info("Archive extracted successfully", metadata: [
-            "container_id": "\(id)",
-            "path": "\(path)"
-        ])
-
-        // If we started the container, stop it to return to created state
-        if wasCreated {
-            logger.info("Stopping container to return to created state", metadata: [
-                "container_id": "\(id)"
+            logger.error("Failed to write archive", metadata: [
+                "container_id": "\(id)",
+                "path": "\(path)",
+                "error": "\(error.localizedDescription)"
             ])
-
-            do {
-                try await containerManager.stopContainer(id: containerID, timeout: 5)
-            } catch {
-                logger.warning("Failed to stop container after archive injection", metadata: [
-                    "container_id": "\(id)",
-                    "error": "\(error.localizedDescription)"
-                ])
-                // Don't fail the whole operation - archive was successfully injected
-            }
+            return .failure(.invalidRequest("Failed to write archive: \(error.localizedDescription)"))
         }
-
-        return .success(())
     }
 
     /// Handle GET /containers/{id}/changes

@@ -905,13 +905,73 @@ public final class ArcaDaemon: @unchecked Sendable {
 
             let result = await containerHandlers.handleGetArchive(id: id, path: path)
             switch result {
-            case .success(let tarData):
+            case .success(let (tarData, stat)):
+                // Create JSON for X-Docker-Container-Path-Stat header
+                let statJSON: [String: Any] = [
+                    "name": stat.name,
+                    "size": stat.size,
+                    "mode": stat.mode,
+                    "mtime": stat.mtime,
+                    "linkTarget": stat.linkTarget
+                ]
+
+                guard let jsonData = try? JSONSerialization.data(withJSONObject: statJSON),
+                      let base64Stat = String(data: jsonData.base64EncodedData(), encoding: .utf8) else {
+                    return .standard(HTTPResponse.internalServerError("Failed to encode path stat"))
+                }
+
                 var headers = HTTPHeaders()
                 headers.add(name: "Content-Type", value: "application/x-tar")
+                headers.add(name: "X-Docker-Container-Path-Stat", value: base64Stat)
                 return .standard(HTTPResponse(
                     status: .ok,
                     headers: headers,
                     body: tarData
+                ))
+            case .failure(let error):
+                let status: HTTPResponseStatus
+                if case .notFound = error {
+                    status = .notFound
+                } else {
+                    status = .internalServerError
+                }
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
+        _ = builder.head("/containers/{id}/archive") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            guard let path = request.queryString("path") else {
+                return .standard(HTTPResponse.badRequest("Missing path parameter"))
+            }
+
+            // HEAD endpoint returns same stat header as GET but without body
+            let result = await containerHandlers.handleGetArchive(id: id, path: path)
+            switch result {
+            case .success(let (_, stat)):
+                // Create JSON for X-Docker-Container-Path-Stat header
+                let statJSON: [String: Any] = [
+                    "name": stat.name,
+                    "size": stat.size,
+                    "mode": stat.mode,
+                    "mtime": stat.mtime,
+                    "linkTarget": stat.linkTarget
+                ]
+
+                guard let jsonData = try? JSONSerialization.data(withJSONObject: statJSON),
+                      let base64Stat = String(data: jsonData.base64EncodedData(), encoding: .utf8) else {
+                    return .standard(HTTPResponse.internalServerError("Failed to encode path stat"))
+                }
+
+                var headers = HTTPHeaders()
+                headers.add(name: "X-Docker-Container-Path-Stat", value: base64Stat)
+                return .standard(HTTPResponse(
+                    status: .ok,
+                    headers: headers,
+                    body: nil  // HEAD returns no body
                 ))
             case .failure(let error):
                 let status: HTTPResponseStatus

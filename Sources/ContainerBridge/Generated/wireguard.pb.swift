@@ -11,6 +11,7 @@
 // Arca WireGuard Network Service Protocol
 // gRPC API for WireGuard-based container networking
 
+import Foundation
 import SwiftProtobuf
 
 // If the compiler emits an error on this type, it is because this file
@@ -484,6 +485,116 @@ public struct Arca_Wireguard_V1_SyncFilesystemRequest: Sendable {
 }
 
 public struct Arca_Wireguard_V1_SyncFilesystemResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Request to read archive from filesystem path
+public struct Arca_Wireguard_V1_ReadArchiveRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Container ID (for resolving /run/container/{id}/rootfs path)
+  public var containerID: String = String()
+
+  /// Path to file or directory to archive (e.g., "/tmp/myfile.txt" or "/etc")
+  public var path: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Wireguard_V1_ReadArchiveResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  /// Tar archive data (gzip compressed)
+  public var tarData: Data = Data()
+
+  /// File stat information (for X-Docker-Container-Path-Stat header)
+  public var stat: Arca_Wireguard_V1_PathStat {
+    get {return _stat ?? Arca_Wireguard_V1_PathStat()}
+    set {_stat = newValue}
+  }
+  /// Returns true if `stat` has been explicitly set.
+  public var hasStat: Bool {return self._stat != nil}
+  /// Clears the value of `stat`. Subsequent reads from it will return its default value.
+  public mutating func clearStat() {self._stat = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _stat: Arca_Wireguard_V1_PathStat? = nil
+}
+
+/// File stat information for archived paths
+public struct Arca_Wireguard_V1_PathStat: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// File or directory name
+  public var name: String = String()
+
+  /// File size in bytes
+  public var size: Int64 = 0
+
+  /// File mode/permissions (os.FileMode as uint32)
+  public var mode: UInt32 = 0
+
+  /// Modification time (RFC3339 format: "2006-01-02T15:04:05Z07:00")
+  public var mtime: String = String()
+
+  /// Symbolic link target (empty if not a symlink)
+  public var linkTarget: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Request to write archive to filesystem path
+public struct Arca_Wireguard_V1_WriteArchiveRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Container ID (for resolving /run/container/{id}/rootfs path)
+  public var containerID: String = String()
+
+  /// Destination path where archive should be extracted (e.g., "/tmp")
+  public var path: String = String()
+
+  /// Tar archive data to extract
+  public var tarData: Data = Data()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Wireguard_V1_WriteArchiveResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1426,6 +1537,215 @@ extension Arca_Wireguard_V1_SyncFilesystemResponse: SwiftProtobuf.Message, Swift
   }
 
   public static func ==(lhs: Arca_Wireguard_V1_SyncFilesystemResponse, rhs: Arca_Wireguard_V1_SyncFilesystemResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_ReadArchiveRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ReadArchiveRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{1}path\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.containerID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.path) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.containerID.isEmpty {
+      try visitor.visitSingularStringField(value: self.containerID, fieldNumber: 1)
+    }
+    if !self.path.isEmpty {
+      try visitor.visitSingularStringField(value: self.path, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_ReadArchiveRequest, rhs: Arca_Wireguard_V1_ReadArchiveRequest) -> Bool {
+    if lhs.containerID != rhs.containerID {return false}
+    if lhs.path != rhs.path {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_ReadArchiveResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ReadArchiveResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0\u{3}tar_data\0\u{1}stat\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.tarData) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._stat) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    if !self.tarData.isEmpty {
+      try visitor.visitSingularBytesField(value: self.tarData, fieldNumber: 3)
+    }
+    try { if let v = self._stat {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_ReadArchiveResponse, rhs: Arca_Wireguard_V1_ReadArchiveResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.tarData != rhs.tarData {return false}
+    if lhs._stat != rhs._stat {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_PathStat: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".PathStat"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}size\0\u{1}mode\0\u{1}mtime\0\u{3}link_target\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 2: try { try decoder.decodeSingularInt64Field(value: &self.size) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.mode) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.mtime) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.linkTarget) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 1)
+    }
+    if self.size != 0 {
+      try visitor.visitSingularInt64Field(value: self.size, fieldNumber: 2)
+    }
+    if self.mode != 0 {
+      try visitor.visitSingularUInt32Field(value: self.mode, fieldNumber: 3)
+    }
+    if !self.mtime.isEmpty {
+      try visitor.visitSingularStringField(value: self.mtime, fieldNumber: 4)
+    }
+    if !self.linkTarget.isEmpty {
+      try visitor.visitSingularStringField(value: self.linkTarget, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_PathStat, rhs: Arca_Wireguard_V1_PathStat) -> Bool {
+    if lhs.name != rhs.name {return false}
+    if lhs.size != rhs.size {return false}
+    if lhs.mode != rhs.mode {return false}
+    if lhs.mtime != rhs.mtime {return false}
+    if lhs.linkTarget != rhs.linkTarget {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_WriteArchiveRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".WriteArchiveRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{1}path\0\u{3}tar_data\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.containerID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.path) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.tarData) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.containerID.isEmpty {
+      try visitor.visitSingularStringField(value: self.containerID, fieldNumber: 1)
+    }
+    if !self.path.isEmpty {
+      try visitor.visitSingularStringField(value: self.path, fieldNumber: 2)
+    }
+    if !self.tarData.isEmpty {
+      try visitor.visitSingularBytesField(value: self.tarData, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_WriteArchiveRequest, rhs: Arca_Wireguard_V1_WriteArchiveRequest) -> Bool {
+    if lhs.containerID != rhs.containerID {return false}
+    if lhs.path != rhs.path {return false}
+    if lhs.tarData != rhs.tarData {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Wireguard_V1_WriteArchiveResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".WriteArchiveResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Wireguard_V1_WriteArchiveResponse, rhs: Arca_Wireguard_V1_WriteArchiveResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
