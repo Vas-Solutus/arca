@@ -1,8 +1,16 @@
 import Foundation
+import ContainerBridge
 
 /// Handlers for Docker Engine API system endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md
-public struct SystemHandlers {
+public struct SystemHandlers: Sendable {
+    private let containerManager: ContainerManager
+    private let imageManager: ImageManager
+
+    public init(containerManager: ContainerManager, imageManager: ImageManager) {
+        self.containerManager = containerManager
+        self.imageManager = imageManager
+    }
 
     /// Handle GET /_ping
     /// Returns: "OK" with 200 status
@@ -26,6 +34,73 @@ public struct SystemHandlers {
             experimental: false,
             buildTime: "2024-01-01T00:00:00.000000000+00:00"
         )
+    }
+
+    /// Handle GET /info
+    /// Returns: System information about the Docker daemon
+    public func handleInfo() async -> SystemInfoResponse {
+        let processInfo = ProcessInfo.processInfo
+
+        // Get actual container counts
+        let containers = (try? await containerManager.listContainers(all: true, filters: [:])) ?? []
+        let totalContainers = containers.count
+        let runningContainers = containers.filter { $0.state == "running" }.count
+        let pausedContainers = containers.filter { $0.state == "paused" }.count
+        let stoppedContainers = containers.filter { $0.state != "running" && $0.state != "paused" }.count
+
+        // Get actual image count
+        let images = (try? await imageManager.listImages(filters: [:])) ?? []
+        let totalImages = images.count
+
+        // Generate a unique daemon ID (use hostname-based ID for consistency)
+        let daemonID = Self.generateDaemonID()
+
+        return SystemInfoResponse(
+            id: daemonID,
+            containers: totalContainers,
+            containersRunning: runningContainers,
+            containersPaused: pausedContainers,
+            containersStopped: stoppedContainers,
+            images: totalImages,
+            driver: "arca",
+            dockerRootDir: NSString(string: "~/.arca").expandingTildeInPath,
+            memoryLimit: true,
+            swapLimit: true,
+            cpuCfsPeriod: true,
+            cpuCfsQuota: true,
+            cpuShares: true,
+            cpuSet: true,
+            pidsLimit: true,
+            oomKillDisable: true,
+            ipv4Forwarding: true,
+            debug: false,
+            systemTime: ISO8601DateFormatter().string(from: Date()),
+            loggingDriver: "json-file",
+            cgroupDriver: "cgroupfs",
+            cgroupVersion: "2",
+            kernelVersion: processInfo.kernelVersion,
+            operatingSystem: "Arca Container Runtime",
+            osVersion: "0.1.0",
+            osType: "linux",
+            architecture: processInfo.machineArchitecture,
+            ncpu: processInfo.activeProcessorCount,
+            memTotal: Int64(processInfo.physicalMemory),
+            name: processInfo.hostName,
+            experimentalBuild: false,
+            serverVersion: "0.1.0"
+        )
+    }
+
+    /// Generate a consistent daemon ID based on hostname
+    private static func generateDaemonID() -> String {
+        let hostname = ProcessInfo.processInfo.hostName
+        // Create a consistent 12-segment ID like Docker does
+        let hash = hostname.hashValue
+        let segments = (0..<12).map { i in
+            let value = (hash + i * 7919) & 0xFFFF
+            return String(format: "%04X", value)
+        }
+        return segments.joined(separator: ":")
     }
 }
 
@@ -96,6 +171,146 @@ public struct VersionResponse: Codable {
         self.kernelVersion = kernelVersion
         self.experimental = experimental
         self.buildTime = buildTime
+    }
+}
+
+/// Response for /info endpoint
+/// Based on Docker Engine API v1.51 specification - SystemInfo definition
+public struct SystemInfoResponse: Codable {
+    public let id: String
+    public let containers: Int
+    public let containersRunning: Int
+    public let containersPaused: Int
+    public let containersStopped: Int
+    public let images: Int
+    public let driver: String
+    public let dockerRootDir: String
+    public let memoryLimit: Bool
+    public let swapLimit: Bool
+    public let cpuCfsPeriod: Bool
+    public let cpuCfsQuota: Bool
+    public let cpuShares: Bool
+    public let cpuSet: Bool
+    public let pidsLimit: Bool
+    public let oomKillDisable: Bool
+    public let ipv4Forwarding: Bool
+    public let debug: Bool
+    public let systemTime: String
+    public let loggingDriver: String
+    public let cgroupDriver: String
+    public let cgroupVersion: String
+    public let kernelVersion: String
+    public let operatingSystem: String
+    public let osVersion: String
+    public let osType: String
+    public let architecture: String
+    public let ncpu: Int
+    public let memTotal: Int64
+    public let name: String
+    public let experimentalBuild: Bool
+    public let serverVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case id = "ID"
+        case containers = "Containers"
+        case containersRunning = "ContainersRunning"
+        case containersPaused = "ContainersPaused"
+        case containersStopped = "ContainersStopped"
+        case images = "Images"
+        case driver = "Driver"
+        case dockerRootDir = "DockerRootDir"
+        case memoryLimit = "MemoryLimit"
+        case swapLimit = "SwapLimit"
+        case cpuCfsPeriod = "CpuCfsPeriod"
+        case cpuCfsQuota = "CpuCfsQuota"
+        case cpuShares = "CPUShares"
+        case cpuSet = "CPUSet"
+        case pidsLimit = "PidsLimit"
+        case oomKillDisable = "OomKillDisable"
+        case ipv4Forwarding = "IPv4Forwarding"
+        case debug = "Debug"
+        case systemTime = "SystemTime"
+        case loggingDriver = "LoggingDriver"
+        case cgroupDriver = "CgroupDriver"
+        case cgroupVersion = "CgroupVersion"
+        case kernelVersion = "KernelVersion"
+        case operatingSystem = "OperatingSystem"
+        case osVersion = "OSVersion"
+        case osType = "OSType"
+        case architecture = "Architecture"
+        case ncpu = "NCPU"
+        case memTotal = "MemTotal"
+        case name = "Name"
+        case experimentalBuild = "ExperimentalBuild"
+        case serverVersion = "ServerVersion"
+    }
+
+    public init(
+        id: String,
+        containers: Int,
+        containersRunning: Int,
+        containersPaused: Int,
+        containersStopped: Int,
+        images: Int,
+        driver: String,
+        dockerRootDir: String,
+        memoryLimit: Bool,
+        swapLimit: Bool,
+        cpuCfsPeriod: Bool,
+        cpuCfsQuota: Bool,
+        cpuShares: Bool,
+        cpuSet: Bool,
+        pidsLimit: Bool,
+        oomKillDisable: Bool,
+        ipv4Forwarding: Bool,
+        debug: Bool,
+        systemTime: String,
+        loggingDriver: String,
+        cgroupDriver: String,
+        cgroupVersion: String,
+        kernelVersion: String,
+        operatingSystem: String,
+        osVersion: String,
+        osType: String,
+        architecture: String,
+        ncpu: Int,
+        memTotal: Int64,
+        name: String,
+        experimentalBuild: Bool,
+        serverVersion: String
+    ) {
+        self.id = id
+        self.containers = containers
+        self.containersRunning = containersRunning
+        self.containersPaused = containersPaused
+        self.containersStopped = containersStopped
+        self.images = images
+        self.driver = driver
+        self.dockerRootDir = dockerRootDir
+        self.memoryLimit = memoryLimit
+        self.swapLimit = swapLimit
+        self.cpuCfsPeriod = cpuCfsPeriod
+        self.cpuCfsQuota = cpuCfsQuota
+        self.cpuShares = cpuShares
+        self.cpuSet = cpuSet
+        self.pidsLimit = pidsLimit
+        self.oomKillDisable = oomKillDisable
+        self.ipv4Forwarding = ipv4Forwarding
+        self.debug = debug
+        self.systemTime = systemTime
+        self.loggingDriver = loggingDriver
+        self.cgroupDriver = cgroupDriver
+        self.cgroupVersion = cgroupVersion
+        self.kernelVersion = kernelVersion
+        self.operatingSystem = operatingSystem
+        self.osVersion = osVersion
+        self.osType = osType
+        self.architecture = architecture
+        self.ncpu = ncpu
+        self.memTotal = memTotal
+        self.name = name
+        self.experimentalBuild = experimentalBuild
+        self.serverVersion = serverVersion
     }
 }
 

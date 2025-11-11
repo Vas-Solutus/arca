@@ -11,6 +11,7 @@ public actor ImageManager {
     private let logger: Logger
     private let imageStore: ImageStore
     private let defaultPlatform: Platform
+    private var eventEmitter: EventEmitter?
 
     public init(logger: Logger, imageStorePath: URL? = nil) throws {
         self.logger = logger
@@ -34,6 +35,11 @@ public actor ImageManager {
 
         // ImageStore is already initialized in init()
         logger.info("ImageManager initialized")
+    }
+
+    /// Set the EventEmitter for emitting Docker events
+    public func setEventEmitter(_ emitter: EventEmitter) {
+        self.eventEmitter = emitter
     }
 
     /// Load images from an OCI Image Layout directory into the ImageStore
@@ -378,6 +384,18 @@ public actor ImageManager {
             "digest": "\(image.digest)"
         ])
 
+        // Emit image pull event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": reference
+            ]
+            await eventEmitter.emitImageEvent(
+                action: "pull",
+                imageID: dockerID,
+                attributes: attributes
+            )
+        }
+
         return details
     }
 
@@ -416,6 +434,18 @@ public actor ImageManager {
             "digest": "\(imageDigest)"
         ])
 
+        // Emit image delete event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": imageReference
+            ]
+            await eventEmitter.emitImageEvent(
+                action: "delete",
+                imageID: dockerID,
+                attributes: attributes
+            )
+        }
+
         return [
             ImageDeleteItem(untagged: imageReference),
             ImageDeleteItem(deleted: dockerID)
@@ -437,6 +467,22 @@ public actor ImageManager {
             "source": "\(source)",
             "target": "\(target)"
         ])
+
+        // Emit image tag event
+        if let eventEmitter = eventEmitter {
+            // For tag events, we need to resolve the image to get its ID
+            if let image = try? await resolveImage(nameOrId: source) {
+                let dockerID = generateDockerID(from: image.digest)
+                var attributes: [String: String] = [
+                    "name": target
+                ]
+                await eventEmitter.emitImageEvent(
+                    action: "tag",
+                    imageID: dockerID,
+                    attributes: attributes
+                )
+            }
+        }
     }
 
     // MARK: - Helper Methods

@@ -6,6 +6,7 @@ import ContainerizationEXT4
 import SystemPackage
 import Virtualization
 
+
 /// Manages containers using Apple's Containerization API
 /// Provides translation layer between Docker API concepts and Containerization
 /// Thread-safe via Swift actor isolation
@@ -48,6 +49,9 @@ public actor ContainerManager {
 
     // Optional PortMapManager reference for port publishing
     private var portMapManager: PortMapManager?
+
+    // Optional EventManager reference for emitting Docker events
+    private var eventEmitter: EventEmitter?
 
     // Shared vmnet network for NAT networking with internet access
     private var sharedNetwork: SharedVmnetNetwork?
@@ -185,6 +189,10 @@ public actor ContainerManager {
     /// Set the PortMapManager (called after PortMapManager is initialized)
     public func setPortMapManager(_ manager: PortMapManager) {
         self.portMapManager = manager
+    }
+
+    public func setEventEmitter(_ emitter: EventEmitter) {
+        self.eventEmitter = emitter
     }
 
     /// Set the SharedVmnetNetwork (called after network is initialized)
@@ -1525,6 +1533,21 @@ public actor ContainerManager {
             "name": "\(containerName)"
         ])
 
+        // Emit container create event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = ["name": containerName, "image": image]
+            if let labels = labels {
+                for (key, value) in labels {
+                    attributes[key] = value
+                }
+            }
+            await eventEmitter.emitContainerEvent(
+                action: "create",
+                containerID: dockerID,
+                attributes: attributes
+            )
+        }
+
         return dockerID
     }
 
@@ -2126,6 +2149,23 @@ public actor ContainerManager {
         }
 
         monitoringTasks[dockerID] = monitoringTask
+
+        // Emit container start event (after all initialization is complete)
+        if let eventEmitter = eventEmitter, let info = containers[dockerID] {
+            var attributes: [String: String] = [
+                "name": info.name ?? "",
+                "image": info.config.image
+            ]
+            // Add labels
+            for (key, value) in info.config.labels {
+                attributes[key] = value
+            }
+            await eventEmitter.emitContainerEvent(
+                action: "start",
+                containerID: dockerID,
+                attributes: attributes
+            )
+        }
     }
 
     /// Stop a container
@@ -2213,6 +2253,24 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "state": "exited"
         ])
+
+        // Emit container stop event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": info.name ?? "",
+                "image": info.config.image,
+                "exitCode": "\(info.exitCode)"
+            ]
+            // Add labels
+            for (key, value) in info.config.labels {
+                attributes[key] = value
+            }
+            await eventEmitter.emitContainerEvent(
+                action: "stop",
+                containerID: dockerID,
+                attributes: attributes
+            )
+        }
     }
 
     /// Kill a container by sending a signal (Phase 5 - Task 5.4)
@@ -2636,6 +2694,23 @@ public actor ContainerManager {
         logger.info("Container removed successfully", metadata: [
             "id": "\(dockerID)"
         ])
+
+        // Emit container destroy event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": info.name ?? "",
+                "image": info.config.image
+            ]
+            // Add labels
+            for (key, value) in info.config.labels {
+                attributes[key] = value
+            }
+            await eventEmitter.emitContainerEvent(
+                action: "destroy",
+                containerID: dockerID,
+                attributes: attributes
+            )
+        }
     }
 
     /// Wait for a container to exit
@@ -2871,6 +2946,24 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "exit_code": "\(exitCode)"
         ])
+
+        // Emit container die event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": containerInfo.name ?? "",
+                "image": containerInfo.config.image,
+                "exitCode": "\(exitCode)"
+            ]
+            // Add labels
+            for (key, value) in containerInfo.config.labels {
+                attributes[key] = value
+            }
+            await eventEmitter.emitContainerEvent(
+                action: "die",
+                containerID: dockerID,
+                attributes: attributes
+            )
+        }
 
         // Check restart policy and restart if needed
         await handleRestartPolicy(dockerID: dockerID, exitCode: exitCode, stoppedByUser: false)

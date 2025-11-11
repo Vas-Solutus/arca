@@ -13,6 +13,7 @@ public actor NetworkManager {
     private let logger: Logger
     private let stateStore: StateStore
     private let containerManager: ContainerManager
+    private var eventEmitter: EventEmitter?
 
     // Backends
     private var vmnetBackend: VmnetNetworkBackend?
@@ -34,6 +35,11 @@ public actor NetworkManager {
         self.stateStore = stateStore
         self.containerManager = containerManager
         self.logger = logger
+    }
+
+    /// Set the EventEmitter for emitting Docker events
+    public func setEventEmitter(_ emitter: EventEmitter) {
+        self.eventEmitter = emitter
     }
 
     /// Initialize the network manager and backends

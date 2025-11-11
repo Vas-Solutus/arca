@@ -222,11 +222,25 @@ public struct ContainerHandlers: Sendable {
             ])
 
             return .success(ContainerCreateResponse(id: containerID))
+        } catch let error as ContainerManagerError {
+            // Handle specific ContainerManager errors
+            switch error {
+            case .nameConflict(let name, let existingID):
+                logger.warning("Container name conflict", metadata: [
+                    "name": "\(name)",
+                    "existing_id": "\(existingID)"
+                ])
+                return .failure(ContainerError.nameAlreadyInUse(name))
+            default:
+                logger.error("Failed to create container", metadata: [
+                    "error": "\(error)"
+                ])
+                return .failure(ContainerError.creationFailed(errorDescription(error)))
+            }
         } catch {
             logger.error("Failed to create container", metadata: [
                 "error": "\(error)"
             ])
-
             return .failure(ContainerError.creationFailed(errorDescription(error)))
         }
     }

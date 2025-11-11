@@ -165,6 +165,8 @@ public final class RouterBuilder {
 /// Pattern matcher for routes
 /// Supports path parameters using {paramName} syntax
 /// Example: /containers/{id}/start matches /containers/abc123/start
+/// Supports greedy parameters using {paramName:.*} syntax for matching paths with slashes
+/// Example: /images/{name:.*}/json matches /images/foo/bar:latest/json
 struct RoutePattern {
     let pattern: String
     private let regex: NSRegularExpression?
@@ -173,7 +175,7 @@ struct RoutePattern {
     init(pattern: String) {
         self.pattern = pattern
 
-        // Extract parameter names from pattern (e.g., {id} -> "id")
+        // Extract parameter names from pattern (e.g., {id} -> "id", {name:.*} -> "name")
         var names: [String] = []
         var regexPattern = "^"
 
@@ -186,10 +188,22 @@ struct RoutePattern {
 
             let componentStr = String(component)
             if componentStr.hasPrefix("{") && componentStr.hasSuffix("}") {
-                // Extract parameter name and create capture group
-                let paramName = String(componentStr.dropFirst().dropLast())
+                // Extract parameter name and check for greedy syntax
+                let paramContent = String(componentStr.dropFirst().dropLast())
+
+                // Check if this is a greedy parameter (e.g., "name:.*")
+                let isGreedy = paramContent.hasSuffix(":.*")
+                let paramName = isGreedy ? String(paramContent.dropLast(3)) : paramContent
+
                 names.append(paramName)
-                regexPattern += "([^/]+)"  // Match any non-slash characters
+
+                if isGreedy {
+                    // Greedy match - captures everything including slashes
+                    regexPattern += "(.+)"
+                } else {
+                    // Regular match - excludes slashes
+                    regexPattern += "([^/]+)"
+                }
             } else if !componentStr.isEmpty {
                 // Regular path component - escape it
                 regexPattern += NSRegularExpression.escapedPattern(for: componentStr)

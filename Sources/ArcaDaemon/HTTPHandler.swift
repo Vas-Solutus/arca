@@ -160,9 +160,15 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
 
                 // Send response on the event loop
                 eventLoop.execute {
-                    // Check if channel is still active before trying to send response
-                    guard self.channelActive else {
-                        self.logger.debug("Skipping response send - channel inactive")
+                    // Double-check channel is still active and context is valid
+                    // This prevents "Bad file descriptor" errors when the channel closes
+                    // during long-running operations (container creation, image pull, etc.)
+                    guard self.channelActive && capturedContext.channel.isActive else {
+                        self.logger.debug("Skipping response send - channel inactive", metadata: [
+                            "handlerActive": "\(self.channelActive)",
+                            "contextActive": "\(capturedContext.channel.isActive)"
+                        ])
+                        self.reset()
                         return
                     }
                     self.sendResponseType(context: capturedContext, responseType: responseType)

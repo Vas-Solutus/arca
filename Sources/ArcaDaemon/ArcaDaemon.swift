@@ -14,6 +14,7 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var execManager: ExecManager?
     private var networkManager: NetworkManager?
     private var volumeManager: VolumeManager?
+    private var eventManager: EventManager?
 
     public init(socketPath: String, logger: Logger) {
         self.socketPath = socketPath
@@ -180,6 +181,11 @@ public final class ArcaDaemon: @unchecked Sendable {
             throw error
         }
 
+        // Initialize EventManager (shared by all managers for event emission)
+        logger.info("Initializing event manager...")
+        let eventManager = EventManager(logger: logger)
+        self.eventManager = eventManager
+
         // Initialize ContainerManager with kernel path from config
         let containerManager = ContainerManager(
             imageManager: imageManager,
@@ -199,6 +205,13 @@ public final class ArcaDaemon: @unchecked Sendable {
         let healthChecker = HealthChecker(logger: logger, execManager: execManager)
         await containerManager.setHealthChecker(healthChecker)
         logger.debug("ContainerManager configured with HealthChecker")
+
+        // Wire up EventManager for Docker event emission
+        await containerManager.setEventEmitter(eventManager)
+        logger.debug("ContainerManager configured with EventManager")
+
+        await imageManager.setEventEmitter(eventManager)
+        logger.debug("ImageManager configured with EventManager")
 
         // Now initialize ContainerManager - this will restore containers and apply restart policies
         // Health checks will be started automatically for containers with healthcheck config
@@ -221,6 +234,10 @@ public final class ArcaDaemon: @unchecked Sendable {
         )
         self.networkManager = nm
         var networkManager: NetworkManager? = nm
+
+        // Wire up EventManager for network events
+        await nm.setEventEmitter(eventManager)
+        logger.debug("NetworkManager configured with EventManager")
 
         do {
             try await nm.initialize()
@@ -267,9 +284,24 @@ public final class ArcaDaemon: @unchecked Sendable {
 
         // Initialize PortMapManager (Phase 4.1 - Port Mapping)
         logger.info("Initializing port mapping manager...")
-        let portMapManager = PortMapManager(logger: logger)
+        let dumpNftables = config.logLevel.lowercased() == "debug"
+        let portMapManager = PortMapManager(logger: logger, dumpNftablesOnPublish: dumpNftables)
         await containerManager.setPortMapManager(portMapManager)
         logger.debug("ContainerManager configured with PortMapManager")
+
+        // Apply restart policies in background - don't block daemon startup!
+        // All managers are wired up, so containers can restart now
+        Task { [containerManager, logger] in
+            logger.info("Applying restart policies to containers (background)...")
+            do {
+                try await containerManager.applyRestartPolicies()
+                logger.info("Restart policies applied successfully")
+            } catch {
+                logger.error("Failed to apply restart policies", metadata: [
+                    "error": "\(error)"
+                ])
+            }
+        }
 
         // Create router builder, register middlewares and routes
         let builder = Router.builder(logger: logger)
@@ -281,7 +313,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             imageManager: imageManager,
             execManager: execManager,
             networkManager: networkManager,
-            volumeManager: volumeManager
+            volumeManager: volumeManager,
+            eventManager: eventManager
         )
         let router = builder.build()
 
@@ -324,7 +357,8 @@ public final class ArcaDaemon: @unchecked Sendable {
         imageManager: ImageManager,
         execManager: ExecManager,
         networkManager: NetworkManager?,
-        volumeManager: VolumeManager?
+        volumeManager: VolumeManager?,
+        eventManager: EventManager
     ) {
         logger.info("Registering API routes")
 
@@ -334,6 +368,8 @@ public final class ArcaDaemon: @unchecked Sendable {
         let execHandlers = ExecHandlers(execManager: execManager, logger: logger)
         let networkHandlers = networkManager.map { NetworkHandlers(networkManager: $0, containerManager: containerManager, logger: logger) }
         let volumeHandlers = volumeManager.map { VolumeHandlers(volumeManager: $0, logger: logger) }
+        let systemHandlers = SystemHandlers(containerManager: containerManager, imageManager: imageManager)
+        let eventHandlers = EventHandlers(eventManager: eventManager)
 
         // System endpoints - Ping (GET and HEAD)
         _ = builder.get("/_ping") { _ in
@@ -359,6 +395,45 @@ public final class ArcaDaemon: @unchecked Sendable {
         _ = builder.get("/version") { _ in
             let response = SystemHandlers.handleVersion()
             return .standard(HTTPResponse.json(response))
+        }
+
+        _ = builder.get("/info") { _ in
+            let response = await systemHandlers.handleInfo()
+            return .standard(HTTPResponse.json(response))
+        }
+
+        // Events endpoint - Stream real-time events
+        _ = builder.get("/events") { request in
+            let since = request.queryString("since")
+            let until = request.queryString("until")
+            let filters = request.queryString("filters")
+
+            let eventStream = await eventHandlers.handleEvents(
+                since: since,
+                until: until,
+                filters: filters
+            )
+
+            // Stream events as newline-delimited JSON
+            var headers = HTTPHeaders()
+            headers.add(name: "Content-Type", value: "application/json")
+            headers.add(name: "Transfer-Encoding", value: "chunked")
+
+            return .streaming(status: .ok, headers: headers) { writer in
+                for await event in eventStream {
+                    // Encode event as JSON
+                    if let jsonData = try? JSONEncoder().encode(event) {
+                        var line = String(data: jsonData, encoding: .utf8) ?? ""
+                        line += "\n"
+                        do {
+                            try await writer.write(Data(line.utf8))
+                        } catch {
+                            // Client disconnected or write failed - stop streaming
+                            break
+                        }
+                    }
+                }
+            }
         }
 
         // Container endpoints - List
@@ -411,6 +486,10 @@ public final class ArcaDaemon: @unchecked Sendable {
                     // Return 404 for image not found so Docker CLI knows to pull
                     if case .imageNotFound = error {
                         return .standard(HTTPResponse.notFound(error.description))
+                    }
+                    // Return 409 Conflict for name already in use
+                    if case .nameAlreadyInUse = error {
+                        return .standard(HTTPResponse.error(error.description, status: .conflict))
                     }
                     return .standard(HTTPResponse.internalServerError(error.description))
                 }
@@ -1066,6 +1145,29 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Image inspect endpoint - uses greedy match to capture names with slashes
+        _ = builder.get("/images/{name:.*}/json") { request in
+            guard let name = request.pathParam("name") else {
+                return .standard(HTTPResponse.badRequest("Missing image name"))
+            }
+
+            let result = await imageHandlers.handleInspectImage(nameOrId: name)
+
+            switch result {
+            case .success(let inspect):
+                return .standard(HTTPResponse.ok(inspect))
+            case .failure(let error):
+                // Return 404 for image not found
+                let status: HTTPResponseStatus
+                if case .imageNotFound = error {
+                    status = .notFound
+                } else {
+                    status = .internalServerError
+                }
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
         _ = builder.post("/images/create") { request in
             // Parse query parameters
             guard let fromImage = request.queryParameters["fromImage"] else {
@@ -1099,7 +1201,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             )
         }
 
-        _ = builder.delete("/images/{name}") { request in
+        // Image delete endpoint - uses greedy match to capture names with slashes
+        _ = builder.delete("/images/{name:.*}") { request in
             guard let name = request.pathParam("name") else {
                 return .standard(HTTPResponse.badRequest("Missing image name"))
             }
