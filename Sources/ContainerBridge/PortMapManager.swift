@@ -14,6 +14,7 @@ import Darwin
 /// - Clean up proxies when containers stop
 public actor PortMapManager {
     private let logger: Logger
+    private let dumpNftablesOnPublish: Bool
 
     /// Internal port binding information for a container
     private struct InternalPortBinding: Sendable {
@@ -43,8 +44,9 @@ public actor PortMapManager {
     /// Key: "\(hostIP):\(hostPort)/\(proto)" -> containerID
     private var allocatedPorts: [String: String] = [:]
 
-    public init(logger: Logger) {
+    public init(logger: Logger, dumpNftablesOnPublish: Bool = false) {
         self.logger = logger
+        self.dumpNftablesOnPublish = dumpNftablesOnPublish
     }
 
     // MARK: - Port Publishing
@@ -154,9 +156,12 @@ public actor PortMapManager {
     }
 
     /// Unpublish all ports for a container
+    /// - Parameters:
+    ///   - containerID: Container ID
+    ///   - wireguardClient: Optional WireGuard client (if nil, skips nftables cleanup but still stops proxies)
     public func unpublishPorts(
         containerID: String,
-        wireguardClient: WireGuardClient
+        wireguardClient: WireGuardClient?
     ) async throws {
         guard let mappings = containerMappings[containerID] else {
             logger.debug("No port mappings found for container", metadata: ["containerID": "\(containerID)"])
@@ -169,7 +174,7 @@ public actor PortMapManager {
         for mapping in mappings {
             let binding = mapping.binding
 
-            // Stop proxy if it exists
+            // Stop proxy if it exists (ALWAYS do this, even if wireguardClient is nil)
             if let proxy = mapping.proxy {
                 do {
                     switch proxy {
@@ -187,20 +192,27 @@ public actor PortMapManager {
                 }
             }
 
-            // Remove nftables rules via gRPC
-            do {
-                try await wireguardClient.unpublishPort(
-                    proto: binding.proto,
-                    hostPort: UInt32(binding.hostPort)
-                )
-            } catch {
-                logger.warning("Failed to unpublish port via gRPC",
-                              metadata: ["error": "\(error)",
-                                        "hostPort": "\(binding.hostPort)",
-                                        "protocol": "\(binding.proto)"])
+            // Remove nftables rules via gRPC (only if wireguardClient is available)
+            if let wireguardClient = wireguardClient {
+                do {
+                    try await wireguardClient.unpublishPort(
+                        proto: binding.proto,
+                        hostPort: UInt32(binding.hostPort)
+                    )
+                } catch {
+                    logger.warning("Failed to unpublish port via gRPC",
+                                  metadata: ["error": "\(error)",
+                                            "hostPort": "\(binding.hostPort)",
+                                            "protocol": "\(binding.proto)"])
+                }
+            } else {
+                logger.debug("Skipping nftables cleanup (no wireguardClient)", metadata: [
+                    "port": "\(binding.hostPort)",
+                    "protocol": "\(binding.proto)"
+                ])
             }
 
-            // Remove from port allocation tracking
+            // Remove from port allocation tracking (ALWAYS do this)
             let portKey = "\(binding.hostIP):\(binding.hostPort)/\(binding.proto)"
             allocatedPorts.removeValue(forKey: portKey)
         }
@@ -252,16 +264,19 @@ public actor PortMapManager {
         let proxyInstance: ProxyInstance
 
         if binding.proto.lowercased() == "tcp" {
+            // Only dump nftables on connection failure if debugging is enabled
+            let onConnectionFailed: (@Sendable () async -> String?)? = dumpNftablesOnPublish ? { @Sendable [wireguardClient] in
+                // Dump nftables when proxy fails to connect (for debugging)
+                return try? await wireguardClient.dumpNftables()
+            } : nil
+
             let tcpProxy = TCPProxy(
                 listenAddress: binding.hostIP,
                 listenPort: Int(binding.hostPort),
                 targetAddress: vmnetIP,
                 targetPort: Int(binding.hostPort), // Host connects to vmnet_ip:host_port, DNAT handles rest
                 logger: logger,
-                onConnectionFailed: { [wireguardClient] in
-                    // Dump nftables when proxy fails to connect (for debugging)
-                    return try? await wireguardClient.dumpNftables()
-                }
+                onConnectionFailed: onConnectionFailed
             )
             try await tcpProxy.start()
             proxyInstance = .tcp(tcpProxy)
@@ -289,12 +304,15 @@ public actor PortMapManager {
         )
 
         // Dump nftables for debugging (shows rules + packet counters)
-        if let ruleset = try? await wireguardClient.dumpNftables() {
-            logger.debug("nftables state after publishing localhost port", metadata: [
-                "hostPort": "\(binding.hostPort)",
-                "protocol": "\(binding.proto)",
-                "ruleset": "\n\(ruleset)"
-            ])
+        // Only enabled when dumpNftablesOnPublish is true (e.g., log level is debug)
+        if dumpNftablesOnPublish {
+            if let ruleset = try? await wireguardClient.dumpNftables() {
+                logger.debug("nftables state after publishing localhost port", metadata: [
+                    "hostPort": "\(binding.hostPort)",
+                    "protocol": "\(binding.proto)",
+                    "ruleset": "\n\(ruleset)"
+                ])
+            }
         }
 
         return proxyInstance
@@ -315,13 +333,16 @@ public actor PortMapManager {
         )
 
         // Dump nftables for debugging (shows rules + packet counters)
-        if let ruleset = try? await wireguardClient.dumpNftables() {
-            logger.debug("nftables state after publishing non-localhost port", metadata: [
-                "hostIP": "\(binding.hostIP)",
-                "hostPort": "\(binding.hostPort)",
-                "protocol": "\(binding.proto)",
-                "ruleset": "\n\(ruleset)"
-            ])
+        // Only enabled when dumpNftablesOnPublish is true (e.g., log level is debug)
+        if dumpNftablesOnPublish {
+            if let ruleset = try? await wireguardClient.dumpNftables() {
+                logger.debug("nftables state after publishing non-localhost port", metadata: [
+                    "hostIP": "\(binding.hostIP)",
+                    "hostPort": "\(binding.hostPort)",
+                    "protocol": "\(binding.proto)",
+                    "ruleset": "\n\(ruleset)"
+                ])
+            }
         }
     }
 }

@@ -318,8 +318,14 @@ public actor ContainerManager {
                 actualFinishedAt = containerData.finishedAt
             }
 
+            // Extract native ID from Docker ID FIRST
+            // Docker IDs are 64-char (doubled UUID): c93479e4...c93479e4...
+            // Native IDs are 32-char UUIDs: c93479e47c794541bd26d758b43497a0
+            // To reverse generateDockerID(), take first 32 chars
+            let nativeID = String(containerData.id.prefix(32))
+
             let containerInfo = ContainerInfo(
-                nativeID: containerData.id, // We'll need to handle native ID mapping
+                nativeID: nativeID,  // Use extracted native ID, not Docker ID!
                 name: containerData.name,
                 image: containerData.image,
                 imageID: containerData.imageID,
@@ -331,7 +337,7 @@ public actor ContainerManager {
                 env: config.env,
                 workingDir: config.workingDir,
                 labels: config.labels,
-                ports: [],
+                ports: convertPortBindingsToMappings(hostConfig.portBindings),
                 hostConfig: hostConfig,
                 config: config,
                 networkSettings: NetworkSettings(networks: [:]),
@@ -349,12 +355,13 @@ public actor ContainerManager {
             // Store in containers map
             containers[containerData.id] = containerInfo
 
-            // Create ID mappings (using container ID as both Docker and native for now)
-            idMapping[containerData.id] = containerData.id
-            reverseMapping[containerData.id] = containerData.id
+            // Create ID mappings (dockerID -> nativeID, nativeID -> dockerID)
+            idMapping[containerData.id] = nativeID
+            reverseMapping[nativeID] = containerData.id
 
             logger.debug("Restored container from state", metadata: [
-                "id": "\(containerData.id)",
+                "docker_id": "\(containerData.id)",
+                "native_id": "\(nativeID)",
                 "name": "\(containerData.name)",
                 "status": "\(containerData.status)"
             ])
@@ -364,12 +371,14 @@ public actor ContainerManager {
             "restored": "\(containers.count)"
         ])
 
-        // Apply restart policies
-        try await applyRestartPolicies()
+        // NOTE: Restart policies are NOT applied here
+        // They must be applied AFTER NetworkManager and VolumeManager are wired up
+        // See ArcaDaemon.swift for the applyRestartPolicies() call
     }
 
     /// Apply restart policies to containers on startup
-    private func applyRestartPolicies() async throws {
+    /// IMPORTANT: Must be called AFTER NetworkManager and VolumeManager are wired up!
+    public func applyRestartPolicies() async throws {
         logger.info("Applying restart policies...")
 
         let containersToRestart = try await stateStore.getContainersToRestart()
@@ -472,6 +481,12 @@ public actor ContainerManager {
 
             // Get the docker ID for this container
             guard let dockerID = reverseMapping[info.nativeID] else {
+                logger.error("BUG: Container has invalid nativeID mapping", metadata: [
+                    "native_id": "\(info.nativeID)",
+                    "name": "\(info.name ?? "unknown")",
+                    "state": "\(info.state)",
+                    "reverse_mapping_keys": "\(reverseMapping.keys.sorted())"
+                ])
                 return nil
             }
 
@@ -632,6 +647,36 @@ public actor ContainerManager {
 
     // MARK: - Container Creation Helpers
 
+    /// Convert Docker portBindings to PortMapping array for container list API
+    /// Format: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]} -> [PortMapping(...)]
+    private func convertPortBindingsToMappings(_ portBindings: [String: [PortBinding]]) -> [PortMapping] {
+        var mappings: [PortMapping] = []
+
+        for (portProto, bindings) in portBindings {
+            // Parse port/protocol (e.g., "80/tcp" -> port=80, protocol="tcp")
+            let components = portProto.split(separator: "/")
+            guard components.count == 2,
+                  let containerPort = Int(components[0]) else {
+                continue
+            }
+            let proto = String(components[1])
+
+            for binding in bindings {
+                let publicPort = Int(binding.hostPort)
+                let hostIP = binding.hostIp.isEmpty ? nil : binding.hostIp
+
+                mappings.append(PortMapping(
+                    privatePort: containerPort,
+                    publicPort: publicPort,
+                    type: proto,
+                    ip: hostIP
+                ))
+            }
+        }
+
+        return mappings
+    }
+
     /// Build LinuxCapabilities from Docker capability parameters
     /// Docker semantics:
     /// - privileged=true: Grant ALL capabilities (CAP_CHOWN, CAP_NET_ADMIN, etc.)
@@ -777,12 +822,22 @@ public actor ContainerManager {
             "hostname": "\(config.hostname)"
         ])
 
-        // Get image config to properly handle entrypoint/cmd overrides
+        // Get image config to properly handle entrypoint/cmd/workingDir overrides
         let systemPlatform = detectSystemPlatform()
         let imagePlatform = systemPlatform.ociPlatform()
+
+        logger.debug("⏱️ Fetching image config", metadata: ["docker_id": "\(dockerID)"])
+        let imageConfigStart = Date()
         let imageConfig = try await config.image.config(for: imagePlatform)
+        let imageConfigDuration = Date().timeIntervalSince(imageConfigStart)
+        logger.debug("⏱️ Image config fetched", metadata: [
+            "docker_id": "\(dockerID)",
+            "duration_seconds": "\(String(format: "%.2f", imageConfigDuration))"
+        ])
+
         let imageEntrypoint = imageConfig.config?.entrypoint ?? []
         let imageCmd = imageConfig.config?.cmd ?? []
+        let imageWorkingDir = imageConfig.config?.workingDir ?? "/"
 
         // Build capabilities before closure for @Sendable capture
         let capabilities = buildLinuxCapabilities(
@@ -791,11 +846,18 @@ public actor ContainerManager {
             capDrop: config.capDrop
         )
 
+        logger.debug("⏱️ Calling manager.create()", metadata: ["docker_id": "\(dockerID)"])
+        let managerCreateStart = Date()
         let container = try await manager.create(
             dockerID,
             image: config.image,
             rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
         ) { @Sendable containerConfig in
+            let closureStartTime = Date()
+            configLogger.debug("⏱️ Configuration closure started", metadata: [
+                "docker_id": "\(dockerID)"
+            ])
+
             // Configure the container process (OCI-compliant)
             // Implement proper Docker entrypoint/cmd semantics:
             // - effectiveEntrypoint = request.entrypoint ?? image.entrypoint
@@ -841,9 +903,21 @@ public actor ContainerManager {
                 ])
             }
 
-            if let workingDir = config.workingDir {
-                containerConfig.process.workingDirectory = workingDir
+            // Set working directory (user override or image default)
+            // Docker behavior: request.workingDir ?? image.workingDir ?? "/"
+            // Note: Docker Compose sends empty string "" when WorkingDir not specified, not nil
+            let effectiveWorkingDir: String
+            if let userWorkingDir = config.workingDir, !userWorkingDir.isEmpty {
+                effectiveWorkingDir = userWorkingDir
+            } else {
+                effectiveWorkingDir = imageWorkingDir
             }
+            containerConfig.process.workingDirectory = effectiveWorkingDir
+            configLogger.debug("Container working directory", metadata: [
+                "docker_id": "\(dockerID)",
+                "workingDir": "\(effectiveWorkingDir)",
+                "source": (config.workingDir != nil && !config.workingDir!.isEmpty) ? "user" : "image"
+            ])
 
             // Set hostname (OCI spec field)
             containerConfig.hostname = config.hostname
@@ -1048,15 +1122,30 @@ public actor ContainerManager {
                 "privileged": "\(config.privileged)",
                 "cap_count": "\(capabilities.bounding.count)"
             ])
+
+            let closureDuration = Date().timeIntervalSince(closureStartTime)
+            configLogger.debug("⏱️ Configuration closure completed", metadata: [
+                "docker_id": "\(dockerID)",
+                "duration_seconds": "\(String(format: "%.2f", closureDuration))"
+            ])
         }
+
+        let managerCreateDuration = Date().timeIntervalSince(managerCreateStart)
+        logger.debug("⏱️ manager.create() completed", metadata: [
+            "docker_id": "\(dockerID)",
+            "duration_seconds": "\(String(format: "%.2f", managerCreateDuration))"
+        ])
 
         // Call .create() to set up the VM
         logger.info("Setting up container VM and runtime environment", metadata: [
             "docker_id": "\(dockerID)"
         ])
+        let containerCreateStart = Date()
         try await container.create()
+        let containerCreateDuration = Date().timeIntervalSince(containerCreateStart)
         logger.info("Container VM created successfully", metadata: [
-            "docker_id": "\(dockerID)"
+            "docker_id": "\(dockerID)",
+            "duration_seconds": "\(String(format: "%.2f", containerCreateDuration))"
         ])
 
         return container
@@ -1119,6 +1208,15 @@ public actor ContainerManager {
         // Generate container name if not provided
         let containerName = name ?? generateContainerName()
 
+        // Check if container name is already in use
+        if let existingID = resolveContainerID(containerName) {
+            logger.warning("Container name already in use", metadata: [
+                "name": "\(containerName)",
+                "existing_id": "\(existingID)"
+            ])
+            throw ContainerManagerError.nameConflict(containerName, existingID)
+        }
+
         // Use real Containerization API
         guard var _ = nativeManager else {
             logger.error("ContainerManager not initialized")
@@ -1161,14 +1259,42 @@ public actor ContainerManager {
         logger.debug("Retrieving image", metadata: ["image": "\(image)"])
         let containerImage = try await imageManager.getImage(nameOrId: image)
 
-        // Get image details for metadata
+        // Get image details for metadata and default command
         let imageDetails = try await imageManager.inspectImage(nameOrId: image)
         let imageID = imageDetails?.id ?? "sha256:" + String(repeating: "0", count: 64)
 
+        // Get image config to calculate effective command for ContainerInfo
+        let systemPlatform = detectSystemPlatform()
+        let imagePlatform = systemPlatform.ociPlatform()
+        let imageConfig = try await containerImage.config(for: imagePlatform)
+        let imageEntrypoint = imageConfig.config?.entrypoint ?? []
+        let imageCmd = imageConfig.config?.cmd ?? []
+
+        // Calculate effective command (matches Docker behavior and what actually gets executed)
+        let effectiveEntrypoint = entrypoint ?? imageEntrypoint
+        let effectiveCmd = command ?? imageCmd
+        let effectiveFullCommand = effectiveEntrypoint + effectiveCmd
+
+        logger.debug("Effective container command", metadata: [
+            "docker_id": "\(dockerID)",
+            "entrypoint": "\(effectiveEntrypoint.joined(separator: " "))",
+            "cmd": "\(effectiveCmd.joined(separator: " "))",
+            "full_command": "\(effectiveFullCommand.joined(separator: " "))"
+        ])
+
         // Create log writers for capturing stdout/stderr
         logger.debug("Creating log writers", metadata: ["docker_id": "\(dockerID)"])
-        let (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
-        logWriters[dockerID] = (stdoutWriter, stderrWriter)
+        let (stdoutWriter, stderrWriter): (FileLogWriter, FileLogWriter)
+        do {
+            (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
+            logWriters[dockerID] = (stdoutWriter, stderrWriter)
+        } catch {
+            logger.error("Failed to create log writers", metadata: [
+                "docker_id": "\(dockerID)",
+                "error": "\(error)"
+            ])
+            throw ContainerManagerError.logWriterCreationFailed(error.localizedDescription)
+        }
 
         // Create anonymous volumes if specified
         var anonymousVolumeNames: [String] = []
@@ -1324,13 +1450,13 @@ public actor ContainerManager {
             imageID: imageID,
             created: now,
             state: "created",
-            command: command ?? [],
-            path: command?.first ?? "",
-            args: command?.dropFirst().map { String($0) } ?? [],
+            command: effectiveFullCommand,
+            path: effectiveFullCommand.first ?? "",
+            args: effectiveFullCommand.dropFirst().map { String($0) },
             env: env ?? [],
             workingDir: workingDir ?? "/",
             labels: labels ?? [:],
-            ports: [],
+            ports: convertPortBindingsToMappings(portBindings ?? [:]),
             hostConfig: HostConfig(
                 binds: binds ?? [],
                 networkMode: networkMode ?? "default",
@@ -1355,7 +1481,7 @@ public actor ContainerManager {
             config: ContainerConfiguration(
                 hostname: containerName,
                 env: env ?? [],
-                cmd: command ?? [],
+                cmd: effectiveCmd,  // Use effective cmd (request.cmd ?? image.cmd)
                 image: image,
                 workingDir: workingDir ?? "",
                 labels: labels ?? [:],
@@ -2046,25 +2172,25 @@ public actor ContainerManager {
 
         // Unpublish ports if configured (Phase 4.1)
         if let portMapManager = portMapManager,
-           !info.hostConfig.portBindings.isEmpty,
-           let networkManager = networkManager {
-            // Get WireGuard client for this container
-            if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
-                do {
-                    try await portMapManager.unpublishPorts(
-                        containerID: dockerID,
-                        wireguardClient: wireguardClient
-                    )
-                    logger.info("Unpublished port mappings for container", metadata: [
-                        "container": "\(dockerID)"
-                    ])
-                } catch {
-                    logger.warning("Failed to unpublish port mappings", metadata: [
-                        "container": "\(dockerID)",
-                        "error": "\(error)"
-                    ])
-                    // Don't fail container stop on port unpublishing errors
-                }
+           !info.hostConfig.portBindings.isEmpty {
+            // Get WireGuard client for this container (optional - for nftables cleanup)
+            let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
+
+            do {
+                try await portMapManager.unpublishPorts(
+                    containerID: dockerID,
+                    wireguardClient: wireguardClient
+                )
+                logger.info("Unpublished port mappings for container", metadata: [
+                    "container": "\(dockerID)",
+                    "wireguardClient": wireguardClient != nil ? "available" : "unavailable"
+                ])
+            } catch {
+                logger.warning("Failed to unpublish port mappings", metadata: [
+                    "container": "\(dockerID)",
+                    "error": "\(error)"
+                ])
+                // Don't fail container stop on port unpublishing errors
             }
         }
 
@@ -2389,26 +2515,28 @@ public actor ContainerManager {
         }
 
         // Unpublish ports before removal (Phase 4.1)
+        // IMPORTANT: Always call this, even if WireGuardClient is unavailable
+        // This ensures stale proxies and port allocations are cleaned up
         if let portMapManager = portMapManager,
-           !info.hostConfig.portBindings.isEmpty,
-           let networkManager = networkManager {
-            // Get WireGuard client for this container (if still available)
-            if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
-                do {
-                    try await portMapManager.unpublishPorts(
-                        containerID: dockerID,
-                        wireguardClient: wireguardClient
-                    )
-                    logger.info("Unpublished port mappings before removal", metadata: [
-                        "container": "\(dockerID)"
-                    ])
-                } catch {
-                    logger.warning("Failed to unpublish port mappings during removal", metadata: [
-                        "container": "\(dockerID)",
-                        "error": "\(error)"
-                    ])
-                    // Don't fail container removal on port unpublishing errors
-                }
+           !info.hostConfig.portBindings.isEmpty {
+            // Get WireGuard client for this container (optional - for nftables cleanup)
+            let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
+
+            do {
+                try await portMapManager.unpublishPorts(
+                    containerID: dockerID,
+                    wireguardClient: wireguardClient
+                )
+                logger.info("Unpublished port mappings before removal", metadata: [
+                    "container": "\(dockerID)",
+                    "wireguardClient": wireguardClient != nil ? "available" : "unavailable"
+                ])
+            } catch {
+                logger.warning("Failed to unpublish port mappings during removal", metadata: [
+                    "container": "\(dockerID)",
+                    "error": "\(error)"
+                ])
+                // Don't fail container removal on port unpublishing errors
             }
         }
 
@@ -3678,6 +3806,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case containerNotFound(String)
     case containerRunning(String)
     case containerNotRunning(String)  // Phase 5 - Task 5.4: For kill endpoint validation
+    case nameConflict(String, String)  // (name, existingID) - Container name already in use
     case imageNotFound(String)
     case invalidConfiguration(String)
     case invalidParameter(String)  // Phase 5 - Task 5.1: For validating resource limits
@@ -3686,6 +3815,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case volumeManagerNotAvailable
     case noFilesystemBaseline(String)
     case failedToReadFilesystem(String)
+    case logWriterCreationFailed(String)
 
     public var description: String {
         switch self {
@@ -3703,6 +3833,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "Container is running: \(id). Stop the container before removing it or use force."
         case .containerNotRunning(let id):
             return "Container is not running: \(id)"
+        case .nameConflict(let name, let existingID):
+            return "Conflict. The container name \"\(name)\" is already in use by container \"\(existingID)\". You have to remove (or rename) that container to be able to reuse that name."
         case .imageNotFound(let ref):
             return "No such image: \(ref)"
         case .invalidConfiguration(let msg):
@@ -3719,6 +3851,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No filesystem baseline found for container: \(id). The baseline is captured when the container is created."
         case .failedToReadFilesystem(let msg):
             return "Failed to read filesystem: \(msg)"
+        case .logWriterCreationFailed(let msg):
+            return "Failed to create log writers: \(msg)"
         }
     }
 }
