@@ -63,6 +63,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
     _ request: Arca_Wireguard_V1_DumpNftablesRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>
+
+  func syncFilesystem(
+    _ request: Arca_Wireguard_V1_SyncFilesystemRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_SyncFilesystemRequest, Arca_Wireguard_V1_SyncFilesystemResponse>
 }
 
 extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
@@ -232,6 +237,26 @@ extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
       interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
     )
   }
+
+  /// Sync filesystem (flush all cached writes to disk)
+  /// Calls sync() syscall to ensure all filesystem buffers are written
+  /// Used before reading container filesystem for accurate diff results
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to SyncFilesystem.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func syncFilesystem(
+    _ request: Arca_Wireguard_V1_SyncFilesystemRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_SyncFilesystemRequest, Arca_Wireguard_V1_SyncFilesystemResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.syncFilesystem.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeSyncFilesystemInterceptors() ?? []
+    )
+  }
 }
 
 @available(*, deprecated)
@@ -342,6 +367,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
     _ request: Arca_Wireguard_V1_DumpNftablesRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>
+
+  func makeSyncFilesystemCall(
+    _ request: Arca_Wireguard_V1_SyncFilesystemRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_SyncFilesystemRequest, Arca_Wireguard_V1_SyncFilesystemResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -461,6 +491,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
     )
   }
+
+  public func makeSyncFilesystemCall(
+    _ request: Arca_Wireguard_V1_SyncFilesystemRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_SyncFilesystemRequest, Arca_Wireguard_V1_SyncFilesystemResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.syncFilesystem.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeSyncFilesystemInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -572,6 +614,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeDumpNftablesInterceptors() ?? []
     )
   }
+
+  public func syncFilesystem(
+    _ request: Arca_Wireguard_V1_SyncFilesystemRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_SyncFilesystemResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.syncFilesystem.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeSyncFilesystemInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -619,6 +673,9 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtoc
 
   /// - Returns: Interceptors to use when invoking 'dumpNftables'.
   func makeDumpNftablesInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_DumpNftablesRequest, Arca_Wireguard_V1_DumpNftablesResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'syncFilesystem'.
+  func makeSyncFilesystemInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_SyncFilesystemRequest, Arca_Wireguard_V1_SyncFilesystemResponse>]
 }
 
 public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
@@ -635,6 +692,7 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.publishPort,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.unpublishPort,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.dumpNftables,
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.syncFilesystem,
     ]
   )
 
@@ -690,6 +748,12 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     public static let dumpNftables = GRPCMethodDescriptor(
       name: "DumpNftables",
       path: "/arca.wireguard.v1.WireGuardService/DumpNftables",
+      type: GRPCCallType.unary
+    )
+
+    public static let syncFilesystem = GRPCMethodDescriptor(
+      name: "SyncFilesystem",
+      path: "/arca.wireguard.v1.WireGuardService/SyncFilesystem",
       type: GRPCCallType.unary
     )
   }

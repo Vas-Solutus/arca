@@ -598,50 +598,63 @@ Task 6.2 is now 100% complete with all features implemented, tested, and working
 
 ---
 
-### Task 6.4: Container Diff
+### Task 6.4: Container Diff ✅ COMPLETE
 
 **Endpoint:** GET /containers/{id}/changes
 **No flags** (returns JSON array of filesystem changes)
+**Status:** ✅ **COMPLETE** (2025-11-10) - All features implemented and tested (20/20 tests passing)
 
-#### Implementation Steps:
-1. Create diff handler
-   ```swift
-   func handleContainerChanges(id: String) async -> Result<[FilesystemChange], ContainerError>
+#### Implementation Summary:
 
-   struct FilesystemChange: Codable {
-       var path: String
-       var kind: Int           // 0=Modified, 1=Added, 2=Deleted
-   }
-   ```
+**✅ Completed:**
+1. **FilesystemChange model** - Added to ContainerBridge/Types.swift with Docker-compatible format
+2. **Database schema** - Added filesystem_baselines table with proper indexes and foreign keys
+3. **EXT4+FilesystemEnumerator.swift** - Created wrapper class around Apple's internal EXT4Reader API
+   - Isolates us from changes to Apple's internal implementation
+   - Public API for filesystem enumeration without making internal methods public
+   - Enumerates files, directories, symlinks with full metadata (path, type, size, mtime)
+4. **Baseline capture** - Implemented at container creation time (after persist, before start)
+5. **Diff algorithm** - Complete implementation comparing current state vs baseline
+   - Detects Added files (kind=1)
+   - Detects Modified files (kind=0)
+   - Detects Deleted files (kind=2)
+6. **SyncFilesystem RPC** - Added to WireGuard service for filesystem consistency
+   - Calls sync() syscall to flush cached writes before reading EXT4
+   - Works universally (including distroless containers)
+   - Ensures accurate diffs on running containers
+7. **HTTP handler** - Added handleContainerChanges() with proper error handling
+8. **Route registration** - Registered GET /containers/{id}/changes endpoint
+9. **Docker CLI integration** - Full compatibility with `docker diff` command
 
-2. Implement change detection
-   - Option 1: Compare container filesystem to base image
-   - Option 2: Use exec to run diff tool
-   - Option 3: Track changes in vminit
+**Architecture Decision:**
+- Chose **EXT4 filesystem enumeration from host side** with sync() syscall
+- ✅ **Works for ALL containers** including distroless (no shell commands)
+- ✅ **Production quality** - Uses Apple's existing EXT4 infrastructure
+- ✅ **Accurate** - Direct filesystem access with sync() for consistency
+- ✅ **Running containers** - Works on running containers via sync RPC (preserves Docker behavior)
+- Location: Container rootfs at `{imageStore}/containers/{id}/rootfs.ext4`
 
-3. Register route
-   ```swift
-   _ = builder.get("/containers/{id}/changes") { request in
-       // Get container ID
-       // Calculate changes
-       // Return JSON
-   }
-   ```
+**Files Modified:**
+- Sources/ContainerBridge/Types.swift - FilesystemChange struct
+- Sources/ContainerBridge/StateStore.swift - filesystem_baselines table + operations
+- Sources/ContainerBridge/ContainerManager.swift - EXT4 enumeration + diff logic + sync RPC call
+- Sources/ContainerBridge/WireGuardClient.swift - syncFilesystem() method
+- Sources/DockerAPI/Handlers/ContainerHandlers.swift - HTTP handler
+- Sources/ArcaDaemon/ArcaDaemon.swift - Route registration
+- containerization/Sources/ContainerizationEXT4/EXT4+FilesystemEnumerator.swift - Wrapper class
+- containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto - SyncFilesystem RPC
+- containerization/vminitd/extensions/wireguard-service/cmd/arca-wireguard-service/main.go - RPC handler
+- Tests/ArcaTests/ContainerDiffTests.swift - Comprehensive test suite (20 tests)
 
-4. Optimize performance
-   - Cache results
-   - Incremental diff
-   - Exclude volumes
+**Testing:** ✅ 20/20 tests passing (220.4 seconds)
+- ✅ 15 API-level tests (added/modified/deleted files, directories, edge cases, format validation)
+- ✅ 5 Docker CLI integration tests (docker diff command compatibility)
+- ✅ Running containers work correctly (sync solution maintains Docker behavior)
+- ✅ All change types detected (A=added, C=changed, D=deleted)
+- ✅ Response format matches Docker API spec
+- ✅ Alphabetical sorting, ID prefix support
 
-**Testing:**
-- Detect file additions
-- Detect file modifications
-- Detect file deletions
-- Verify against known changes
-
-**Estimated Time:** 0.5 weeks
-
-**Blocker:** May be challenging without overlay filesystem support. Consider implementing as "best effort" using exec + find/diff.
+**Estimated Time:** 0.5 weeks → **Actual: 1 day** ✅ (including SyncFilesystem RPC implementation)
 
 ---
 

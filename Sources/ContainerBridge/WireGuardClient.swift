@@ -385,4 +385,25 @@ public actor WireGuardClient {
 
         return response.ruleset
     }
+
+    /// Sync filesystem - flush all cached writes to disk (Phase 6.4)
+    /// Calls sync() syscall inside the container to ensure all filesystem buffers are written
+    /// Used before reading container filesystem for accurate diff results
+    public func syncFilesystem() async throws {
+        guard let client = client else {
+            throw WireGuardClientError.notConnected
+        }
+
+        logger.debug("Syncing filesystem in container")
+
+        let request = Arca_Wireguard_V1_SyncFilesystemRequest()
+        let call = client.syncFilesystem(request)
+        let response = try await call.response.get()
+
+        guard response.success else {
+            throw WireGuardClientError.operationFailed(response.error)
+        }
+
+        logger.debug("Filesystem synced successfully")
+    }
 }

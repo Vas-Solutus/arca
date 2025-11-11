@@ -1866,6 +1866,48 @@ public struct ContainerHandlers: Sendable {
 
         return .success(())
     }
+
+    /// Handle GET /containers/{id}/changes
+    /// Returns filesystem changes since container was created
+    /// Reference: Docker Engine API v1.51 - ContainerChanges operation
+    public func handleContainerChanges(id: String) async -> Result<[FilesystemChange], ContainerError> {
+        logger.info("Getting container filesystem changes", metadata: [
+            "container_id": "\(id)"
+        ])
+
+        do {
+            let changes = try await containerManager.getContainerChanges(id: id)
+            logger.info("Container filesystem changes retrieved", metadata: [
+                "container_id": "\(id)",
+                "changes": "\(changes.count)"
+            ])
+            return .success(changes)
+        } catch let error as ContainerBridge.ContainerManagerError {
+            switch error {
+            case .containerNotFound:
+                return .failure(.notFound(id))
+            case .noFilesystemBaseline:
+                // Container exists but no baseline was captured
+                // This can happen for containers created before this feature was implemented
+                logger.warning("No filesystem baseline found", metadata: [
+                    "container_id": "\(id)"
+                ])
+                return .failure(.invalidRequest("No filesystem baseline found for container. The baseline is captured when the container is created."))
+            default:
+                logger.error("Failed to get container changes", metadata: [
+                    "container_id": "\(id)",
+                    "error": "\(error)"
+                ])
+                return .failure(.inspectFailed(errorDescription(error)))
+            }
+        } catch {
+            logger.error("Failed to get container changes", metadata: [
+                "container_id": "\(id)",
+                "error": "\(error)"
+            ])
+            return .failure(.inspectFailed("Unexpected error: \(error)"))
+        }
+    }
 }
 
 // MARK: - Response Types

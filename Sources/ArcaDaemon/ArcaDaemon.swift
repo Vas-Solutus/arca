@@ -952,6 +952,30 @@ public final class ArcaDaemon: @unchecked Sendable {
             }
         }
 
+        // Container diff endpoint - Phase 6 Task 6.4
+        _ = builder.get("/containers/{id}/changes") { request in
+            guard let id = request.pathParam("id") else {
+                return .standard(HTTPResponse.badRequest("Missing container ID"))
+            }
+
+            let result = await containerHandlers.handleContainerChanges(id: id)
+            switch result {
+            case .success(let changes):
+                return .standard(HTTPResponse.ok(changes))
+            case .failure(let error):
+                let status: HTTPResponseStatus
+                switch error {
+                case .notFound:
+                    status = .notFound
+                case .invalidRequest:
+                    status = .badRequest
+                default:
+                    status = .internalServerError
+                }
+                return .standard(HTTPResponse.error(error.description, status: status))
+            }
+        }
+
         // Image endpoints
         _ = builder.get("/images/json") { request in
             // Validate and parse query parameters

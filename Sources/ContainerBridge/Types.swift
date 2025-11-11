@@ -458,3 +458,29 @@ extension ContainerConfiguration: Codable {
 extension HostConfig: Codable {
     // Codable synthesized automatically since all properties are Codable
 }
+
+// MARK: - Filesystem Changes (Phase 6 - Task 6.4)
+
+/// Represents a change to a file in a container's filesystem
+/// Reference: Docker Engine API v1.51 - FilesystemChange definition
+public struct FilesystemChange: Codable, Sendable {
+    public let path: String
+    public let kind: Int
+
+    enum CodingKeys: String, CodingKey {
+        case path = "Path"
+        case kind = "Kind"
+    }
+
+    public init(path: String, kind: ChangeKind) {
+        self.path = path
+        self.kind = kind.rawValue
+    }
+
+    /// Kind of filesystem change
+    public enum ChangeKind: Int {
+        case modified = 0  // "C" - Modified
+        case added = 1     // "A" - Added
+        case deleted = 2   // "D" - Deleted
+    }
+}

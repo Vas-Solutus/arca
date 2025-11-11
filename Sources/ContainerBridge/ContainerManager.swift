@@ -2,6 +2,8 @@ import Foundation
 import Logging
 import Containerization
 import ContainerizationOCI
+import ContainerizationEXT4
+import SystemPackage
 import Virtualization
 
 /// Manages containers using Apple's Containerization API
@@ -1376,6 +1378,14 @@ public actor ContainerManager {
         // Persist container state
         try await persistContainerState(dockerID: dockerID, info: containerInfo)
 
+        // Capture filesystem baseline for container diff (Phase 6 - Task 6.4)
+        // This must be done AFTER container is persisted to database (foreign key constraint)
+        // and AFTER container.create() completes (so rootfs.ext4 is fully initialized)
+        // Only capture baseline for non-deferred containers (deferred baseline captured after start)
+        if !shouldDeferCreate {
+            try await captureFilesystemBaseline(dockerID: dockerID)
+        }
+
         // Track volume mounts in StateStore
         try await trackVolumeMounts(
             dockerID: dockerID,
@@ -1553,6 +1563,10 @@ public actor ContainerManager {
 
             // Update needsCreate flag
             info.needsCreate = false
+
+            // Capture filesystem baseline for deferred containers (Phase 6 - Task 6.4)
+            // Now that the native container is created, capture the baseline
+            try await captureFilesystemBaseline(dockerID: dockerID)
         } else {
             // Container should already be created - check if it exists in framework
             if let container = nativeContainers[dockerID] {
@@ -3236,6 +3250,189 @@ public actor ContainerManager {
         }
     }
 
+    // MARK: - Filesystem Operations
+
+    /// Get the path to a container's rootfs.ext4 file
+    /// This follows Apple's Containerization framework convention: {imageStore.path}/containers/{id}/rootfs.ext4
+    private func getRootfsPath(dockerID: String) -> URL? {
+        guard let manager = nativeManager else {
+            return nil
+        }
+        // Apple's ContainerManager stores containers at: imageStore.path/containers/{id}/rootfs.ext4
+        return manager.imageStore.path
+            .appendingPathComponent("containers")
+            .appendingPathComponent(dockerID)
+            .appendingPathComponent("rootfs.ext4")
+    }
+
+    /// Enumerate all files in an EXT4 filesystem using Apple's EXT4Reader
+    /// Returns array of (path, type, size, mtime) tuples
+    /// - Parameter ext4Path: Path to the EXT4 disk image file
+    private func enumerateEXT4Filesystem(_ ext4Path: URL) throws -> [(path: String, type: String, size: Int64, mtime: Int64)] {
+        // Open EXT4 filesystem using Apple's reader
+        let reader = try ContainerizationEXT4.EXT4.EXT4Reader(blockDevice: SystemPackage.FilePath(ext4Path.path))
+
+        // Use our FilesystemEnumerator wrapper to enumerate all files
+        let enumerator = ContainerizationEXT4.EXT4.FilesystemEnumerator(reader: reader)
+        let fileInfos = try enumerator.enumerateFilesystem()
+
+        // Convert FileInfo structs to tuples
+        return fileInfos
+            .filter { $0.path != "." && $0.path != "/" }  // Skip root directory
+            .map { (path: $0.path, type: $0.type, size: $0.size, mtime: $0.mtime) }
+    }
+
+    /// Capture filesystem baseline for a container by reading its EXT4 disk
+    /// This is called after container creation to establish the initial state
+    private func captureFilesystemBaseline(dockerID: String) async throws {
+        logger.info("Capturing filesystem baseline using EXT4Reader", metadata: ["container": "\(dockerID)"])
+
+        guard let rootfsPath = getRootfsPath(dockerID: dockerID) else {
+            logger.warning("Cannot determine rootfs path", metadata: ["container": "\(dockerID)"])
+            return
+        }
+
+        // Verify rootfs exists
+        guard FileManager.default.fileExists(atPath: rootfsPath.path) else {
+            logger.warning("Rootfs file does not exist", metadata: [
+                "container": "\(dockerID)",
+                "path": "\(rootfsPath.path)"
+            ])
+            return
+        }
+
+        // Enumerate files using EXT4Reader
+        let files = try enumerateEXT4Filesystem(rootfsPath)
+
+        logger.info("Filesystem baseline captured", metadata: [
+            "container": "\(dockerID)",
+            "files": "\(files.count)"
+        ])
+
+        // Save baseline to database
+        do {
+            try await stateStore.saveFilesystemBaseline(containerID: dockerID, files: files)
+            logger.debug("Baseline save completed successfully", metadata: [
+                "container": "\(dockerID)",
+                "files": "\(files.count)"
+            ])
+        } catch {
+            logger.error("Failed to save filesystem baseline", metadata: [
+                "container": "\(dockerID)",
+                "error": "\(error)"
+            ])
+            throw error
+        }
+    }
+
+    /// Get filesystem changes for a container by comparing current EXT4 state to baseline
+    public func getContainerChanges(id: String) async throws -> [FilesystemChange] {
+        // Resolve name or ID to Docker ID
+        guard let dockerID = resolveContainerID(id) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        logger.info("Getting filesystem changes using EXT4Reader", metadata: ["container": "\(dockerID)"])
+
+        // Check if container is running - if so, sync filesystem
+        // sync() flushes all cached writes to disk, ensuring accurate filesystem reads
+        let wasRunning = await isContainerRunning(dockerID: dockerID)
+        if wasRunning {
+            logger.debug("Container is running, syncing filesystem", metadata: ["container": "\(dockerID)"])
+
+            // Flush filesystem buffers by calling sync via WireGuard service
+            // This works universally (including distroless) since vminitd has the RPC
+            if let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID) {
+                do {
+                    // Call SyncFilesystem RPC
+                    try await wireguardClient.syncFilesystem()
+                    logger.debug("Filesystem buffers synced", metadata: ["container": "\(dockerID)"])
+                } catch {
+                    // Log warning but continue - may work anyway
+                    logger.warning("Failed to sync filesystem", metadata: [
+                        "container": "\(dockerID)",
+                        "error": "\(error)"
+                    ])
+                }
+            } else {
+                logger.warning("No WireGuard client available for sync", metadata: ["container": "\(dockerID)"])
+            }
+        }
+
+        // Check if baseline exists
+        let hasBaseline = try await stateStore.hasFilesystemBaseline(containerID: dockerID)
+        guard hasBaseline else {
+            logger.warning("No filesystem baseline found for container", metadata: ["container": "\(dockerID)"])
+            throw ContainerManagerError.noFilesystemBaseline(dockerID)
+        }
+
+        // Load baseline
+        let baseline = try await stateStore.loadFilesystemBaseline(containerID: dockerID)
+        let baselineMap = Dictionary(uniqueKeysWithValues: baseline.map { ($0.path, ($0.type, $0.size, $0.mtime)) })
+
+        logger.debug("Loaded filesystem baseline", metadata: [
+            "container": "\(dockerID)",
+            "files": "\(baseline.count)"
+        ])
+
+        // Get current filesystem state using EXT4Reader
+        guard let rootfsPath = getRootfsPath(dockerID: dockerID) else {
+            throw ContainerManagerError.containerNotFound(id)
+        }
+
+        guard FileManager.default.fileExists(atPath: rootfsPath.path) else {
+            throw ContainerManagerError.failedToReadFilesystem("Rootfs file does not exist")
+        }
+
+        let currentFiles = try enumerateEXT4Filesystem(rootfsPath)
+        let currentMap = Dictionary(uniqueKeysWithValues: currentFiles.map { ($0.path, ($0.type, $0.size, $0.mtime)) })
+
+        logger.debug("Captured current filesystem state", metadata: [
+            "container": "\(dockerID)",
+            "files": "\(currentFiles.count)"
+        ])
+
+        // Compare baseline to current state
+        var changes: [FilesystemChange] = []
+
+        // Find added and modified files
+        for (path, current) in currentMap.sorted(by: { $0.key < $1.key }) {
+            if let baseline = baselineMap[path] {
+                // File exists in baseline - check if modified
+                // Modified if size or mtime changed
+                if current.1 != baseline.1 || current.2 != baseline.2 {
+                    changes.append(FilesystemChange(
+                        path: path,
+                        kind: .modified
+                    ))
+                }
+            } else {
+                // File not in baseline - it was added
+                changes.append(FilesystemChange(
+                    path: path,
+                    kind: .added
+                ))
+            }
+        }
+
+        // Find deleted files (in baseline but not in current)
+        for (path, _) in baselineMap.sorted(by: { $0.key < $1.key }) {
+            if currentMap[path] == nil {
+                changes.append(FilesystemChange(
+                    path: path,
+                    kind: .deleted
+                ))
+            }
+        }
+
+        logger.info("Filesystem changes calculated", metadata: [
+            "container": "\(dockerID)",
+            "changes": "\(changes.count)"
+        ])
+
+        return changes
+    }
+
     // MARK: - ID Mapping
 
     /// Generate a Docker-compatible 64-character hex ID
@@ -3487,6 +3684,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case volumeSourceNotFound(String)
     case volumeNotFound(String)
     case volumeManagerNotAvailable
+    case noFilesystemBaseline(String)
+    case failedToReadFilesystem(String)
 
     public var description: String {
         switch self {
@@ -3516,6 +3715,10 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such volume: \(name)"
         case .volumeManagerNotAvailable:
             return "VolumeManager not available - named volumes are not supported"
+        case .noFilesystemBaseline(let id):
+            return "No filesystem baseline found for container: \(id). The baseline is captured when the container is created."
+        case .failedToReadFilesystem(let msg):
+            return "Failed to read filesystem: \(msg)"
         }
     }
 }

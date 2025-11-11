@@ -967,3 +967,10 @@ public struct AnyCodable: Codable, @unchecked Sendable {
         }
     }
 }
+
+// MARK: - Filesystem Changes
+
+/// Re-export FilesystemChange from ContainerBridge (Phase 6 - Task 6.4)
+/// This type is defined in ContainerBridge to avoid circular dependencies
+/// Reference: Docker Engine API v1.51 - FilesystemChange definition
+public typealias FilesystemChange = ContainerBridge.FilesystemChange

@@ -4,7 +4,7 @@ import Logging
 
 /// StateStore manages persistent container and network state in SQLite
 /// All operations are atomic and thread-safe via actor isolation
-/// The Connection is nonisolated because SQLite.swift handles thread safety internally
+/// SQLite.swift Connection objects have internal serial queues for thread safety
 public actor StateStore {
     private nonisolated(unsafe) let db: Connection
     private let logger: Logger
@@ -16,6 +16,7 @@ public actor StateStore {
     private nonisolated(unsafe) let volumes = Table("volumes")
     private nonisolated(unsafe) let volumeMounts = Table("volume_mounts")
     private nonisolated(unsafe) let subnetAllocation = Table("subnet_allocation")
+    private nonisolated(unsafe) let filesystemBaselines = Table("filesystem_baselines")
     private nonisolated(unsafe) let schemaVersion = Table("schema_version")
 
     // Container columns (nonisolated - immutable and thread-safe)
@@ -81,6 +82,15 @@ public actor StateStore {
     private nonisolated(unsafe) let allocationID = Expression<Int>("id")
     private nonisolated(unsafe) let nextSubnetByte = Expression<Int>("next_subnet_byte")
 
+    // Filesystem baseline columns (nonisolated - immutable and thread-safe)
+    private nonisolated(unsafe) let baselineID = Expression<Int64>("id")
+    private nonisolated(unsafe) let baselineContainerID = Expression<String>("container_id")
+    private nonisolated(unsafe) let filePath = Expression<String>("file_path")
+    private nonisolated(unsafe) let fileType = Expression<String>("file_type")
+    private nonisolated(unsafe) let fileSize = Expression<Int64>("file_size")
+    private nonisolated(unsafe) let fileMtime = Expression<Int64>("file_mtime")
+    private nonisolated(unsafe) let capturedAt = Expression<String>("captured_at")
+
     // Schema version columns (nonisolated - immutable and thread-safe)
     private nonisolated(unsafe) let version = Expression<Int>("version")
     private nonisolated(unsafe) let appliedAt = Expression<String>("applied_at")
@@ -129,6 +139,10 @@ public actor StateStore {
 
             // Enable foreign key constraints (CRITICAL for CASCADE DELETE)
             try self.db.execute("PRAGMA foreign_keys = ON")
+
+            // Set busy timeout for concurrent access (5 seconds)
+            // This prevents SQLITE_BUSY errors when multiple operations happen concurrently
+            self.db.busyTimeout = 5.0
 
             logger.info("Connected to state database", metadata: ["path": "\(expandedPath)"])
         } catch {
@@ -286,6 +300,23 @@ public actor StateStore {
                 nextSubnetByte <- 18
             ))
 
+            // Filesystem baselines table (for tracking container filesystem changes)
+            try db.run(filesystemBaselines.create(ifNotExists: true) { t in
+                t.column(baselineID, primaryKey: .autoincrement)
+                t.column(baselineContainerID)
+                t.column(filePath)
+                t.column(fileType)  // 'f' = file, 'd' = directory, 'l' = symlink
+                t.column(fileSize)
+                t.column(fileMtime)  // Unix timestamp (seconds since epoch)
+                t.column(capturedAt, defaultValue: Date().iso8601String)
+
+                t.foreignKey(baselineContainerID, references: containers, id, delete: .cascade)
+            })
+
+            // Filesystem baseline indexes
+            try db.run(filesystemBaselines.createIndex(baselineContainerID, ifNotExists: true))
+            try db.run(filesystemBaselines.createIndex(filePath, baselineContainerID, unique: true, ifNotExists: true))
+
             // Mark schema as v1
             try db.run(schemaVersion.insert(version <- 1))
         }
@@ -322,25 +353,52 @@ public actor StateStore {
             entrypointString = nil
         }
 
-        try db.run(containers.insert(or: .replace,
-            self.id <- id,
-            self.name <- name,
-            self.image <- image,
-            self.imageID <- imageID,
-            self.createdAt <- createdAt.iso8601String,
-            self.status <- status,
-            self.running <- running,
-            self.paused <- paused,
-            self.restarting <- restarting,
-            self.pid <- pid,
-            self.exitCode <- exitCode,
-            self.startedAt <- startedAt?.iso8601String,
-            self.finishedAt <- finishedAt?.iso8601String,
-            self.stoppedByUser <- stoppedByUser,
-            self.entrypointJSON <- entrypointString,
-            self.configJSON <- configJSON,
-            self.hostConfigJSON <- hostConfigJSON
-        ))
+        // Check if container exists
+        let existing = try db.scalar(containers.filter(self.id == id).count)
+
+        if existing > 0 {
+            // Update existing container (preserves CASCADE relationships like filesystem_baselines)
+            let container = containers.filter(self.id == id)
+            try db.run(container.update(
+                self.name <- name,
+                self.image <- image,
+                self.imageID <- imageID,
+                self.createdAt <- createdAt.iso8601String,
+                self.status <- status,
+                self.running <- running,
+                self.paused <- paused,
+                self.restarting <- restarting,
+                self.pid <- pid,
+                self.exitCode <- exitCode,
+                self.startedAt <- startedAt?.iso8601String,
+                self.finishedAt <- finishedAt?.iso8601String,
+                self.stoppedByUser <- stoppedByUser,
+                self.entrypointJSON <- entrypointString,
+                self.configJSON <- configJSON,
+                self.hostConfigJSON <- hostConfigJSON
+            ))
+        } else {
+            // Insert new container
+            try db.run(containers.insert(
+                self.id <- id,
+                self.name <- name,
+                self.image <- image,
+                self.imageID <- imageID,
+                self.createdAt <- createdAt.iso8601String,
+                self.status <- status,
+                self.running <- running,
+                self.paused <- paused,
+                self.restarting <- restarting,
+                self.pid <- pid,
+                self.exitCode <- exitCode,
+                self.startedAt <- startedAt?.iso8601String,
+                self.finishedAt <- finishedAt?.iso8601String,
+                self.stoppedByUser <- stoppedByUser,
+                self.entrypointJSON <- entrypointString,
+                self.configJSON <- configJSON,
+                self.hostConfigJSON <- hostConfigJSON
+            ))
+        }
 
         logger.debug("Container state saved", metadata: [
             "id": "\(id)",
@@ -895,6 +953,82 @@ public actor StateStore {
             result = try block()
         }
         return result
+    }
+
+    // MARK: - Filesystem Baseline Operations
+
+    /// Save filesystem baseline for a container
+    /// This stores the initial filesystem state for diff comparison
+    public func saveFilesystemBaseline(containerID: String, files: [(path: String, type: String, size: Int64, mtime: Int64)]) throws {
+        logger.debug("Starting baseline save transaction", metadata: [
+            "container": "\(containerID)",
+            "files_to_save": "\(files.count)"
+        ])
+
+        try db.transaction {
+            // Delete existing baseline for this container
+            let existingBaseline = filesystemBaselines.filter(baselineContainerID == containerID)
+            let deleted = try db.run(existingBaseline.delete())
+            logger.debug("Deleted existing baseline entries", metadata: ["deleted": "\(deleted)"])
+
+            // Insert new baseline entries
+            var inserted = 0
+            for file in files {
+                try db.run(filesystemBaselines.insert(
+                    baselineContainerID <- containerID,
+                    filePath <- file.path,
+                    fileType <- file.type,
+                    fileSize <- file.size,
+                    fileMtime <- file.mtime,
+                    capturedAt <- Date().iso8601String
+                ))
+                inserted += 1
+            }
+            logger.debug("Inserted baseline entries", metadata: ["inserted": "\(inserted)"])
+        }
+
+        // Verify the data persisted
+        let query = filesystemBaselines.filter(baselineContainerID == containerID)
+        let count = try db.scalar(query.count)
+
+        logger.debug("Filesystem baseline saved and verified", metadata: [
+            "container": "\(containerID)",
+            "files_saved": "\(files.count)",
+            "files_in_db": "\(count)"
+        ])
+    }
+
+    /// Load filesystem baseline for a container
+    public func loadFilesystemBaseline(containerID: String) throws -> [(path: String, type: String, size: Int64, mtime: Int64)] {
+        let query = filesystemBaselines
+            .filter(baselineContainerID == containerID)
+            .order(filePath)
+
+        return try db.prepare(query).map { row in
+            (
+                path: row[filePath],
+                type: row[fileType],
+                size: row[fileSize],
+                mtime: row[fileMtime]
+            )
+        }
+    }
+
+    /// Check if filesystem baseline exists for a container
+    public func hasFilesystemBaseline(containerID: String) throws -> Bool {
+        let query = filesystemBaselines.filter(baselineContainerID == containerID)
+        return try db.scalar(query.count) > 0
+    }
+
+    /// Delete filesystem baseline for a container
+    public func deleteFilesystemBaseline(containerID: String) throws {
+        let baseline = filesystemBaselines.filter(baselineContainerID == containerID)
+        let deleted = try db.run(baseline.delete())
+
+        logger.debug("Filesystem baseline deleted", metadata: [
+            "container": "\(containerID)",
+            "entries": "\(deleted)"
+        ])
     }
 }
 

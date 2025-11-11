@@ -36,7 +36,7 @@ public struct HTTPResponse: Sendable {
     /// Create a JSON response
     public static func json<T: Encodable>(_ value: T, status: HTTPResponseStatus = .ok) -> HTTPResponse {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        encoder.outputFormatting = [.withoutEscapingSlashes]
 
         guard let data = try? encoder.encode(value) else {
             return HTTPResponse(
