@@ -1202,7 +1202,8 @@ public struct ContainerHandlers: Sendable {
         var stderrPosition = try? getFileSize(logPaths.stderrPath)
 
         // Poll for new log data every 100ms until container exits
-        while await containerManager.isContainerRunning(dockerID: dockerID) {
+        // This works for attach before start: waits for container to start, then streams logs
+        while await containerManager.shouldStreamLogs(dockerID: dockerID) {
             try await Task.sleep(nanoseconds: 100_000_000) // 100ms
 
             // Check stdout for new data

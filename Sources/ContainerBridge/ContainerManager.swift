@@ -24,8 +24,9 @@ public actor ContainerManager {
 
     // Log management
     // logManager is immutable and thread-safe, so it can be accessed from nonisolated contexts
-    nonisolated(unsafe) private let logManager: ContainerLogManager
+    nonisolated(unsafe) public let logManager: ContainerLogManager
     private var logWriters: [String: (FileLogWriter, FileLogWriter)] = [:]  // Docker ID -> (stdout, stderr)
+    private var broadcastWriters: [String: (BroadcastWriter, BroadcastWriter)] = [:]  // Docker ID -> (stdout, stderr) broadcast writers for dynamic attach
 
     // Background monitoring tasks
     private var monitoringTasks: [String: Task<Void, Never>] = [:]  // Docker ID -> Monitoring Task
@@ -367,6 +368,39 @@ public actor ContainerManager {
             idMapping[containerData.id] = nativeID
             reverseMapping[nativeID] = containerData.id
 
+            // Register log paths if they exist (for attach/logs commands)
+            // Log files are persisted even after daemon restart
+            let logDir = logManager.containerLogDir(dockerID: containerData.id)
+            let stdoutPath = logDir.appendingPathComponent("stdout.log")
+            let stderrPath = logDir.appendingPathComponent("stderr.log")
+            let combinedPath = logDir.appendingPathComponent("combined.log")
+
+            // Only register if log files exist
+            if FileManager.default.fileExists(atPath: stdoutPath.path) &&
+               FileManager.default.fileExists(atPath: stderrPath.path) {
+                // Register log paths in logManager (internal method call needed)
+                // We can't use createLogWriters() because it would truncate existing logs
+                // Instead, we directly register the paths using the LogPaths struct
+                // Note: We don't create FileLogWriter instances here because the container isn't running
+                // Log writers will be created lazily when container is started
+                try logManager.registerExistingLogPaths(
+                    dockerID: containerData.id,
+                    stdoutPath: stdoutPath,
+                    stderrPath: stderrPath,
+                    combinedPath: combinedPath
+                )
+
+                logger.debug("Registered existing log paths", metadata: [
+                    "docker_id": "\(containerData.id)",
+                    "log_dir": "\(logDir.path)"
+                ])
+            } else {
+                logger.debug("No existing log files found for container", metadata: [
+                    "docker_id": "\(containerData.id)",
+                    "log_dir": "\(logDir.path)"
+                ])
+            }
+
             logger.debug("Restored container from state", metadata: [
                 "docker_id": "\(containerData.id)",
                 "native_id": "\(nativeID)",
@@ -424,7 +458,7 @@ public actor ContainerManager {
     // MARK: - Graceful Shutdown
 
     /// Gracefully shutdown ContainerManager
-    /// Cancels all monitoring tasks and returns immediately
+    /// Cancels all monitoring tasks and waits briefly for cleanup to complete
     public func shutdown() async {
         logger.info("ContainerManager graceful shutdown started")
 
@@ -444,6 +478,11 @@ public actor ContainerManager {
 
         // Clear the monitoring tasks dictionary
         monitoringTasks.removeAll()
+
+        // Wait briefly (200ms) to allow any in-flight cleanup operations to complete
+        // This prevents EventLoop crashes when gRPC calls (port unpublishing, etc.) are still running
+        logger.debug("Waiting for cleanup operations to complete...")
+        try? await Task.sleep(nanoseconds: 200_000_000)  // 200ms
 
         logger.info("ContainerManager graceful shutdown complete", metadata: [
             "tasks_cancelled": "\(taskCount)"
@@ -1292,10 +1331,16 @@ public actor ContainerManager {
 
         // Create log writers for capturing stdout/stderr
         logger.debug("Creating log writers", metadata: ["docker_id": "\(dockerID)"])
-        let (stdoutWriter, stderrWriter): (FileLogWriter, FileLogWriter)
+        let (stdoutLogWriter, stderrLogWriter): (FileLogWriter, FileLogWriter)
+        let (stdoutBroadcast, stderrBroadcast): (BroadcastWriter, BroadcastWriter)
         do {
-            (stdoutWriter, stderrWriter) = try logManager.createLogWriters(dockerID: dockerID)
-            logWriters[dockerID] = (stdoutWriter, stderrWriter)
+            (stdoutLogWriter, stderrLogWriter) = try logManager.createLogWriters(dockerID: dockerID)
+            logWriters[dockerID] = (stdoutLogWriter, stderrLogWriter)
+
+            // Wrap log writers in broadcast writers to support dynamic attach
+            stdoutBroadcast = BroadcastWriter(initialSubscribers: [stdoutLogWriter])
+            stderrBroadcast = BroadcastWriter(initialSubscribers: [stderrLogWriter])
+            broadcastWriters[dockerID] = (stdoutBroadcast, stderrBroadcast)
         } catch {
             logger.error("Failed to create log writers", metadata: [
                 "docker_id": "\(dockerID)",
@@ -1403,6 +1448,7 @@ public actor ContainerManager {
             linuxContainer = nil
         } else {
             // Non-deferred containers: Create LinuxContainer immediately using helper
+            // Use broadcast writers to support dynamic attach
             let container = try await createNativeContainer(
                 config: NativeContainerConfig(
                     dockerID: dockerID,
@@ -1413,8 +1459,8 @@ public actor ContainerManager {
                     workingDir: workingDir,
                     hostname: containerName,
                     tty: tty,
-                    stdoutWriter: stdoutWriter,
-                    stderrWriter: stderrWriter,
+                    stdoutWriter: stdoutBroadcast,
+                    stderrWriter: stderrBroadcast,
                     stdinReader: nil,  // Not attached
                     mounts: mounts,
                     networkMode: networkMode,
@@ -1608,6 +1654,19 @@ public actor ContainerManager {
         return pendingAttaches.removeValue(forKey: containerID)
     }
 
+    /// Subscribe attach handles to broadcast writers for a running/created container
+    /// This allows dynamic attachment without recreating the container
+    private func subscribeAttachToBroadcast(containerID: String, handles: AttachHandles) throws {
+        guard let (stdoutBroadcast, stderrBroadcast) = broadcastWriters[containerID] else {
+            logger.error("Broadcast writers not found for container", metadata: ["id": "\(containerID)"])
+            throw ContainerManagerError.containerNotFound(containerID)
+        }
+
+        logger.info("Subscribing attach handles to broadcast writers", metadata: ["id": "\(containerID)"])
+        stdoutBroadcast.addSubscriber(handles.stdout)
+        stderrBroadcast.addSubscriber(handles.stderr)
+    }
+
     // MARK: - Container Lifecycle
 
     /// Start a container
@@ -1646,28 +1705,20 @@ public actor ContainerManager {
             // Check for attach handles
             attachInfo = consumeAttachHandles(containerID: dockerID)
 
-            // Get log writers
-            guard let (stdoutLogWriter, stderrLogWriter) = logWriters[dockerID] else {
-                logger.error("Log writers not found", metadata: ["id": "\(dockerID)"])
+            // Get broadcast writers (already created during container creation)
+            guard let (stdoutBroadcast, stderrBroadcast) = broadcastWriters[dockerID] else {
+                logger.error("Broadcast writers not found", metadata: ["id": "\(dockerID)"])
                 throw ContainerManagerError.containerNotFound(id)
             }
 
-            // Create stdout/stderr writers (MultiWriter if attached, otherwise just log writers)
-            let stdoutWriter: Writer
-            let stderrWriter: Writer
-
+            // If attach handles exist, add them to broadcast writers
             if let attach = attachInfo {
-                // Use MultiWriter to send output to both logs AND attach handles
-                stdoutWriter = MultiWriter(writers: [stdoutLogWriter, attach.handles.stdout])
-                stderrWriter = MultiWriter(writers: [stderrLogWriter, attach.handles.stderr])
-                logger.info("Using MultiWriter for attached container", metadata: ["id": "\(dockerID)"])
-            } else {
-                // No attach - just use log writers
-                stdoutWriter = stdoutLogWriter
-                stderrWriter = stderrLogWriter
+                logger.info("Adding attach handles to broadcast writers for deferred container", metadata: ["id": "\(dockerID)"])
+                stdoutBroadcast.addSubscriber(attach.handles.stdout)
+                stderrBroadcast.addSubscriber(attach.handles.stderr)
             }
 
-            // Create the LinuxContainer using helper
+            // Create the LinuxContainer using helper with broadcast writers
             let container = try await createNativeContainer(
                 config: NativeContainerConfig(
                     dockerID: dockerID,
@@ -1678,8 +1729,8 @@ public actor ContainerManager {
                     workingDir: config.workingDir,
                     hostname: config.hostname,
                     tty: info.tty,
-                    stdoutWriter: stdoutWriter,
-                    stderrWriter: stderrWriter,
+                    stdoutWriter: stdoutBroadcast,
+                    stderrWriter: stderrBroadcast,
                     stdinReader: attachInfo?.handles.stdin,  // Include stdin if attached
                     mounts: config.mounts,
                     networkMode: info.hostConfig.networkMode,
@@ -1721,7 +1772,15 @@ public actor ContainerManager {
             if let container = nativeContainers[dockerID] {
                 // Container exists in framework - use it
                 nativeContainer = container
-                attachInfo = nil
+
+                // Check for attach handles and subscribe them to broadcast writers
+                // This allows dynamic attach without recreating the container
+                if let attach = consumeAttachHandles(containerID: dockerID) {
+                    try subscribeAttachToBroadcast(containerID: dockerID, handles: attach.handles)
+                    attachInfo = attach
+                } else {
+                    attachInfo = nil
+                }
 
                 // Start the container using Containerization API
                 // Containerization state machine: .stopped -> create() -> .created -> start() -> .started
@@ -1768,12 +1827,23 @@ public actor ContainerManager {
 
                 // Get log writers (create if they don't exist yet)
                 let (stdoutLogWriter, stderrLogWriter): (FileLogWriter, FileLogWriter)
+                let (stdoutBroadcast, stderrBroadcast): (BroadcastWriter, BroadcastWriter)
+
                 if let existing = logWriters[dockerID] {
                     (stdoutLogWriter, stderrLogWriter) = existing
                 } else {
                     let writers = try logManager.createLogWriters(dockerID: dockerID)
                     logWriters[dockerID] = writers
                     (stdoutLogWriter, stderrLogWriter) = writers
+                }
+
+                // Get or create broadcast writers
+                if let existing = broadcastWriters[dockerID] {
+                    (stdoutBroadcast, stderrBroadcast) = existing
+                } else {
+                    stdoutBroadcast = BroadcastWriter(initialSubscribers: [stdoutLogWriter])
+                    stderrBroadcast = BroadcastWriter(initialSubscribers: [stderrLogWriter])
+                    broadcastWriters[dockerID] = (stdoutBroadcast, stderrBroadcast)
                 }
 
                 // Parse volume mounts from persisted binds (includes both bind mounts and named volumes)
@@ -1784,7 +1854,7 @@ public actor ContainerManager {
                 let resolvedCommand: [String]? = info.command.isEmpty ? nil : info.command
                 let resolvedEntrypoint: [String]? = info.config.entrypoint
 
-                // Recreate the LinuxContainer with the persisted configuration
+                // Recreate the LinuxContainer with the persisted configuration using broadcast writers
                 let container = try await createNativeContainer(
                     config: NativeContainerConfig(
                         dockerID: dockerID,
@@ -1795,8 +1865,8 @@ public actor ContainerManager {
                         workingDir: info.workingDir,
                         hostname: info.config.hostname,
                         tty: info.tty,
-                        stdoutWriter: stdoutLogWriter,
-                        stderrWriter: stderrLogWriter,
+                        stdoutWriter: stdoutBroadcast,
+                        stderrWriter: stderrBroadcast,
                         stdinReader: nil,  // No stdin for recreated containers
                         mounts: recreatedMounts,
                         networkMode: info.hostConfig.networkMode,
@@ -2184,9 +2254,22 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Get the native container object
+        // If container is already stopped/exited, this is a no-op (idempotent stop)
+        // This handles containers loaded from database after daemon restart (no native container object)
+        if info.state == "exited" || info.state == "dead" || info.state == "created" {
+            logger.info("Container already stopped", metadata: [
+                "id": "\(dockerID)",
+                "state": "\(info.state)"
+            ])
+            return
+        }
+
+        // Get the native container object (must exist for running containers)
         guard let nativeContainer = nativeContainers[dockerID] else {
-            logger.error("Native container not found", metadata: ["id": "\(dockerID)"])
+            logger.error("Native container not found for running container", metadata: [
+                "id": "\(dockerID)",
+                "state": "\(info.state)"
+            ])
             throw ContainerManagerError.containerNotFound(id)
         }
 
@@ -3171,6 +3254,26 @@ public actor ContainerManager {
     /// Check if container is running (for log streaming)
     public func isContainerRunning(dockerID: String) async -> Bool {
         return containers[dockerID]?.state == "running"
+    }
+
+    /// Check if container should continue streaming logs
+    /// Returns true for non-terminal states (created, running, restarting, paused)
+    /// Returns false for terminal states (exited, dead, removing) or if container doesn't exist
+    public func shouldStreamLogs(dockerID: String) async -> Bool {
+        guard let state = containers[dockerID]?.state else {
+            return false  // Container doesn't exist
+        }
+
+        // Continue streaming for non-terminal states
+        switch state {
+        case "created", "running", "restarting", "paused":
+            return true
+        case "exited", "dead", "removing":
+            return false
+        default:
+            // Unknown state - assume non-terminal to be safe
+            return true
+        }
     }
 
     /// Get native container instance by ID (for exec operations)

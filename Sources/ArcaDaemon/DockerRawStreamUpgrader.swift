@@ -11,6 +11,7 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     private let logger: Logger
     private let execManager: ExecManager
     private let containerManager: ContainerBridge.ContainerManager
+    private let logManager: ContainerBridge.ContainerLogManager
 
     // Required property: supported upgrade protocols
     let supportedProtocol: String = "tcp"
@@ -18,9 +19,10 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     // Optional headers to include in upgrade response
     let requiredUpgradeHeaders: [String] = []
 
-    init(execManager: ExecManager, containerManager: ContainerBridge.ContainerManager, logger: Logger) {
+    init(execManager: ExecManager, containerManager: ContainerBridge.ContainerManager, logManager: ContainerBridge.ContainerLogManager, logger: Logger) {
         self.execManager = execManager
         self.containerManager = containerManager
+        self.logManager = logManager
         self.logger = logger
     }
 
@@ -86,6 +88,9 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
         let isExecAttach = path.contains("/exec/")
         let isContainerAttach = path.contains("/attach") && !isExecAttach
 
+        // Parse query parameters from URI
+        let queryParams = parseQueryParameters(from: upgradeRequest.uri)
+
         if isExecAttach {
             // Handle exec attach: /exec/{id}/start
             guard let execID = extractExecID(from: upgradeRequest.uri) else {
@@ -101,7 +106,28 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                 return context.eventLoop.makeFailedFuture(UpgradeError.invalidURI)
             }
             logger.debug("Attaching to container after upgrade", metadata: ["container_id": "\(containerID)"])
-            return upgradeForContainerAttach(context: context, containerID: containerID)
+
+            // Parse attach parameters - stdout/stderr/logs default to true (Docker behavior)
+            let stdout = QueryParameterValidator.parseBooleanDefaultTrue(queryParams["stdout"])
+            let stderr = QueryParameterValidator.parseBooleanDefaultTrue(queryParams["stderr"])
+            let stream = QueryParameterValidator.parseBoolean(queryParams["stream"])
+            let logs = QueryParameterValidator.parseBooleanDefaultTrue(queryParams["logs"])
+
+            logger.debug("Attach parameters", metadata: [
+                "stdout": "\(stdout)",
+                "stderr": "\(stderr)",
+                "stream": "\(stream)",
+                "logs": "\(logs)"
+            ])
+
+            return upgradeForContainerAttach(
+                context: context,
+                containerID: containerID,
+                stdout: stdout,
+                stderr: stderr,
+                stream: stream,
+                logs: logs
+            )
         } else {
             logger.error("Unknown attach type", metadata: ["uri": "\(upgradeRequest.uri)"])
             return context.eventLoop.makeFailedFuture(UpgradeError.invalidURI)
@@ -181,7 +207,14 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     }
 
     /// Handle HTTP upgrade for container attach
-    private func upgradeForContainerAttach(context: ChannelHandlerContext, containerID: String) -> EventLoopFuture<Void> {
+    private func upgradeForContainerAttach(
+        context: ChannelHandlerContext,
+        containerID: String,
+        stdout: Bool,
+        stderr: Bool,
+        stream: Bool,
+        logs: Bool
+    ) -> EventLoopFuture<Void> {
 
         // Extract eventLoop, channel, and pipeline before closures to avoid capturing non-Sendable context
         let eventLoop = context.eventLoop
@@ -225,7 +258,14 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
             // Register attach handles with ContainerManager and wait for container to exit
             Task {
                 do {
-                    try await self.attachToContainer(containerID: containerID, channel: channel, stdinReader: stdinReader)
+                    try await self.attachToContainer(
+                        containerID: containerID,
+                        channel: channel,
+                        stdinReader: stdinReader,
+                        stdout: stdout,
+                        stderr: stderr,
+                        logs: logs
+                    )
                     self.logger.debug("Container attach completed successfully", metadata: ["container_id": "\(containerID)"])
                     promise.succeed(())
                 } catch {
@@ -244,15 +284,31 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
     }
 
     /// Attach to container and wait for it to exit
-    private func attachToContainer(containerID: String, channel: Channel, stdinReader: ChannelReader) async throws {
-        logger.info("Attaching to container with raw stream", metadata: ["container_id": "\(containerID)"])
+    private func attachToContainer(
+        containerID: String,
+        channel: Channel,
+        stdinReader: ChannelReader,
+        stdout: Bool,
+        stderr: Bool,
+        logs: Bool
+    ) async throws {
+        logger.info("Attaching to container with raw stream", metadata: [
+            "container_id": "\(containerID)",
+            "stdout": "\(stdout)",
+            "stderr": "\(stderr)",
+            "logs": "\(logs)"
+        ])
 
         // Check if container is running with TTY
         guard let isTTY = await containerManager.getContainerTTY(id: containerID) else {
+            logger.error("Container not found when getting TTY", metadata: ["container_id": "\(containerID)"])
             throw DockerRawStreamUpgraderError.containerNotFound(containerID)
         }
 
+        logger.debug("Container TTY mode", metadata: ["container_id": "\(containerID)", "tty": "\(isTTY)"])
+
         // Create AsyncStreams for stdout/stderr from the container process
+        // CRITICAL: Do this FIRST to avoid race condition with container start
         let (stdoutStream, stdoutContinuation) = AsyncStream<Data>.makeStream()
         let (stderrStream, stderrContinuation) = AsyncStream<Data>.makeStream()
 
@@ -266,12 +322,10 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
             // TTY mode: Output is raw, no stream type headers
             stdoutWriter = RawWriter(continuation: stdoutContinuation)
             stderrWriter = RawWriter(continuation: stderrContinuation)
-            logger.debug("Using raw writers for TTY mode", metadata: ["container_id": "\(containerID)"])
         } else {
             // Non-TTY mode: Output is multiplexed with stream type headers
             stdoutWriter = StreamingWriter(continuation: stdoutContinuation, streamType: 1)
             stderrWriter = StreamingWriter(continuation: stderrContinuation, streamType: 2)
-            logger.debug("Using streaming writers for non-TTY mode", metadata: ["container_id": "\(containerID)"])
         }
 
         // Create a continuation to signal when the container exits
@@ -290,9 +344,11 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
             }
         )
 
-        // Register attach handles with ContainerManager
-        // The container start logic will use these handles
+        // Register attach handles with ContainerManager IMMEDIATELY
+        // CRITICAL: Do this before reading historical logs to avoid race with container start
         await containerManager.registerAttach(containerID: containerID, handles: handles, exitSignal: exitContinuation.continuation)
+
+        logger.debug("Attach handles registered, starting forward task", metadata: ["container_id": "\(containerID)"])
 
         // Start task to forward stream data to the raw TCP channel
         let forwardTask = Task {
@@ -355,10 +411,47 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
             }
         }
 
+        // Now that attach handles are registered and forward task is running,
+        // send historical logs if requested (this can be slow, but won't block container start)
+        if logs {
+            logger.debug("Reading historical logs for attach", metadata: ["container_id": "\(containerID)"])
+
+            // Get log paths for this container
+            if let logPaths = logManager.getLogPaths(dockerID: containerID) {
+                do {
+                    // Read and format historical logs
+                    let historicalLogs = try retrieveHistoricalLogs(
+                        logPaths: logPaths,
+                        stdout: stdout,
+                        stderr: stderr
+                    )
+
+                    // Send historical logs to channel
+                    if !historicalLogs.isEmpty {
+                        try await writeToChannel(channel: channel, data: historicalLogs)
+                        logger.debug("Sent historical logs", metadata: [
+                            "container_id": "\(containerID)",
+                            "bytes": "\(historicalLogs.count)"
+                        ])
+                    } else {
+                        logger.debug("No historical logs to send", metadata: ["container_id": "\(containerID)"])
+                    }
+                } catch {
+                    logger.warning("Failed to read historical logs (non-fatal)", metadata: [
+                        "container_id": "\(containerID)",
+                        "error": "\(error)"
+                    ])
+                    // Continue with live attach even if historical logs fail
+                }
+            } else {
+                logger.debug("No log paths registered for container", metadata: ["container_id": "\(containerID)"])
+            }
+        }
+
         // Wait for container to exit (the start logic will call the waitForExit closure)
         try await handles.waitForExit()
 
-        logger.info("Container exited", metadata: ["container_id": "\(containerID)"])
+        logger.debug("Container exited, waiting for forward task", metadata: ["container_id": "\(containerID)"])
 
         // Wait for all data to be forwarded
         await forwardTask.value
@@ -585,6 +678,134 @@ final class DockerRawStreamUpgrader: HTTPServerProtocolUpgrader, Sendable {
                 }
             }
         }
+    }
+
+    /// Parse query parameters from URI
+    private func parseQueryParameters(from uri: String) -> [String: String] {
+        guard let queryStart = uri.firstIndex(of: "?") else {
+            return [:]
+        }
+
+        let queryString = uri[uri.index(after: queryStart)...]
+        var params: [String: String] = [:]
+
+        for component in queryString.split(separator: "&") {
+            let parts = component.split(separator: "=", maxSplits: 1)
+            if parts.count == 2 {
+                let key = String(parts[0])
+                let value = String(parts[1])
+                params[key] = value
+            } else if parts.count == 1 {
+                // Parameter without value (e.g., "?stream")
+                let key = String(parts[0])
+                params[key] = "1"
+            }
+        }
+
+        return params
+    }
+
+    /// Retrieve and format historical logs from log files
+    /// Returns Docker multiplexed stream format data
+    private func retrieveHistoricalLogs(
+        logPaths: ContainerBridge.ContainerLogManager.LogPaths,
+        stdout: Bool,
+        stderr: Bool
+    ) throws -> Data {
+        var allLogs: [LogEntry] = []
+
+        // Helper to parse log files
+        func parseLogs(from path: URL, forStream stream: String) throws {
+            guard FileManager.default.fileExists(atPath: path.path) else {
+                return
+            }
+
+            let content = try String(contentsOf: path, encoding: .utf8)
+            let lines = content.components(separatedBy: .newlines)
+
+            for line in lines {
+                guard !line.isEmpty else { continue }
+
+                // Parse JSON log entry
+                guard let data = line.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let logStream = json["stream"] as? String,
+                      let logMessage = json["log"] as? String,
+                      let timeString = json["time"] as? String else {
+                    continue
+                }
+
+                // Parse timestamp
+                let formatter = ISO8601DateFormatter()
+                guard let timestamp = formatter.date(from: timeString) else {
+                    continue
+                }
+
+                allLogs.append(LogEntry(
+                    stream: logStream,
+                    message: logMessage,
+                    timestamp: timestamp
+                ))
+            }
+        }
+
+        // Read from stdout log file if requested
+        if stdout {
+            try parseLogs(from: logPaths.stdoutPath, forStream: "stdout")
+        }
+
+        // Read from stderr log file if requested
+        if stderr {
+            try parseLogs(from: logPaths.stderrPath, forStream: "stderr")
+        }
+
+        // Sort by timestamp (logs from different streams need to be interleaved chronologically)
+        allLogs.sort { $0.timestamp < $1.timestamp }
+
+        // Format as Docker multiplexed stream
+        return formatMultiplexedStream(logs: allLogs)
+    }
+
+    /// Format log entries as Docker multiplexed stream
+    /// Docker format: [stream_type (1 byte)][padding (3 bytes)][size (4 bytes big-endian)][payload]
+    /// Stream types: 0=stdin, 1=stdout, 2=stderr
+    private func formatMultiplexedStream(logs: [LogEntry]) -> Data {
+        var result = Data()
+
+        for entry in logs {
+            // Determine stream type
+            let streamType: UInt8 = entry.stream == "stdout" ? 1 : 2
+
+            // Convert message to data
+            guard let messageData = entry.message.data(using: .utf8) else {
+                continue
+            }
+
+            // Build frame header: [stream_type][padding][size]
+            var header = Data()
+            header.append(streamType)                    // 1 byte: stream type
+            header.append(contentsOf: [0, 0, 0])        // 3 bytes: padding
+
+            // 4 bytes: size (big-endian UInt32)
+            let size = UInt32(messageData.count)
+            header.append(UInt8((size >> 24) & 0xFF))
+            header.append(UInt8((size >> 16) & 0xFF))
+            header.append(UInt8((size >> 8) & 0xFF))
+            header.append(UInt8(size & 0xFF))
+
+            // Append header + payload
+            result.append(header)
+            result.append(messageData)
+        }
+
+        return result
+    }
+
+    /// Log entry structure
+    private struct LogEntry {
+        let stream: String
+        let message: String
+        let timestamp: Date
     }
 
     enum UpgradeError: Error {

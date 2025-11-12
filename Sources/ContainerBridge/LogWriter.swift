@@ -103,7 +103,8 @@ public final class FileLogWriter: Writer, @unchecked Sendable {
 }
 
 /// Container log manager - tracks log file locations for containers
-public final class ContainerLogManager {
+/// @unchecked Sendable: Safe because logPaths dictionary is protected by NSLock
+public final class ContainerLogManager: @unchecked Sendable {
     private let logger: Logger
     private let baseLogDir: URL
     private var logPaths: [String: LogPaths] = [:]  // Docker ID -> LogPaths
@@ -166,6 +167,30 @@ public final class ContainerLogManager {
         lock.lock()
         defer { lock.unlock() }
         return logPaths[dockerID]
+    }
+
+    /// Register existing log paths for a container (used during daemon restart)
+    /// This registers paths without creating new log writers (which would truncate files)
+    public func registerExistingLogPaths(
+        dockerID: String,
+        stdoutPath: URL,
+        stderrPath: URL,
+        combinedPath: URL
+    ) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        logPaths[dockerID] = LogPaths(
+            stdoutPath: stdoutPath,
+            stderrPath: stderrPath,
+            combinedPath: combinedPath
+        )
+
+        logger.debug("Registered existing log paths", metadata: [
+            "docker_id": "\(dockerID)",
+            "stdout": "\(stdoutPath.path)",
+            "stderr": "\(stderrPath.path)"
+        ])
     }
 
     /// Remove log files for a container

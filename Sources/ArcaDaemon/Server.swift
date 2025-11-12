@@ -15,6 +15,7 @@ public final class ArcaServer: @unchecked Sendable {
     private let router: Router
     private let execManager: ExecManager
     private let containerManager: ContainerManager
+    private let logManager: ContainerBridge.ContainerLogManager
     private let logger: Logger
 
     private var group: MultiThreadedEventLoopGroup?
@@ -25,6 +26,7 @@ public final class ArcaServer: @unchecked Sendable {
         self.router = router
         self.execManager = execManager
         self.containerManager = containerManager
+        self.logManager = containerManager.logManager
         self.logger = logger
     }
 
@@ -48,7 +50,7 @@ public final class ArcaServer: @unchecked Sendable {
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 // Create Docker raw stream upgrader for exec/attach operations
-                let dockerUpgrader = DockerRawStreamUpgrader(execManager: self.execManager, containerManager: self.containerManager, logger: self.logger)
+                let dockerUpgrader = DockerRawStreamUpgrader(execManager: self.execManager, containerManager: self.containerManager, logManager: self.logManager, logger: self.logger)
 
                 // Configure HTTP pipeline with upgrade support
                 return channel.pipeline.configureHTTPServerPipeline(

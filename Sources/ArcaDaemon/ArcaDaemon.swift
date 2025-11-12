@@ -831,16 +831,28 @@ public final class ArcaDaemon: @unchecked Sendable {
                 return .standard(HTTPResponse.badRequest("Missing container ID"))
             }
 
-            let stdout = request.queryParameters["stdout"] == "1"
-            let stderr = request.queryParameters["stderr"] == "1"
-            let stream = request.queryParameters["stream"] == "1"
+            // Parse parameters - stdout/stderr/logs default to true if not specified (matches Docker behavior)
+            let stdout = QueryParameterValidator.parseBooleanDefaultTrue(request.queryParameters["stdout"])
+            let stderr = QueryParameterValidator.parseBooleanDefaultTrue(request.queryParameters["stderr"])
+            let stream = QueryParameterValidator.parseBoolean(request.queryParameters["stream"])
+            // logs defaults to TRUE - include historical logs unless explicitly disabled with logs=0
+            let logs = QueryParameterValidator.parseBooleanDefaultTrue(request.queryParameters["logs"])
+
+            // If logs=1 (or not specified), send all historical logs
+            // If logs=0 explicitly, skip historical logs (only send new output)
+            // If stream=1, follow for new output after historical logs
+            let sinceTimestamp: Int? = if !logs {
+                Int(Date().timeIntervalSince1970)  // Only new logs from now (when logs=0)
+            } else {
+                nil  // All historical logs (default behavior)
+            }
 
             return await containerHandlers.handleLogsContainerStreaming(
                 idOrName: id,
                 stdout: stdout,
                 stderr: stderr,
                 follow: stream,
-                since: nil as Int?,
+                since: sinceTimestamp,
                 until: nil as Int?,
                 timestamps: false,
                 tail: nil as String?
