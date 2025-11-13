@@ -154,10 +154,17 @@ swift package clean            # Swift-only clean
 
 ### One-Time Setup: Building Custom vminit with Networking Support
 
-**Critical prerequisite**: Arca uses a custom fork of Apple's vminitd with extensions for networking. The fork is managed as a git submodule.
+**Critical prerequisite**: Arca uses a custom fork of Apple's containerization repo with extensions for networking.
+
+**Submodule structure**:
+- `containerization/` → `git@github.com:Liquescent-Development/arca-vminitd.git`
+- This is a complete fork of Apple's containerization repo
+- Used both as a git submodule AND as a Swift Package dependency (`.package(path: "containerization")`)
+- Contains Arca-specific extensions in `vminitd/extensions/`
+- Allows tracking upstream Apple changes while adding our networking features
 
 ```bash
-# 1. Initialize vminitd submodule (one-time)
+# 1. Initialize containerization submodule (one-time)
 git submodule update --init --recursive
 
 # 2. Install Swift Static Linux SDK (one-time, ~5 minutes)
@@ -172,8 +179,7 @@ make vminit
 This creates `vminit:latest` OCI image at `~/.arca/vminit/` containing:
 - `/sbin/vminitd` - Apple's init system (PID 1) with Arca extensions
 - `/sbin/vmexec` - Apple's exec helper
-- `/usr/local/bin/vlan-service` - VLAN configuration service (vsock:50051) for bridge networks
-- `/usr/local/bin/arca-tap-forwarder` - TAP forwarder for overlay networks
+- `/usr/local/bin/arca-wireguard-service` - WireGuard management service (vsock:51820)
 
 **Build time:** ~5 minutes first time (includes Swift Static Linux SDK setup), ~2-3 minutes after that
 
@@ -184,11 +190,6 @@ This creates `vminit:latest` OCI image at `~/.arca/vminit/` containing:
 - Works with distroless containers (e.g., gcr.io/distroless/static)
 
 **Important**: The custom vminit is used transparently by ALL containers.
-
-**vminitd Submodule**: The fork is at `vminitd/` (git submodule → `github.com/Liquescent-Development/arca-vminitd`), which is a fork of Apple's containerization repo. This allows us to:
-- Stay in sync with upstream Apple changes
-- Add Arca-specific extensions in `vminitd/vminitd/extensions/`
-- Maintain separate git history for vminitd changes
 
 **Detailed build guide**: See [Documentation/VMINIT_BUILD.md](Documentation/VMINIT_BUILD.md) for troubleshooting and development workflow.
 
