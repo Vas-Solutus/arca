@@ -82,6 +82,12 @@ verify-entitlements: $(BUILD_DIR)/$(BINARY)
 run: codesign
 	@echo "Starting Arca daemon (debug)..."
 	@rm -f /tmp/arca.sock
+	@$(BUILD_DIR)/$(BINARY) daemon start --socket-path /tmp/arca.sock
+
+# Run the daemon in foreground mode (debug build)
+run-debug: codesign
+	@echo "Starting Arca daemon (debug)..."
+	@rm -f /tmp/arca.sock
 	@$(BUILD_DIR)/$(BINARY) daemon start --socket-path /tmp/arca.sock --log-level debug
 
 # Run the daemon in foreground mode (release build)
