@@ -91,6 +91,36 @@ else
     echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
 fi
 
+# Generate Swift code for OverlayFS Service (containerization/vminitd/extensions/overlayfs-mounter/proto/overlayfs.proto)
+echo ""
+echo "→ Generating Swift code for OverlayFS Service..."
+OVERLAYFS_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/overlayfs-mounter/proto/overlayfs.proto"
+if [ -f "$OVERLAYFS_PROTO" ]; then
+    protoc "$OVERLAYFS_PROTO" \
+        --proto_path="$(dirname "$OVERLAYFS_PROTO")" \
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+    echo "  ✓ Generated Swift code: overlayfs.{pb,grpc}.swift"
+else
+    echo "  ⚠ Skipping - proto file not found: $OVERLAYFS_PROTO"
+fi
+
+# Generate Go code for OverlayFS Service
+echo ""
+echo "→ Generating Go code for OverlayFS Service..."
+OVERLAYFS_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/overlayfs-mounter/proto"
+if [ -f "$OVERLAYFS_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$OVERLAYFS_PROTO" \
+        --proto_path="$(dirname "$OVERLAYFS_PROTO")" \
+        --go_out="$OVERLAYFS_GO_DIR" \
+        --go_opt=paths=source_relative \
+        --go-grpc_out="$OVERLAYFS_GO_DIR" \
+        --go-grpc_opt=paths=source_relative
+    echo "  ✓ Generated Go code in $OVERLAYFS_GO_DIR"
+else
+    echo "  ⚠ Skipping - proto file or Go plugins not found"
+fi
+
 echo ""
 echo "========================================"
 echo "✓ gRPC code generation complete"
