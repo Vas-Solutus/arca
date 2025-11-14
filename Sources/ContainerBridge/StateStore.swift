@@ -1,6 +1,7 @@
 import Foundation
 import SQLite
 import Logging
+import Containerization
 
 /// StateStore manages persistent container and network state in SQLite
 /// All operations are atomic and thread-safe via actor isolation
@@ -1147,6 +1148,30 @@ public actor StateStore {
                 "digest": "\(digest.prefix(19))..."
             ])
         }
+    }
+}
+
+// MARK: - LayerCacheRecorder Protocol Conformance
+
+extension StateStore: Containerization.LayerCacheRecorder {
+    public nonisolated func recordLayer(digest: String, path: String, size: Int64) async throws {
+        let now = Date()
+        try db.run(layerCache.insert(or: .replace,
+            layerDigest <- digest,
+            layerPath <- path,
+            layerSize <- size,
+            layerCreatedAt <- now.iso8601String,
+            layerLastUsed <- now.iso8601String,
+            layerRefCount <- 0
+        ))
+    }
+
+    public nonisolated func incrementLayerRefCount(digest: String) async throws {
+        let layer = layerCache.filter(layerDigest == digest)
+        try db.run(layer.update(
+            layerRefCount += 1,
+            layerLastUsed <- Date().iso8601String
+        ))
     }
 }
 
