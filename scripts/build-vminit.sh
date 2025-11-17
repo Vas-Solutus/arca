@@ -76,30 +76,30 @@ fi
 
 echo "  ✓ WireGuard service built: arca-wireguard-service"
 
-# Build OverlayFS service (Go binary cross-compiled to Linux)
+# Build Filesystem service (Go binary cross-compiled to Linux)
 echo ""
-echo "→ Building OverlayFS service (Go → Linux ARM64)..."
-cd "$VMINITD_DIR/vminitd/extensions/overlayfs-mounter"
+echo "→ Building Filesystem service (Go → Linux ARM64)..."
+cd "$VMINITD_DIR/vminitd/extensions/filesystem-service"
 
 if [ ! -f build.sh ]; then
-    echo "ERROR: overlayfs-mounter/build.sh not found"
+    echo "ERROR: filesystem-service/build.sh not found"
     exit 1
 fi
 
 # Generate protobuf code first if needed
-if [ ! -f proto/overlayfs.pb.go ]; then
+if [ ! -f proto/filesystem.pb.go ]; then
     echo "  Generating protobuf code..."
     make gen-grpc  # Assuming we'll add this target or it exists
 fi
 
 ./build.sh
 
-if [ ! -f arca-overlayfs-service ]; then
-    echo "ERROR: arca-overlayfs-service binary not built"
+if [ ! -f arca-filesystem-service ]; then
+    echo "ERROR: arca-filesystem-service binary not built"
     exit 1
 fi
 
-echo "  ✓ OverlayFS service built: arca-overlayfs-service"
+echo "  ✓ Filesystem service built: arca-filesystem-service"
 
 # WireGuard tools (wg command) no longer needed - using netlink API
 # Build vminitd (Swift cross-compiled to Linux)
@@ -154,7 +154,7 @@ echo "  Using cctl to create rootfs with Swift runtime..."
     --vminitd "$VMINITD_BINARY" \
     --vmexec "$VMEXEC_BINARY" \
     --add-file "$VMINITD_DIR/vminitd/extensions/wireguard-service/arca-wireguard-service:/sbin/arca-wireguard-service" \
-    --add-file "$VMINITD_DIR/vminitd/extensions/overlayfs-mounter/arca-overlayfs-service:/sbin/arca-overlayfs-service" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/filesystem-service/arca-filesystem-service:/sbin/arca-filesystem-service" \
     --image arca-vminit:latest \
     --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
     "$ROOTFS_TAR"
@@ -278,7 +278,7 @@ echo "Contents:"
 echo "  /sbin/vminitd                  - Init system (PID 1)"
 echo "  /sbin/vmexec                   - Exec helper"
 echo "  /sbin/arca-wireguard-service   - WireGuard network service (vsock:51820) with integrated DNS (127.0.0.11:53)"
-echo "  /sbin/arca-overlayfs-service   - OverlayFS mounting service (vsock:51821)"
+echo "  /sbin/arca-filesystem-service  - Filesystem operations service (vsock:51821)"
 echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
 echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."
