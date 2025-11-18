@@ -28,6 +28,9 @@ public actor ContainerManager {
     private var logWriters: [String: (FileLogWriter, FileLogWriter)] = [:]  // Docker ID -> (stdout, stderr)
     private var broadcastWriters: [String: (BroadcastWriter, BroadcastWriter)] = [:]  // Docker ID -> (stdout, stderr) broadcast writers for dynamic attach
 
+    // Filesystem clients for container filesystem operations (docker diff, archive ops)
+    private var filesystemClients: [String: FilesystemClient] = [:]  // Docker ID -> FilesystemClient
+
     // Background monitoring tasks
     private var monitoringTasks: [String: Task<Void, Never>] = [:]  // Docker ID -> Monitoring Task
 
@@ -59,6 +62,9 @@ public actor ContainerManager {
 
     // State persistence
     private let stateStore: StateStore
+
+    // Layer unpacker for OverlayFS
+    private var overlayUnpacker: OverlayFSUnpacker?
 
     /// Configuration for a container whose .create() was deferred
     private struct DeferredContainerConfig {
@@ -112,6 +118,7 @@ public actor ContainerManager {
         let stderrWriter: Writer
         let stdinReader: ChannelReader?
         let mounts: [Containerization.Mount]
+        let overlayConfig: Containerization.OverlayFSConfig?  // OverlayFS configuration for layered images
         let networkMode: String?  // "vmnet" or "bridge"/nil
         let labels: [String: String]  // Container labels for configuration
 
@@ -233,6 +240,14 @@ public actor ContainerManager {
             kernel: kernel,
             initfsReference: "arca-vminit:latest",  // Custom vminit loaded and tagged by ArcaDaemon
             network: try Containerization.ContainerManager.VmnetNetwork()
+        )
+
+        // Initialize OverlayFS unpacker for parallel layer caching
+        let layerCachePath = NSString(string: "~/.arca/layers").expandingTildeInPath
+        overlayUnpacker = OverlayFSUnpacker(
+            layerCachePath: URL(fileURLWithPath: layerCachePath),
+            stateStore: stateStore,
+            logger: logger
         )
 
         logger.info("ContainerManager initialized successfully")
@@ -893,12 +908,120 @@ public actor ContainerManager {
             capDrop: config.capDrop
         )
 
-        logger.debug("⏱️ Calling manager.create()", metadata: ["docker_id": "\(dockerID)"])
+        // Create container directory path (needed for both unpacking and temp rootfs)
+        // Use default Apple containerization store path
+        let appleStorePath = NSString(string: "~/Library/Application Support/com.apple.containerization").expandingTildeInPath
+        let containerRoot = URL(fileURLWithPath: appleStorePath).appendingPathComponent("containers")
+        let containerPath = containerRoot.appendingPathComponent(dockerID)
+
+        // Ensure container directory exists (base manager expects this)
+        try FileManager.default.createDirectory(at: containerPath, withIntermediateDirectories: true)
+
+        // Unpack image layers with OverlayFS (if not already provided)
+        let effectiveOverlayConfig: Containerization.OverlayFSConfig
+        if let providedConfig = config.overlayConfig {
+            // Config already provided (e.g., from recreateContainerFromState)
+            effectiveOverlayConfig = providedConfig
+            logger.debug("Using provided OverlayFS config", metadata: [
+                "docker_id": "\(dockerID)",
+                "layers": "\(providedConfig.lowerLayers.count)"
+            ])
+        } else {
+            // Unpack image using OverlayFS layer cache
+            logger.debug("⏱️ Unpacking image with OverlayFS", metadata: ["docker_id": "\(dockerID)"])
+            let unpackStart = Date()
+
+            guard let unpacker = overlayUnpacker else {
+                throw ContainerManagerError.notInitialized
+            }
+
+            effectiveOverlayConfig = try await unpacker.unpack(
+                config.image,
+                for: imagePlatform,
+                at: containerPath
+            )
+
+            let unpackDuration = Date().timeIntervalSince(unpackStart)
+            logger.info("⏱️ Image unpacked with OverlayFS", metadata: [
+                "docker_id": "\(dockerID)",
+                "layers": "\(effectiveOverlayConfig.lowerLayers.count)",
+                "duration_seconds": "\(String(format: "%.2f", unpackDuration))"
+            ])
+        }
+
+        // Create writable filesystem for OverlayFS upper/work directories
+        // This is a sparse EXT4 filesystem that will be mounted as /dev/vdc in the guest
+        let writablePath = containerPath.appendingPathComponent("writable.ext4")
+        let mounter = OverlayFSMounter(logger: logger)
+
+        if !FileManager.default.fileExists(atPath: writablePath.path) {
+            try mounter.createWritableFilesystem(at: writablePath.path, sizeMB: 10240)
+            logger.info("Created writable filesystem", metadata: [
+                "docker_id": "\(dockerID)",
+                "path": "\(writablePath.path)"
+            ])
+        } else {
+            logger.debug("Writable filesystem already exists", metadata: [
+                "docker_id": "\(dockerID)",
+                "path": "\(writablePath.path)"
+            ])
+        }
+
+        // Build VZ mounts from OverlayFS configuration
+        // This creates:
+        // - Bind mount from `/` to container rootfs path (FIRST mount - critical!)
+        // - Writable block device for upper/work directories (/dev/vdc)
+        // - Block device mounts for each layer (read-only EXT4, /dev/vdd onwards)
+        let overlayMounts = mounter.buildMounts(
+            containerID: dockerID,
+            overlayConfig: effectiveOverlayConfig,
+            writablePath: writablePath.path,
+            additionalMounts: []  // Will be added in configuration closure
+        )
+        logger.debug("Built OverlayFS mounts", metadata: [
+            "docker_id": "\(dockerID)",
+            "overlay_mounts": "\(overlayMounts.count)"
+        ])
+
+        // Log layer paths for debugging
+        logger.info("OverlayFS layer paths:", metadata: [
+            "docker_id": "\(dockerID)",
+            "layer_count": "\(effectiveOverlayConfig.lowerLayers.count)",
+            "first_layer": "\(effectiveOverlayConfig.lowerLayers.first?.path ?? "none")",
+            "upper": "\(effectiveOverlayConfig.upperDir.path)",
+            "work": "\(effectiveOverlayConfig.workDir.path)"
+        ])
+
+        // Verify first layer file exists
+        if let firstLayer = effectiveOverlayConfig.lowerLayers.first {
+            let exists = FileManager.default.fileExists(atPath: firstLayer.path)
+            logger.info("First layer file check:", metadata: [
+                "docker_id": "\(dockerID)",
+                "path": "\(firstLayer.path)",
+                "exists": "\(exists)"
+            ])
+        }
+
+        // Extract rootfs mount (the bind mount) and remaining mounts from overlayMounts
+        // The FIRST mount in overlayMounts is the bind mount from `/` to container rootfs path
+        // This MUST be passed as the `rootfs` parameter to manager.create()
+        guard let rootfsMount = overlayMounts.first else {
+            throw ContainerManagerError.invalidConfiguration("No rootfs mount in overlayMounts")
+        }
+        let additionalMounts = Array(overlayMounts.dropFirst())
+
+        logger.debug("⏱️ Calling manager.create() with bind mount rootfs", metadata: [
+            "docker_id": "\(dockerID)",
+            "rootfs_type": "\(rootfsMount.type)",
+            "rootfs_source": "\(rootfsMount.source)",
+            "rootfs_destination": "\(rootfsMount.destination)",
+            "additional_mounts": "\(additionalMounts.count)"
+        ])
         let managerCreateStart = Date()
         let container = try await manager.create(
             dockerID,
             image: config.image,
-            rootfsSizeInBytes: 8 * 1024 * 1024 * 1024  // 8 GB
+            rootfs: rootfsMount
         ) { @Sendable containerConfig in
             let closureStartTime = Date()
             configLogger.debug("⏱️ Configuration closure started", metadata: [
@@ -1025,6 +1148,16 @@ public actor ContainerManager {
             if let stdin = stdinReader {
                 containerConfig.process.stdin = stdin
             }
+
+            // Configure OverlayFS mounts (block devices + VirtioFS shares)
+            // These mounts provide the layer stack that will be mounted as overlay in guest
+            // Add additional block device mounts (writable + layers)
+            // The rootfs bind mount was already passed as the `rootfs` parameter
+            containerConfig.mounts.append(contentsOf: additionalMounts)
+            configLogger.info("Configured OverlayFS block device mounts", metadata: [
+                "docker_id": "\(dockerID)",
+                "block_device_count": "\(additionalMounts.count)"
+            ])
 
             // Configure volume mounts (VirtioFS directory shares)
             // Append to existing mounts (don't replace default system mounts like /proc, /sys, etc.)
@@ -1194,6 +1327,9 @@ public actor ContainerManager {
             "docker_id": "\(dockerID)",
             "duration_seconds": "\(String(format: "%.2f", containerCreateDuration))"
         ])
+
+        // OverlayFS is automatically mounted by vminitd during boot if layer block devices are detected
+        // No host-side intervention needed - vminitd handles its own filesystem setup
 
         return container
     }
@@ -1463,6 +1599,7 @@ public actor ContainerManager {
                     stderrWriter: stderrBroadcast,
                     stdinReader: nil,  // Not attached
                     mounts: mounts,
+                    overlayConfig: nil,  // Will be unpacked in createNativeContainer
                     networkMode: networkMode,
                     labels: labels ?? [:],
                     memory: memory,
@@ -1557,14 +1694,6 @@ public actor ContainerManager {
 
         // Persist container state
         try await persistContainerState(dockerID: dockerID, info: containerInfo)
-
-        // Capture filesystem baseline for container diff (Phase 6 - Task 6.4)
-        // This must be done AFTER container is persisted to database (foreign key constraint)
-        // and AFTER container.create() completes (so rootfs.ext4 is fully initialized)
-        // Only capture baseline for non-deferred containers (deferred baseline captured after start)
-        if !shouldDeferCreate {
-            try await captureFilesystemBaseline(dockerID: dockerID)
-        }
 
         // Track volume mounts in StateStore
         try await trackVolumeMounts(
@@ -1733,6 +1862,7 @@ public actor ContainerManager {
                     stderrWriter: stderrBroadcast,
                     stdinReader: attachInfo?.handles.stdin,  // Include stdin if attached
                     mounts: config.mounts,
+                    overlayConfig: nil,  // Will be unpacked in createNativeContainer
                     networkMode: info.hostConfig.networkMode,
                     labels: info.config.labels,
                     // Memory Limits (Phase 5 - Task 5.1)
@@ -1764,9 +1894,6 @@ public actor ContainerManager {
             // Update needsCreate flag
             info.needsCreate = false
 
-            // Capture filesystem baseline for deferred containers (Phase 6 - Task 6.4)
-            // Now that the native container is created, capture the baseline
-            try await captureFilesystemBaseline(dockerID: dockerID)
         } else {
             // Container should already be created - check if it exists in framework
             if let container = nativeContainers[dockerID] {
@@ -1869,6 +1996,7 @@ public actor ContainerManager {
                         stderrWriter: stderrBroadcast,
                         stdinReader: nil,  // No stdin for recreated containers
                         mounts: recreatedMounts,
+                        overlayConfig: nil,  // TODO: Wire up from OverlayFSUnpacker (Phase 1)
                         networkMode: info.hostConfig.networkMode,
                         labels: info.config.labels,
                         // Memory Limits (Phase 5 - Task 5.1)
@@ -1912,6 +2040,15 @@ public actor ContainerManager {
             "current_state": "\(info.state)"
         ])
         try await nativeContainer.start()
+
+        // Create FilesystemClient for container filesystem operations (diff, archive)
+        let filesystemClient = FilesystemClient(
+            containerID: dockerID,
+            container: nativeContainer,
+            logger: logger
+        )
+        filesystemClients[dockerID] = filesystemClient
+        logger.debug("Created FilesystemClient", metadata: ["container": "\(dockerID)"])
 
         // Update state
         info.state = "running"
@@ -3012,6 +3149,10 @@ public actor ContainerManager {
             await networkManager.cleanupStoppedContainer(containerID: dockerID)
         }
 
+        // Clean up FilesystemClient
+        filesystemClients.removeValue(forKey: dockerID)
+        logger.debug("Cleaned up FilesystemClient", metadata: ["container": "\(dockerID)"])
+
         // Persist container state (not stopped by user - this was a natural exit)
         do {
             try await persistContainerState(dockerID: dockerID, info: containerInfo, stoppedByUser: false)
@@ -3589,167 +3730,71 @@ public actor ContainerManager {
             .appendingPathComponent("rootfs.ext4")
     }
 
-    /// Enumerate all files in an EXT4 filesystem using Apple's EXT4Reader
-    /// Returns array of (path, type, size, mtime) tuples
-    /// - Parameter ext4Path: Path to the EXT4 disk image file
-    private func enumerateEXT4Filesystem(_ ext4Path: URL) throws -> [(path: String, type: String, size: Int64, mtime: Int64)] {
-        // Open EXT4 filesystem using Apple's reader
-        let reader = try ContainerizationEXT4.EXT4.EXT4Reader(blockDevice: SystemPackage.FilePath(ext4Path.path))
-
-        // Use our FilesystemEnumerator wrapper to enumerate all files
-        let enumerator = ContainerizationEXT4.EXT4.FilesystemEnumerator(reader: reader)
-        let fileInfos = try enumerator.enumerateFilesystem()
-
-        // Convert FileInfo structs to tuples
-        return fileInfos
-            .filter { $0.path != "." && $0.path != "/" }  // Skip root directory
-            .map { (path: $0.path, type: $0.type, size: $0.size, mtime: $0.mtime) }
-    }
-
-    /// Capture filesystem baseline for a container by reading its EXT4 disk
-    /// This is called after container creation to establish the initial state
-    private func captureFilesystemBaseline(dockerID: String) async throws {
-        logger.info("Capturing filesystem baseline using EXT4Reader", metadata: ["container": "\(dockerID)"])
-
-        guard let rootfsPath = getRootfsPath(dockerID: dockerID) else {
-            logger.warning("Cannot determine rootfs path", metadata: ["container": "\(dockerID)"])
-            return
-        }
-
-        // Verify rootfs exists
-        guard FileManager.default.fileExists(atPath: rootfsPath.path) else {
-            logger.warning("Rootfs file does not exist", metadata: [
-                "container": "\(dockerID)",
-                "path": "\(rootfsPath.path)"
-            ])
-            return
-        }
-
-        // Enumerate files using EXT4Reader
-        let files = try enumerateEXT4Filesystem(rootfsPath)
-
-        logger.info("Filesystem baseline captured", metadata: [
-            "container": "\(dockerID)",
-            "files": "\(files.count)"
-        ])
-
-        // Save baseline to database
-        do {
-            try await stateStore.saveFilesystemBaseline(containerID: dockerID, files: files)
-            logger.debug("Baseline save completed successfully", metadata: [
-                "container": "\(dockerID)",
-                "files": "\(files.count)"
-            ])
-        } catch {
-            logger.error("Failed to save filesystem baseline", metadata: [
-                "container": "\(dockerID)",
-                "error": "\(error)"
-            ])
-            throw error
-        }
-    }
-
-    /// Get filesystem changes for a container by comparing current EXT4 state to baseline
+    /// Get filesystem changes for a container using OverlayFS upperdir enumeration
+    /// Much faster than full filesystem enumeration - only reads upperdir
     public func getContainerChanges(id: String) async throws -> [FilesystemChange] {
         // Resolve name or ID to Docker ID
         guard let dockerID = resolveContainerID(id) else {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        logger.info("Getting filesystem changes using EXT4Reader", metadata: ["container": "\(dockerID)"])
+        logger.info("Getting filesystem changes via OverlayFS upperdir", metadata: ["container": "\(dockerID)"])
 
-        // Check if container is running - if so, sync filesystem
-        // sync() flushes all cached writes to disk, ensuring accurate filesystem reads
-        let wasRunning = await isContainerRunning(dockerID: dockerID)
-        if wasRunning {
-            logger.debug("Container is running, syncing filesystem", metadata: ["container": "\(dockerID)"])
-
-            // Flush filesystem buffers by calling sync via WireGuard service
-            // This works universally (including distroless) since vminitd has the RPC
-            if let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID) {
-                do {
-                    // Call SyncFilesystem RPC
-                    try await wireguardClient.syncFilesystem()
-                    logger.debug("Filesystem buffers synced", metadata: ["container": "\(dockerID)"])
-                } catch {
-                    // Log warning but continue - may work anyway
-                    logger.warning("Failed to sync filesystem", metadata: [
-                        "container": "\(dockerID)",
-                        "error": "\(error)"
-                    ])
-                }
-            } else {
-                logger.warning("No WireGuard client available for sync", metadata: ["container": "\(dockerID)"])
-            }
+        // Check if container is running - get FilesystemClient
+        guard let filesystemClient = filesystemClients[dockerID] else {
+            // Container not running - can't enumerate upperdir
+            throw ContainerManagerError.containerNotRunning(dockerID)
         }
 
-        // Check if baseline exists
-        let hasBaseline = try await stateStore.hasFilesystemBaseline(containerID: dockerID)
-        guard hasBaseline else {
-            logger.warning("No filesystem baseline found for container", metadata: ["container": "\(dockerID)"])
-            throw ContainerManagerError.noFilesystemBaseline(dockerID)
+        // Sync filesystem first to ensure accurate results
+        do {
+            try await filesystemClient.syncFilesystem()
+            logger.debug("Filesystem buffers synced", metadata: ["container": "\(dockerID)"])
+        } catch {
+            // Log warning but continue - may work anyway
+            logger.warning("Failed to sync filesystem", metadata: [
+                "container": "\(dockerID)",
+                "error": "\(error)"
+            ])
         }
 
-        // Load baseline
-        let baseline = try await stateStore.loadFilesystemBaseline(containerID: dockerID)
-        let baselineMap = Dictionary(uniqueKeysWithValues: baseline.map { ($0.path, ($0.type, $0.size, $0.mtime)) })
+        // Enumerate upperdir entries
+        let entries = try await filesystemClient.enumerateUpperdir()
 
-        logger.debug("Loaded filesystem baseline", metadata: [
+        logger.debug("Enumerated upperdir", metadata: [
             "container": "\(dockerID)",
-            "files": "\(baseline.count)"
+            "entries": "\(entries.count)"
         ])
 
-        // Get current filesystem state using EXT4Reader
-        guard let rootfsPath = getRootfsPath(dockerID: dockerID) else {
-            throw ContainerManagerError.containerNotFound(id)
-        }
-
-        guard FileManager.default.fileExists(atPath: rootfsPath.path) else {
-            throw ContainerManagerError.failedToReadFilesystem("Rootfs file does not exist")
-        }
-
-        let currentFiles = try enumerateEXT4Filesystem(rootfsPath)
-        let currentMap = Dictionary(uniqueKeysWithValues: currentFiles.map { ($0.path, ($0.type, $0.size, $0.mtime)) })
-
-        logger.debug("Captured current filesystem state", metadata: [
-            "container": "\(dockerID)",
-            "files": "\(currentFiles.count)"
-        ])
-
-        // Compare baseline to current state
+        // Convert upperdir entries to FilesystemChange
         var changes: [FilesystemChange] = []
 
-        // Find added and modified files
-        for (path, current) in currentMap.sorted(by: { $0.key < $1.key }) {
-            if let baseline = baselineMap[path] {
-                // File exists in baseline - check if modified
-                // Modified if size or mtime changed
-                if current.1 != baseline.1 || current.2 != baseline.2 {
-                    changes.append(FilesystemChange(
-                        path: path,
-                        kind: .modified
-                    ))
-                }
-            } else {
-                // File not in baseline - it was added
+        for entry in entries.sorted(by: { $0.path < $1.path }) {
+            switch entry.type {
+            case "whiteout":
+                // Whiteout = deleted file
                 changes.append(FilesystemChange(
-                    path: path,
-                    kind: .added
-                ))
-            }
-        }
-
-        // Find deleted files (in baseline but not in current)
-        for (path, _) in baselineMap.sorted(by: { $0.key < $1.key }) {
-            if currentMap[path] == nil {
-                changes.append(FilesystemChange(
-                    path: path,
+                    path: entry.path,
                     kind: .deleted
                 ))
+            case "file", "dir", "symlink":
+                // Present in upperdir = added or modified
+                // We can't distinguish without a baseline, so mark as modified
+                // Docker behavior: upperdir presence = change (could be add or modify)
+                changes.append(FilesystemChange(
+                    path: entry.path,
+                    kind: .modified
+                ))
+            default:
+                // Unknown type - skip
+                logger.warning("Unknown upperdir entry type", metadata: [
+                    "path": "\(entry.path)",
+                    "type": "\(entry.type)"
+                ])
             }
         }
 
-        logger.info("Filesystem changes calculated", metadata: [
+        logger.info("Filesystem changes calculated from upperdir", metadata: [
             "container": "\(dockerID)",
             "changes": "\(changes.count)"
         ])
@@ -4009,8 +4054,6 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case volumeSourceNotFound(String)
     case volumeNotFound(String)
     case volumeManagerNotAvailable
-    case noFilesystemBaseline(String)
-    case failedToReadFilesystem(String)
     case logWriterCreationFailed(String)
 
     public var description: String {
@@ -4043,10 +4086,6 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "No such volume: \(name)"
         case .volumeManagerNotAvailable:
             return "VolumeManager not available - named volumes are not supported"
-        case .noFilesystemBaseline(let id):
-            return "No filesystem baseline found for container: \(id). The baseline is captured when the container is created."
-        case .failedToReadFilesystem(let msg):
-            return "Failed to read filesystem: \(msg)"
         case .logWriterCreationFailed(let msg):
             return "Failed to create log writers: \(msg)"
         }

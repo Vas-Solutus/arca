@@ -1737,9 +1737,9 @@ public struct ContainerHandlers: Sendable {
     }
 
     /// Get an archive of a filesystem resource in a container (GET /containers/{id}/archive)
-    /// Uses WireGuard RPC to create tar archive via Go's archive/tar library
+    /// Uses Filesystem RPC to create tar archive via Go's archive/tar library
     /// Works universally without requiring tar in container (Phase 6.5)
-    public func handleGetArchive(id: String, path: String) async -> Result<(tarData: Data, stat: Arca_Wireguard_V1_PathStat), ContainerError> {
+    public func handleGetArchive(id: String, path: String) async -> Result<(tarData: Data, stat: PathStat), ContainerError> {
         logger.info("Getting archive from container", metadata: [
             "container_id": "\(id)",
             "path": "\(path)"
@@ -1761,17 +1761,16 @@ public struct ContainerHandlers: Sendable {
             return .failure(.invalidRequest("Container must be running to extract archive"))
         }
 
-        // Connect to WireGuard service and read archive via RPC
+        // Connect to Filesystem service and read archive via RPC
         do {
-            let client = WireGuardClient(logger: logger)
-            try await client.connect(container: nativeContainer, vsockPort: 51820)
+            let client = FilesystemClient(containerID: containerID, container: nativeContainer, logger: logger)
             defer {
                 Task {
                     try? await client.disconnect()
                 }
             }
 
-            let (tarData, stat) = try await client.readArchive(containerID: containerID, path: path)
+            let (tarData, stat) = try await client.readArchive(path: path)
 
             logger.info("Archive extracted successfully", metadata: [
                 "container_id": "\(id)",
@@ -1791,7 +1790,7 @@ public struct ContainerHandlers: Sendable {
     }
 
     /// Extract an archive to a directory in a container (PUT /containers/{id}/archive)
-    /// Uses WireGuard RPC to extract tar archive via Go's archive/tar library
+    /// Uses Filesystem RPC to extract tar archive via Go's archive/tar library
     /// Works universally without requiring tar in container (Phase 6.5)
     public func handlePutArchive(id: String, path: String, tarData: Data) async -> Result<Void, ContainerError> {
         logger.info("Putting archive to container", metadata: [
@@ -1816,17 +1815,16 @@ public struct ContainerHandlers: Sendable {
             return .failure(.invalidRequest("Container must be running to write archive"))
         }
 
-        // Connect to WireGuard service and write archive via RPC
+        // Connect to Filesystem service and write archive via RPC
         do {
-            let client = WireGuardClient(logger: logger)
-            try await client.connect(container: nativeContainer, vsockPort: 51820)
+            let client = FilesystemClient(containerID: containerID, container: nativeContainer, logger: logger)
             defer {
                 Task {
                     try? await client.disconnect()
                 }
             }
 
-            try await client.writeArchive(containerID: containerID, path: path, tarData: tarData)
+            try await client.writeArchive(path: path, tarData: tarData)
 
             logger.info("Archive written successfully", metadata: [
                 "container_id": "\(id)",
@@ -1863,13 +1861,12 @@ public struct ContainerHandlers: Sendable {
             switch error {
             case .containerNotFound:
                 return .failure(.notFound(id))
-            case .noFilesystemBaseline:
-                // Container exists but no baseline was captured
-                // This can happen for containers created before this feature was implemented
-                logger.warning("No filesystem baseline found", metadata: [
+            case .containerNotRunning:
+                // Container must be running to enumerate upperdir
+                logger.warning("Container not running - cannot enumerate changes", metadata: [
                     "container_id": "\(id)"
                 ])
-                return .failure(.invalidRequest("No filesystem baseline found for container. The baseline is captured when the container is created."))
+                return .failure(.invalidRequest("Container must be running to view filesystem changes. Start the container first."))
             default:
                 logger.error("Failed to get container changes", metadata: [
                     "container_id": "\(id)",

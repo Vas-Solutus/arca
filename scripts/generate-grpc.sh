@@ -15,7 +15,7 @@ CONTROL_API_PROTO="$PROJECT_ROOT/helpervm/proto/network.proto"
 SWIFT_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Generated"
 CONTROL_API_GO_DIR="$PROJECT_ROOT/helpervm/control-api/proto"
 
-# Create output directory
+# Create output directories
 mkdir -p "$SWIFT_OUTPUT_DIR"
 
 # Clean up old subdirectory structure (files are now in root with prefixed names)
@@ -91,32 +91,65 @@ else
     echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
 fi
 
-# Generate Swift code for OverlayFS Service (containerization/vminitd/extensions/overlayfs-mounter/proto/overlayfs.proto)
+# Generate Swift code for Filesystem Service (containerization/vminitd/extensions/filesystem-service/proto/filesystem.proto)
 echo ""
-echo "→ Generating Swift code for OverlayFS Service..."
-OVERLAYFS_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/overlayfs-mounter/proto/overlayfs.proto"
-if [ -f "$OVERLAYFS_PROTO" ]; then
-    protoc "$OVERLAYFS_PROTO" \
-        --proto_path="$(dirname "$OVERLAYFS_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
-    echo "  ✓ Generated Swift code: overlayfs.{pb,grpc}.swift"
+echo "→ Generating Swift code for Filesystem Service..."
+FILESYSTEM_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/filesystem-service/proto/filesystem.proto"
+FILESYSTEM_SWIFT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Generated"
+if [ -f "$FILESYSTEM_PROTO" ]; then
+    protoc "$FILESYSTEM_PROTO" \
+        --proto_path="$(dirname "$FILESYSTEM_PROTO")" \
+        --swift_out=Visibility=Public:"$FILESYSTEM_SWIFT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$FILESYSTEM_SWIFT_DIR"
+    echo "  ✓ Generated Swift code: Sources/ContainerBridge/Generated/filesystem.{pb,grpc}.swift"
 else
-    echo "  ⚠ Skipping - proto file not found: $OVERLAYFS_PROTO"
+    echo "  ⚠ Skipping - proto file not found: $FILESYSTEM_PROTO"
 fi
 
-# Generate Go code for OverlayFS Service
+# Generate Go code for Filesystem Service
 echo ""
-echo "→ Generating Go code for OverlayFS Service..."
-OVERLAYFS_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/overlayfs-mounter/proto"
-if [ -f "$OVERLAYFS_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$OVERLAYFS_PROTO" \
-        --proto_path="$(dirname "$OVERLAYFS_PROTO")" \
-        --go_out="$OVERLAYFS_GO_DIR" \
+echo "→ Generating Go code for Filesystem Service..."
+FILESYSTEM_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/filesystem-service/proto"
+if [ -f "$FILESYSTEM_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$FILESYSTEM_PROTO" \
+        --proto_path="$(dirname "$FILESYSTEM_PROTO")" \
+        --go_out="$FILESYSTEM_GO_DIR" \
         --go_opt=paths=source_relative \
-        --go-grpc_out="$OVERLAYFS_GO_DIR" \
+        --go-grpc_out="$FILESYSTEM_GO_DIR" \
         --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $OVERLAYFS_GO_DIR"
+    echo "  ✓ Generated Go code in $FILESYSTEM_GO_DIR"
+else
+    echo "  ⚠ Skipping - proto file or Go plugins not found"
+fi
+
+# Generate Swift code for Process Service (containerization/vminitd/extensions/process-control/proto/process.proto)
+echo ""
+echo "→ Generating Swift code for Process Service..."
+PROCESS_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/process-control/proto/process.proto"
+PROCESS_SWIFT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Process/Generated"
+if [ -f "$PROCESS_PROTO" ]; then
+    mkdir -p "$PROCESS_SWIFT_DIR"
+    protoc "$PROCESS_PROTO" \
+        --proto_path="$(dirname "$PROCESS_PROTO")" \
+        --swift_out=Visibility=Public:"$PROCESS_SWIFT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$PROCESS_SWIFT_DIR"
+    echo "  ✓ Generated Swift code: Sources/ContainerBridge/Process/Generated/process.{pb,grpc}.swift"
+else
+    echo "  ⚠ Skipping - proto file not found: $PROCESS_PROTO"
+fi
+
+# Generate Go code for Process Service
+echo ""
+echo "→ Generating Go code for Process Service..."
+PROCESS_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/process-control/proto"
+if [ -f "$PROCESS_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$PROCESS_PROTO" \
+        --proto_path="$(dirname "$PROCESS_PROTO")" \
+        --go_out="$PROCESS_GO_DIR" \
+        --go_opt=paths=source_relative \
+        --go-grpc_out="$PROCESS_GO_DIR" \
+        --go-grpc_opt=paths=source_relative
+    echo "  ✓ Generated Go code in $PROCESS_GO_DIR"
 else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi

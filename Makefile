@@ -1,4 +1,4 @@
-.PHONY: clean clean-state install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc
+.PHONY: clean clean-state clean-layers clean-containers clean-all-state install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -60,6 +60,22 @@ clean-state:
 	@echo "Cleaning state database..."
 	@rm -f ~/.arca/state.db
 	@echo "✓ State cleaned"
+
+# Clean layer cache (development)
+clean-layers:
+	@echo "Cleaning layer cache..."
+	@rm -rf ~/.arca/layers/*
+	@echo "✓ Layer cache cleaned"
+
+# Clean container state (development)
+clean-containers:
+	@echo "Cleaning container state..."
+	@rm -rf ~/.arca/containers/*
+	@echo "✓ Container state cleaned"
+
+# Clean all runtime state (database, layers, containers)
+clean-all-state: clean-state clean-layers clean-containers
+	@echo "✓ All runtime state cleaned"
 
 # Install to system
 install: release
@@ -193,7 +209,10 @@ help:
 	@echo "  make run-release     - Build, sign, and run daemon (release) at /tmp/arca.sock"
 	@echo "  make test            - Run all tests"
 	@echo "  make clean           - Remove all build artifacts"
-	@echo "  make clean-state     - Remove state database (fresh start)"
+	@echo "  make clean-state     - Remove state database only"
+	@echo "  make clean-layers    - Remove layer cache only"
+	@echo "  make clean-containers - Remove container state only"
+	@echo "  make clean-all-state - Remove all runtime state (db, layers, containers)"
 	@echo "  make install         - Install release binary to /usr/local/bin"
 	@echo "  make uninstall       - Remove binary from /usr/local/bin"
 	@echo "  make kernel          - Build Linux kernel with TUN support (10-15 min)"

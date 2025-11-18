@@ -129,46 +129,8 @@ public final class ArcaDaemon: @unchecked Sendable {
             logger.warning("Custom vminit not found at \(vminitPath.path), will use default vminit")
         }
 
-        // Load control plane image (for OVS network backend)
-        let controlPlanePath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".arca")
-            .appendingPathComponent("helpervm")
-            .appendingPathComponent("oci-layout")
-
-        if FileManager.default.fileExists(atPath: controlPlanePath.path) {
-            logger.info("Loading control plane image from OCI layout", metadata: [
-                "path": "\(controlPlanePath.path)"
-            ])
-
-            // Delete existing control plane image to force reload
-            if await imageManager.imageExists(nameOrId: "arca-control-plane:latest") {
-                logger.debug("Deleting existing arca-control-plane:latest to reload fresh version")
-                _ = try? await imageManager.deleteImage(nameOrId: "arca-control-plane:latest", force: true)
-            }
-
-            // Load the OCI layout into ImageStore
-            do {
-                let loadedImages = try await imageManager.loadFromOCILayout(directory: controlPlanePath)
-                logger.info("Control plane image loaded successfully", metadata: [
-                    "count": "\(loadedImages.count)",
-                    "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
-                ])
-            } catch {
-                logger.error("Failed to load control plane image", metadata: [
-                    "error": "\(error)"
-                ])
-                logger.warning("Networking features will be disabled - build control plane with: make helpervm")
-            }
-        } else {
-            logger.warning("Control plane image not found at \(controlPlanePath.path)")
-            logger.warning("Build it with: make helpervm")
-        }
-
-        // BuildKit image loading removed - BuildKitManager will pull moby/buildkit:latest automatically
-
-        // OVS backend no longer needs separate NetworkHelperVM actor
-        // Control plane is now a regular container managed by ContainerManager
-        // It will be created by NetworkManager.initialize() with restart policy "always"
+        // Control plane / Helper VM is NO LONGER USED
+        // WireGuard backend runs services directly in each container VM - no central control plane needed
 
         // Initialize StateStore (shared by ContainerManager and NetworkManager)
         let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
