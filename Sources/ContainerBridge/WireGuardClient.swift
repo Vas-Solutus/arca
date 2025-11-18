@@ -12,7 +12,8 @@ public actor WireGuardClient {
     private var channel: GRPCChannel?
     private var eventLoopGroup: EventLoopGroup?
     private var client: Arca_Wireguard_V1_WireGuardServiceNIOClient?
-    private var vsockFileHandle: FileHandle?  // Keep FileHandle alive for the connection
+    // Note: SwiftNIO takes ownership of the file descriptor when using .connectedSocket()
+    // We must NOT keep the FileHandle alive as it would cause dual ownership and crashes
 
     public enum WireGuardClientError: Error, CustomStringConvertible {
         case notConnected
@@ -47,17 +48,17 @@ public actor WireGuardClient {
         // Use LinuxContainer.dialVsock() to get a FileHandle for the vsock connection
         logger.debug("Calling container.dialVsock(\(vsockPort))...")
         let fileHandle = try await container.dialVsock(port: vsockPort)
+        let fd = fileHandle.fileDescriptor
         logger.debug("container.dialVsock() successful, got file handle", metadata: [
-            "fd": "\(fileHandle.fileDescriptor)"
+            "fd": "\(fd)"
         ])
 
-        // Store FileHandle to keep it alive for the lifetime of the connection
-        self.vsockFileHandle = fileHandle
-
-        // Create gRPC channel from the connected socket FileHandle
+        // Create gRPC channel from the connected socket
+        // IMPORTANT: SwiftNIO takes ownership of the fd via .connectedSocket()
+        // We must NOT keep the FileHandle alive - SwiftNIO will close the fd when channel closes
         let channel = ClientConnection(
             configuration: .default(
-                target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
+                target: .connectedSocket(NIOBSDSocket.Handle(fd)),
                 eventLoopGroup: group
             ))
 
@@ -75,18 +76,13 @@ public actor WireGuardClient {
 
         logger.info("Disconnecting from container WireGuard service")
 
+        // Close the gRPC channel - SwiftNIO will automatically close the underlying fd
         try await channel.close().get()
         try await eventLoopGroup?.shutdownGracefully()
-
-        // Close the vsock FileHandle
-        if let fileHandle = vsockFileHandle {
-            try? fileHandle.close()
-        }
 
         self.channel = nil
         self.eventLoopGroup = nil
         self.client = nil
-        self.vsockFileHandle = nil
 
         logger.info("Disconnected from container WireGuard service")
     }

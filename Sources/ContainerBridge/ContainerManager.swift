@@ -2229,6 +2229,13 @@ public actor ContainerManager {
 
             // Get WireGuard client for this container
             if let wireguardClient = await networkManager.getWireGuardClient(containerID: dockerID) {
+                // Ensure we disconnect when done
+                defer {
+                    Task {
+                        try? await wireguardClient.disconnect()
+                    }
+                }
+
                 do {
                     // Get vmnet IP from container
                     let vmnetEndpoint = try await wireguardClient.getVmnetEndpoint()
@@ -2435,6 +2442,15 @@ public actor ContainerManager {
            !info.hostConfig.portBindings.isEmpty {
             // Get WireGuard client for this container (optional - for nftables cleanup)
             let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
+
+            // Ensure we disconnect when done
+            if let client = wireguardClient {
+                defer {
+                    Task {
+                        try? await client.disconnect()
+                    }
+                }
+            }
 
             do {
                 try await portMapManager.unpublishPorts(
@@ -2799,6 +2815,15 @@ public actor ContainerManager {
            !info.hostConfig.portBindings.isEmpty {
             // Get WireGuard client for this container (optional - for nftables cleanup)
             let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
+
+            // Ensure we disconnect when done
+            if let client = wireguardClient {
+                defer {
+                    Task {
+                        try? await client.disconnect()
+                    }
+                }
+            }
 
             do {
                 try await portMapManager.unpublishPorts(

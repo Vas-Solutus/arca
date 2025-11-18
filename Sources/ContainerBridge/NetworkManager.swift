@@ -47,7 +47,19 @@ public actor NetworkManager {
         logger.info("Initializing NetworkManager (WireGuard default)")
 
         // Always initialize WireGuard backend as the default
-        let backend = WireGuardNetworkBackend(logger: logger, stateStore: stateStore)
+        let backend = WireGuardNetworkBackend(
+            logger: logger,
+            stateStore: stateStore,
+            getContainer: { [weak self] containerID in
+                guard let self = self else {
+                    throw NetworkManagerError.containerNotFound(containerID)
+                }
+                guard let container = await self.containerManager.getNativeContainer(id: containerID) else {
+                    throw NetworkManagerError.containerNotFound(containerID)
+                }
+                return container
+            }
+        )
         self.wireGuardBackend = backend
 
         logger.info("WireGuard backend initialized (default for bridge networks)")
@@ -594,13 +606,37 @@ public actor NetworkManager {
         return await getNetwork(id: networkID)?.name
     }
 
-    /// Get WireGuard client for a container (for port mapping)
-    /// Returns nil if container is not attached to any WireGuard networks
+    /// Create a WireGuard client for a container (for port mapping)
+    /// Returns nil if container is not attached to any WireGuard networks or container not found
+    /// Caller must disconnect the client when done
     public func getWireGuardClient(containerID: String) async -> WireGuardClient? {
-        guard let backend = wireGuardBackend else {
+        guard wireGuardBackend != nil else {
             return nil
         }
-        return await backend.getWireGuardClient(containerID: containerID)
+
+        // Get container networks - if not attached to any WireGuard networks, return nil
+        let networks = await getContainerNetworks(containerID: containerID)
+        guard !networks.isEmpty else {
+            return nil
+        }
+
+        // Get native container object
+        guard let container = await containerManager.getNativeContainer(id: containerID) else {
+            return nil
+        }
+
+        // Create client
+        let client = WireGuardClient(logger: logger)
+        do {
+            try await client.connect(container: container, vsockPort: 51820)
+            return client
+        } catch {
+            logger.error("Failed to create WireGuard client for port mapping", metadata: [
+                "container_id": "\(containerID)",
+                "error": "\(error)"
+            ])
+            return nil
+        }
     }
 
     /// Clean up in-memory network state for a stopped/exited container

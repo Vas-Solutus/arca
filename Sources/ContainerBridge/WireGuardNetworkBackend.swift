@@ -24,6 +24,7 @@ import Containerization
 public actor WireGuardNetworkBackend {
     private let logger: Logger
     private let stateStore: StateStore
+    private let getContainer: (String) async throws -> Containerization.LinuxContainer
 
     // Network state tracking
     private var networks: [String: NetworkMetadata] = [:]  // Network ID -> Metadata
@@ -40,9 +41,6 @@ public actor WireGuardNetworkBackend {
     // Track public keys per interface: containerID -> networkID -> publicKey
     private var containerInterfaceKeys: [String: [String: String]] = [:]
 
-    // WireGuard clients for container communication: containerID -> WireGuardClient
-    private var wireGuardClients: [String: WireGuardClient] = [:]
-
     // Container names for DNS resolution (Phase 3.1): containerID -> containerName
     private var containerNames: [String: String] = [:]
 
@@ -52,9 +50,14 @@ public actor WireGuardNetworkBackend {
     // IP allocation within networks: networkID -> next IP octet
     private var nextIPOctet: [String: UInt8] = [:]  // Tracks .2, .3, .4, etc. (.1 is gateway)
 
-    public init(logger: Logger, stateStore: StateStore) {
+    public init(
+        logger: Logger,
+        stateStore: StateStore,
+        getContainer: @escaping (String) async throws -> Containerization.LinuxContainer
+    ) {
         self.logger = logger
         self.stateStore = stateStore
+        self.getContainer = getContainer
     }
 
     /// Restore networks from database on daemon startup
@@ -333,8 +336,16 @@ public actor WireGuardNetworkBackend {
             ipAddress = try await allocateIP(networkID: networkID, subnet: metadata.subnet)
         }
 
-        // Get or create WireGuard client for this container
-        let wgClient = try await getOrCreateWireGuardClient(containerID: containerID, container: container)
+        // Create WireGuard client for this container
+        let wgClient = WireGuardClient(logger: logger)
+        try await wgClient.connect(container: container, vsockPort: 51820)
+
+        // Ensure we disconnect when done
+        defer {
+            Task {
+                try? await wgClient.disconnect()
+            }
+        }
 
         // Determine network index for this container
         // On restart, reuse existing index to keep eth0 as eth0, eth1 as eth1, etc.
@@ -423,7 +434,6 @@ public actor WireGuardNetworkBackend {
         // 2. Add THAT container as a peer to THIS container
         for otherContainerID in otherContainerIDs {
             guard let otherAttachment = existingAttachments[otherContainerID],
-                  let otherClient = wireGuardClients[otherContainerID],
                   let otherPublicKey = containerInterfaceKeys[otherContainerID]?[networkID],
                   let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
                 logger.warning("Skipping peer - missing metadata", metadata: [
@@ -432,8 +442,47 @@ public actor WireGuardNetworkBackend {
                 continue
             }
 
+            // Create WireGuard client for peer container
+            let otherContainer: Containerization.LinuxContainer
+            do {
+                otherContainer = try await getContainer(otherContainerID)
+            } catch {
+                logger.error("Failed to get peer container", metadata: [
+                    "peer_container_id": "\(otherContainerID)",
+                    "error": "\(error)"
+                ])
+                continue
+            }
+
+            let otherClient = WireGuardClient(logger: logger)
+            do {
+                try await otherClient.connect(container: otherContainer, vsockPort: 51820)
+            } catch {
+                logger.error("Failed to connect to peer container", metadata: [
+                    "peer_container_id": "\(otherContainerID)",
+                    "error": "\(error)"
+                ])
+                continue
+            }
+
+            // Ensure we disconnect when done
+            defer {
+                Task {
+                    try? await otherClient.disconnect()
+                }
+            }
+
             // Get the other container's vmnet endpoint
-            let otherEndpoint = try await otherClient.getVmnetEndpoint()
+            let otherEndpoint: String
+            do {
+                otherEndpoint = try await otherClient.getVmnetEndpoint()
+            } catch {
+                logger.error("Failed to get vmnet endpoint from peer container", metadata: [
+                    "peer_container_id": "\(otherContainerID)",
+                    "error": "\(error)"
+                ])
+                continue
+            }
 
             logger.debug("Configuring peer mesh", metadata: [
                 "container_id": "\(containerID)",
@@ -560,28 +609,41 @@ public actor WireGuardNetworkBackend {
             throw NetworkManagerError.notConnected(containerID, metadata.name)
         }
 
-        // Get WireGuard client (may be nil if container is already stopped)
-        // When a container is stopped, cleanupStoppedContainer() removes the client
-        // but we still need to update metadata.containers to track detachment
-        let wgClient = wireGuardClients[containerID]
-
         // Get network index for this network
-        // May be nil if container was already cleaned up
         let indices = containerNetworkIndices[containerID]
         let networkIndex = indices?[networkID]
 
-        // Only perform network operations if container is still running (has a client)
-        if let wgClient = wgClient, let networkIndex = networkIndex {
-            logger.info("Removing WireGuard interface", metadata: [
-                "container_id": "\(containerID)",
-                "network_id": "\(networkID)",
-                "network_index": "\(networkIndex)",
-                "interface": "wg\(networkIndex)/eth\(networkIndex)"
-            ])
+        // Try to create WireGuard client for the target container
+        // If we can't connect, we'll still clean up peer relationships on OTHER containers
+        var targetClient: WireGuardClient?
+        if let container = try? await getContainer(containerID) {
+            let client = WireGuardClient(logger: logger)
+            if (try? await client.connect(container: container, vsockPort: 51820)) != nil {
+                targetClient = client
+            }
+        }
 
-            // Phase 2.4: Remove this container as a peer from all other containers on this network
-            // Get this container's public key
-            if let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
+        // Ensure we disconnect the target client when done
+        if let client = targetClient {
+            defer {
+                Task {
+                    try? await client.disconnect()
+                }
+            }
+        }
+
+        if targetClient == nil {
+            logger.warning("Cannot connect to target container - will skip interface removal but still clean up peers", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)"
+            ])
+        }
+
+        // ALWAYS try to remove this container as a peer from other containers
+        // This ensures mesh consistency even if target container is unreachable
+        if let networkIndex = networkIndex,
+           let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
+
             // Get all OTHER containers on this network
             let existingAttachments = containerAttachments[networkID] ?? [:]
             let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
@@ -594,12 +656,42 @@ public actor WireGuardNetworkBackend {
 
             // Remove this container as a peer from each other container
             for otherContainerID in otherContainerIDs {
-                guard let otherClient = wireGuardClients[otherContainerID],
-                      let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
+                guard let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
                     logger.warning("Skipping peer removal - missing metadata", metadata: [
                         "other_container_id": "\(otherContainerID)"
                     ])
                     continue
+                }
+
+                // Get peer container
+                let otherContainer: Containerization.LinuxContainer
+                do {
+                    otherContainer = try await getContainer(otherContainerID)
+                } catch {
+                    logger.error("Failed to get peer container for removal", metadata: [
+                        "peer_container_id": "\(otherContainerID)",
+                        "error": "\(error)"
+                    ])
+                    continue
+                }
+
+                // Create WireGuard client for peer
+                let otherClient = WireGuardClient(logger: logger)
+                do {
+                    try await otherClient.connect(container: otherContainer, vsockPort: 51820)
+                } catch {
+                    logger.error("Failed to connect to peer for removal", metadata: [
+                        "peer_container_id": "\(otherContainerID)",
+                        "error": "\(error)"
+                    ])
+                    continue
+                }
+
+                // Ensure we disconnect when done
+                defer {
+                    Task {
+                        try? await otherClient.disconnect()
+                    }
                 }
 
                 do {
@@ -626,28 +718,38 @@ public actor WireGuardNetworkBackend {
                 }
             }
 
-                logger.info("Peer cleanup completed", metadata: [
+            logger.info("Peer cleanup completed", metadata: [
+                "container_id": "\(containerID)",
+                "network_id": "\(networkID)",
+                "peers_cleaned": "\(otherContainerIDs.count)"
+            ])
+
+            // Remove network interface (wgN/ethN) from target container if we have a client
+            if let targetClient = targetClient {
+                logger.info("Removing WireGuard interface from target container", metadata: [
                     "container_id": "\(containerID)",
                     "network_id": "\(networkID)",
-                    "peers_cleaned": "\(otherContainerIDs.count)"
+                    "network_index": "\(networkIndex)",
+                    "interface": "wg\(networkIndex)/eth\(networkIndex)"
+                ])
+                try await targetClient.removeNetwork(networkID: networkID, networkIndex: networkIndex)
+            } else {
+                logger.warning("Cannot remove interface from unreachable target container", metadata: [
+                    "container_id": "\(containerID)",
+                    "network_id": "\(networkID)"
                 ])
             }
-
-            // Remove network interface (wgN/ethN)
-            try await wgClient.removeNetwork(networkID: networkID, networkIndex: networkIndex)
 
             // Update state
             var updatedIndices = indices!
             updatedIndices.removeValue(forKey: networkID)
 
             if updatedIndices.isEmpty {
-                // Last network removed - cleanup client (hub auto-deleted)
-                logger.info("Last network removed, cleaning up client", metadata: [
+                // Last network removed - cleanup state (client cleanup in defer block, hub auto-deleted)
+                logger.info("Last network removed, cleaning up state", metadata: [
                     "container_id": "\(containerID)"
                 ])
 
-                try await wgClient.disconnect()
-                wireGuardClients.removeValue(forKey: containerID)
                 containerNetworkIndices.removeValue(forKey: containerID)
                 containerInterfaceKeys.removeValue(forKey: containerID)
                 containerNetworks.removeValue(forKey: containerID)
@@ -664,9 +766,8 @@ public actor WireGuardNetworkBackend {
                 containerNetworks[containerID] = containerNets
             }
         } else {
-            // Container is already stopped - WireGuard client and interfaces are already cleaned up
-            // by cleanupStoppedContainer(), but we still need to update tracking state
-            logger.info("Container already stopped, skipping WireGuard network interface removal", metadata: [
+            // Container has no network index - already cleaned up or never had this network
+            logger.info("Container has no network index, skipping WireGuard operations", metadata: [
                 "container_id": "\(containerID)",
                 "network_id": "\(networkID)"
             ])
@@ -728,42 +829,13 @@ public actor WireGuardNetworkBackend {
             "container_id": "\(containerID)"
         ])
 
-        // Disconnect WireGuard client if exists
-        if let client = wireGuardClients[containerID] {
-            try? await client.disconnect()
-            wireGuardClients.removeValue(forKey: containerID)
-        }
-
-        // Note: We don't remove from networks or containerNetworks because
-        // the container is still "attached" to networks, it's just stopped.
+        // Note: We don't cache WireGuard clients, so nothing to clean up here.
+        // The container is still "attached" to networks metadata-wise, just stopped.
         // When it restarts, we'll recreate the WireGuard hub with same IPs.
     }
 
     // MARK: - Helper Methods
 
-    /// Get or create WireGuard client for a container
-    private func getOrCreateWireGuardClient(
-        containerID: String,
-        container: Containerization.LinuxContainer
-    ) async throws -> WireGuardClient {
-        // Return existing client if available
-        if let client = wireGuardClients[containerID] {
-            return client
-        }
-
-        // Create new client and connect
-        let client = WireGuardClient(logger: logger)
-        try await client.connect(container: container, vsockPort: 51820)
-        wireGuardClients[containerID] = client
-
-        return client
-    }
-
-    /// Get WireGuard client for a container (for port mapping)
-    /// Returns nil if container is not attached to any WireGuard networks
-    public func getWireGuardClient(containerID: String) -> WireGuardClient? {
-        return wireGuardClients[containerID]
-    }
 
     /// Allocate an IP address for a container in a network
     private func allocateIP(networkID: String, subnet: String) async throws -> String {
