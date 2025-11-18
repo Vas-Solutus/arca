@@ -38,9 +38,12 @@ extension Daemon {
 
         @Option(
             name: .long,
-            help: "Unix socket path for the daemon (default: /var/run/arca.sock)"
+            help: "Unix socket path for the daemon (default: ~/.arca/arca.sock)"
         )
-        var socketPath: String = "/var/run/arca.sock"
+        var socketPath: String = {
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+            return "\(homeDir)/.arca/arca.sock"
+        }()
 
         @Option(
             name: .long,
@@ -168,9 +171,12 @@ extension Daemon {
 
         @Option(
             name: .long,
-            help: "Unix socket path for the daemon (default: /var/run/arca.sock)"
+            help: "Unix socket path for the daemon (default: ~/.arca/arca.sock)"
         )
-        var socketPath: String = "/var/run/arca.sock"
+        var socketPath: String = {
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+            return "\(homeDir)/.arca/arca.sock"
+        }()
 
         func run() throws {
             print("Stopping Arca daemon...")
@@ -192,9 +198,12 @@ extension Daemon {
 
         @Option(
             name: .long,
-            help: "Unix socket path for the daemon (default: /var/run/arca.sock)"
+            help: "Unix socket path for the daemon (default: ~/.arca/arca.sock)"
         )
-        var socketPath: String = "/var/run/arca.sock"
+        var socketPath: String = {
+            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+            return "\(homeDir)/.arca/arca.sock"
+        }()
 
         func run() throws {
             print("Checking Arca daemon status...")

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.liquescent.arca</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/Arca</string>
+        <string>daemon</string>
+        <string>start</string>
+        <string>--socket-path</string>
+        <string>HOME_DIR/.arca/arca.sock</string>
+        <string>--log-level</string>
+        <string>info</string>
+        <string>--foreground</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>HOME_DIR/.arca/arca.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>HOME_DIR/.arca/arca.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>HOME_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
