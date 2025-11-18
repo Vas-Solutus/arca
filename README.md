@@ -60,9 +60,8 @@ make configure-shell    # Add DOCKER_HOST to shell profile
 ## Documentation
 
 - [OVERVIEW.md](Documentation/OVERVIEW.md) - Architecture and design
-- [IMPLEMENTATION_PLAN.md](Documentation/IMPLEMENTATION_PLAN.md) - Current status and roadmap
-- [LIMITATIONS.md](Documentation/LIMITATIONS.md) - Known differences from Docker
 - [ARCHITECTURE.md](Documentation/ARCHITECTURE.md) - Technical deep-dive
+- [LIMITATIONS.md](Documentation/LIMITATIONS.md) - Known differences from Docker
 
 ## Contributing
 

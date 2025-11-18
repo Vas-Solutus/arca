@@ -77,5 +77,8 @@ CLAUDE.md
 .DS_Store
 tmp_compose/
 
+# Internal planning documents
+Documentation/IMPLEMENTATION_PLAN.md
+
 # IDE settings
 .vscode/
