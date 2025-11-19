@@ -254,7 +254,6 @@ public actor NetworkManager {
                 subnet: "",
                 gateway: "",
                 ipRange: nil,
-                nextIPOctet: 2,  // Null networks don't use IPAM, but need default value
                 optionsJSON: String(data: optionsJSON, encoding: .utf8),
                 labelsJSON: String(data: labelsJSON, encoding: .utf8),
                 isDefault: isDefault
@@ -681,6 +680,7 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
     case invalidIPAddress(String)
     case ipAlreadyInUse(String)
     case unsupportedFeature(String)
+    case noAvailableSubnets
 
     public var description: String {
         switch self {
@@ -716,6 +716,8 @@ public enum NetworkManagerError: Error, CustomStringConvertible {
             return "IP address \(ip) is already in use"
         case .unsupportedFeature(let message):
             return "Unsupported feature: \(message)"
+        case .noAvailableSubnets:
+            return "No available subnets in range 172.18.0.0/16 - 172.31.0.0/16 (all 14 subnets in use)"
         }
     }
 }

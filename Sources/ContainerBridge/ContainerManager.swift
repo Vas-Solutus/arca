@@ -2134,7 +2134,7 @@ public actor ContainerManager {
                 } catch let error as NetworkManagerError {
                     // User validation errors should fail container start
                     switch error {
-                    case .invalidIPAddress, .ipAlreadyInUse, .alreadyConnected:
+                    case .invalidIPAddress, .ipAlreadyInUse, .alreadyConnected, .ipAllocationFailed:
                         logger.error("Container start failed due to network validation error", metadata: [
                             "container": "\(dockerID)",
                             "network": "\(targetNetwork)",

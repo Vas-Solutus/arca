@@ -65,9 +65,21 @@ func dockerExpectFailure(_ args: String, socketPath: String) -> Bool {
 }
 
 /// Start Arca daemon and return process ID
-func startDaemon(socketPath: String, arcaBinary: String = ".build/debug/Arca", logFile: String) throws -> Int32 {
+func startDaemon(socketPath: String, arcaBinary: String = ".build/debug/Arca", logFile: String, cleanDatabase: Bool = true) throws -> Int32 {
+    // Kill any existing Arca processes first
+    _ = try? shell("pkill -9 Arca")
+    Thread.sleep(forTimeInterval: 1.0)
+
     // Clean up old socket
     try? FileManager.default.removeItem(atPath: socketPath)
+
+    // Clean up database to ensure clean state for each test
+    if cleanDatabase {
+        let stateDBPath = NSString(string: "~/.arca/state.db").expandingTildeInPath
+        try? FileManager.default.removeItem(atPath: stateDBPath)
+        try? FileManager.default.removeItem(atPath: "\(stateDBPath)-shm")  // SQLite shared memory
+        try? FileManager.default.removeItem(atPath: "\(stateDBPath)-wal")  // SQLite write-ahead log
+    }
 
     // Create log file if it doesn't exist
     FileManager.default.createFile(atPath: logFile, contents: nil, attributes: nil)

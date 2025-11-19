@@ -47,9 +47,6 @@ public actor WireGuardNetworkBackend {
     // Subnet allocation tracking (simple counter for auto-allocation)
     private var nextSubnetByte: UInt8 = 18  // Start at 172.18.0.0/16
 
-    // IP allocation within networks: networkID -> next IP octet
-    private var nextIPOctet: [String: UInt8] = [:]  // Tracks .2, .3, .4, etc. (.1 is gateway)
-
     public init(
         logger: Logger,
         stateStore: StateStore,
@@ -63,6 +60,14 @@ public actor WireGuardNetworkBackend {
     /// Restore networks from database on daemon startup
     /// This populates the in-memory networks dictionary with persisted network metadata
     public func restoreNetworks() async throws {
+        // Restore nextSubnetByte from database (CRITICAL for preventing subnet overlaps after restart)
+        let persistedSubnetByte = try await stateStore.getNextSubnetByte()
+        nextSubnetByte = UInt8(persistedSubnetByte)
+
+        logger.debug("Restored subnet allocation state", metadata: [
+            "next_subnet_byte": "\(nextSubnetByte)"
+        ])
+
         let persistedNetworks = try await stateStore.loadAllNetworks()
 
         for networkData in persistedNetworks {
@@ -106,16 +111,11 @@ public actor WireGuardNetworkBackend {
             networks[networkData.id] = metadata
             networksByName[networkData.name] = networkData.id
 
-            // Restore IP allocation state from persisted data
-            // This ensures we continue allocating IPs from where we left off before daemon restart
-            nextIPOctet[networkData.id] = networkData.nextIPOctet
-
             logger.debug("Restored network from database", metadata: [
                 "network_id": "\(networkData.id)",
                 "name": "\(networkData.name)",
                 "subnet": "\(networkData.subnet)",
-                "gateway": "\(networkData.gateway)",
-                "next_ip_octet": "\(networkData.nextIPOctet)"
+                "gateway": "\(networkData.gateway)"
             ])
         }
 
@@ -149,32 +149,51 @@ public actor WireGuardNetworkBackend {
 
         if let subnet = subnet {
             effectiveSubnet = subnet
-            effectiveGateway = gateway ?? calculateGateway(subnet: subnet)
+            // Calculate gateway if not provided or if empty string provided
+            // Docker CLI sends empty string "" when no gateway is specified
+            effectiveGateway = (gateway?.isEmpty == false) ? gateway! : calculateGateway(subnet: subnet)
         } else {
             // Auto-allocate from 172.18.0.0/16 - 172.31.0.0/16
-            effectiveSubnet = "172.\(nextSubnetByte).0.0/16"
-            effectiveGateway = "172.\(nextSubnetByte).0.1"
-            nextSubnetByte += 1
+            // Get allocated subnets from database to detect conflicts
+            let allocatedBytes = try await stateStore.getAllocatedSubnetBytes()
+
+            // Find next available subnet byte that's not in use
+            var candidateByte = nextSubnetByte
+            var attempts = 0
+            while allocatedBytes.contains(candidateByte) && attempts < 14 {
+                candidateByte += 1
+                if candidateByte > 31 {
+                    candidateByte = 18  // Wrap around
+                }
+                attempts += 1
+            }
+
+            // Check if we exhausted all subnets
+            if allocatedBytes.contains(candidateByte) {
+                throw NetworkManagerError.noAvailableSubnets
+            }
+
+            effectiveSubnet = "172.\(candidateByte).0.0/16"
+            effectiveGateway = "172.\(candidateByte).0.1"
+
+            // Update and persist next subnet byte
+            nextSubnetByte = candidateByte + 1
             if nextSubnetByte > 31 {
                 nextSubnetByte = 18  // Wrap around
             }
+
+            // Persist the updated nextSubnetByte to database
+            try await stateStore.updateNextSubnetByte(Int(nextSubnetByte))
+
+            logger.debug("Auto-allocated subnet", metadata: [
+                "allocated_subnet": "172.\(candidateByte).0.0/16",
+                "next_subnet_byte": "\(nextSubnetByte)"
+            ])
         }
 
-        // Initialize IP allocation for this network
-        // If ipRange is specified, calculate starting octet from it
-        // Otherwise start at .2 (.1 is gateway)
-        if let ipRange = ipRange {
-            // Parse ipRange to get starting IP
-            // Example: "172.18.0.128/25" -> start at .128
-            let rangeComponents = ipRange.split(separator: "/")[0].split(separator: ".")
-            if rangeComponents.count == 4, let startOctet = UInt8(rangeComponents[3]) {
-                nextIPOctet[id] = startOctet
-            } else {
-                nextIPOctet[id] = 2  // Fallback
-            }
-        } else {
-            nextIPOctet[id] = 2
-        }
+        // NOTE: We no longer use nextIPOctet counter for IP allocation
+        // Instead, allocateIP() queries allocated IPs from network_attachments table
+        // and finds first available IP, enabling automatic IP reclamation
 
         // Create metadata
         let createdDate = Date()
@@ -209,7 +228,6 @@ public actor WireGuardNetworkBackend {
                 subnet: effectiveSubnet,
                 gateway: effectiveGateway,
                 ipRange: ipRange,
-                nextIPOctet: nextIPOctet[id] ?? 2,
                 optionsJSON: String(data: optionsJSON, encoding: .utf8),
                 labelsJSON: String(data: labelsJSON, encoding: .utf8),
                 isDefault: isDefault
@@ -261,7 +279,6 @@ public actor WireGuardNetworkBackend {
         networks.removeValue(forKey: id)
         networksByName.removeValue(forKey: networksByName.first(where: { $0.value == id })?.key ?? "")
         containerAttachments.removeValue(forKey: id)
-        nextIPOctet.removeValue(forKey: id)
     }
 
     // MARK: - Container Attachment
@@ -311,16 +328,26 @@ public actor WireGuardNetworkBackend {
 
         // Allocate IP address for this container in this network
         let ipAddress: String
-        if let userIP = userSpecifiedIP {
+        // Check if user specified an IP (and it's not empty string)
+        // Docker CLI/API can send empty string "" when no IP is specified
+        if let userIP = userSpecifiedIP, !userIP.isEmpty {
             // Validate user-specified IP is within subnet
             guard isIPInSubnet(userIP, subnet: metadata.subnet) else {
                 throw NetworkManagerError.invalidIPAddress("IP \(userIP) not in subnet \(metadata.subnet)")
             }
 
-            // Check if IP is already allocated to a DIFFERENT container
-            let existingAttachments = containerAttachments[networkID] ?? [:]
-            for (existingContainerID, attachment) in existingAttachments {
-                if attachment.ip == userIP && existingContainerID != containerID {
+            // Check if IP is already allocated (query database for accurate check)
+            // This catches IPs allocated to containers even if they're not currently running
+            let allocatedIPs = try await stateStore.getAllocatedIPs(networkID: networkID)
+            if allocatedIPs.contains(userIP) {
+                // IP is already in use - check if it's the same container (reconnecting)
+                // Get all network attachments from database to find which container has this IP
+                let allAttachments = try await stateStore.loadNetworkAttachments(containerID: containerID)
+                let existingAttachment = allAttachments.first(where: { $0.networkID == networkID && $0.ipAddress == userIP })
+
+                // If attachment exists and IP matches, this is a reconnect - allow it
+                // Otherwise, IP is used by a different container - reject
+                if existingAttachment == nil {
                     throw NetworkManagerError.ipAlreadyInUse(userIP)
                 }
             }
@@ -332,7 +359,7 @@ public actor WireGuardNetworkBackend {
                 "network_id": "\(networkID)"
             ])
         } else {
-            // Auto-allocate IP (existing logic)
+            // Auto-allocate IP (empty string or nil means auto-allocate)
             ipAddress = try await allocateIP(networkID: networkID, subnet: metadata.subnet)
         }
 
@@ -838,6 +865,7 @@ public actor WireGuardNetworkBackend {
 
 
     /// Allocate an IP address for a container in a network
+    /// Uses smart IP reclamation - finds first available IP by querying allocated IPs from database
     private func allocateIP(networkID: String, subnet: String) async throws -> String {
         // Extract network prefix (e.g., "172.18.0.0/16" -> "172.18")
         let components = subnet.split(separator: "/")[0].split(separator: ".")
@@ -847,16 +875,31 @@ public actor WireGuardNetworkBackend {
 
         let prefix = "\(components[0]).\(components[1])"
 
-        // Get next octet (starts at 2, .1 is gateway, or from ipRange)
-        guard let octet = nextIPOctet[networkID] else {
-            throw NetworkManagerError.ipAllocationFailed("Network not initialized: \(networkID)")
+        // Parse CIDR to get subnet mask
+        let cidrComponents = subnet.split(separator: "/")
+        guard cidrComponents.count == 2, let cidr = Int(cidrComponents[1]) else {
+            throw NetworkManagerError.ipAllocationFailed("Invalid subnet format: \(subnet)")
         }
 
+        // Calculate broadcast address based on CIDR
+        // For /30: 4 IPs total (2^(32-30) = 4)
+        // For /24: 256 IPs total (2^(32-24) = 256)
+        let hostBits = 32 - cidr
+        let totalIPs = 1 << hostBits  // 2^hostBits
+
+        // Calculate max usable IP (exclude network address and broadcast)
+        // For /30 (4 IPs): .0 (network), .1 (gateway), .2 (usable), .3 (broadcast) -> max = 2
+        // For /24 (256 IPs): .0 (network), .1 (gateway), .2-.254 (usable), .255 (broadcast) -> max = 254
+        let broadcastOctet = UInt8(totalIPs - 1)
+
+        // Determine IP allocation range
+        var minOctet: UInt8 = 2  // .1 is gateway, start at .2
+        var maxOctet: UInt8 = broadcastOctet - 1  // Exclude broadcast address
+
         // Check if ipRange is specified for this network
-        let maxOctet: UInt8
         if let metadata = networks[networkID], let ipRange = metadata.ipRange {
-            // Parse ipRange to get the upper bound
-            // Example: "172.18.0.128/25" -> /25 gives us 128 IPs, so range is .128 to .255
+            // Parse ipRange to get the bounds
+            // Example: "172.18.0.128/25" -> allocate from .128 to .255
             let rangeComponents = ipRange.split(separator: "/")
             if rangeComponents.count == 2, let cidr = Int(rangeComponents[1]) {
                 // Calculate number of host bits
@@ -866,52 +909,39 @@ public actor WireGuardNetworkBackend {
                 // Get starting IP from ipRange
                 let ipComponents = rangeComponents[0].split(separator: ".")
                 if ipComponents.count == 4, let startOctet = UInt8(ipComponents[3]) {
-                    maxOctet = min(255, startOctet + UInt8(numHosts))
-                } else {
-                    maxOctet = 254  // Fallback
+                    minOctet = startOctet  // Start from the specified IP
+                    maxOctet = min(254, startOctet + UInt8(numHosts))
                 }
-            } else {
-                maxOctet = 254  // Fallback
             }
-        } else {
-            maxOctet = 254  // Default: allow up to .254 (.255 is broadcast)
         }
 
-        guard octet <= maxOctet else {
-            throw NetworkManagerError.ipAllocationFailed("IP pool exhausted for network \(networkID) (range limit reached)")
-        }
+        // Get all currently allocated IPs from database (network_attachments table)
+        // This automatically reflects freed IPs when containers are removed (CASCADE DELETE)
+        let allocatedIPs = try await stateStore.getAllocatedIPs(networkID: networkID)
 
-        let ip = "\(prefix).0.\(octet)"
-        nextIPOctet[networkID] = octet + 1
+        // Find first available IP by scanning from minOctet to maxOctet
+        for octet in minOctet...maxOctet {
+            let candidateIP = "\(prefix).0.\(octet)"
 
-        // Persist updated IPAM state to database
-        // This ensures nextIPOctet survives daemon restarts and prevents IP allocation collisions
-        if let metadata = networks[networkID] {
-            let optionsJSON = try? JSONEncoder().encode(metadata.options)
-            let labelsJSON = try? JSONEncoder().encode(metadata.labels)
+            // Skip if already allocated
+            if allocatedIPs.contains(candidateIP) {
+                continue
+            }
 
-            try await stateStore.saveNetwork(
-                id: metadata.id,
-                name: metadata.name,
-                driver: metadata.driver,
-                scope: "local",
-                createdAt: metadata.created,
-                subnet: metadata.subnet,
-                gateway: metadata.gateway,
-                ipRange: metadata.ipRange,
-                nextIPOctet: octet + 1,  // Save the updated value
-                optionsJSON: optionsJSON.flatMap { String(data: $0, encoding: .utf8) },
-                labelsJSON: labelsJSON.flatMap { String(data: $0, encoding: .utf8) },
-                isDefault: metadata.isDefault
-            )
-
-            logger.debug("Persisted IPAM state", metadata: [
+            // Found an available IP!
+            logger.debug("Allocated IP (reclaimed if previously used)", metadata: [
                 "network_id": "\(networkID)",
-                "next_ip_octet": "\(octet + 1)"
+                "ip": "\(candidateIP)",
+                "total_allocated": "\(allocatedIPs.count)"
             ])
+
+            return candidateIP
         }
 
-        return ip
+        // No available IPs in range
+        throw NetworkManagerError.ipAllocationFailed(
+            "IP pool exhausted for network \(networkID): all IPs from \(prefix).0.\(minOctet) to \(prefix).0.\(maxOctet) are allocated"
+        )
     }
 
     /// Calculate gateway IP from subnet CIDR

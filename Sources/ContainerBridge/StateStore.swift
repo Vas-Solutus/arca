@@ -643,7 +643,6 @@ public actor StateStore {
         subnet: String,
         gateway: String,
         ipRange: String?,
-        nextIPOctet: UInt8,
         optionsJSON: String?,
         labelsJSON: String?,
         isDefault: Bool
@@ -657,7 +656,7 @@ public actor StateStore {
             self.subnet <- subnet,
             self.gateway <- gateway,
             self.ipRange <- ipRange,
-            self.nextIPOctet <- Int(nextIPOctet),
+            self.nextIPOctet <- 2,  // Legacy column - no longer used, kept for schema compatibility
             self.optionsJSON <- optionsJSON,
             self.labelsJSON <- labelsJSON,
             self.isDefault <- isDefault
@@ -680,7 +679,6 @@ public actor StateStore {
         subnet: String,
         gateway: String,
         ipRange: String?,
-        nextIPOctet: UInt8,
         optionsJSON: String?,
         labelsJSON: String?,
         isDefault: Bool
@@ -688,7 +686,7 @@ public actor StateStore {
         var result: [(
             id: String, name: String, driver: String, scope: String,
             createdAt: Date, subnet: String, gateway: String,
-            ipRange: String?, nextIPOctet: UInt8, optionsJSON: String?, labelsJSON: String?,
+            ipRange: String?, optionsJSON: String?, labelsJSON: String?,
             isDefault: Bool
         )] = []
 
@@ -704,7 +702,6 @@ public actor StateStore {
                 subnet: row[subnet],
                 gateway: row[gateway],
                 ipRange: row[ipRange],
-                nextIPOctet: UInt8(row[nextIPOctet]),
                 optionsJSON: row[optionsJSON],
                 labelsJSON: row[labelsJSON],
                 isDefault: row[isDefault]
@@ -795,6 +792,28 @@ public actor StateStore {
         ])
     }
 
+    /// Get all allocated IP addresses for a network
+    /// Returns IPs from network_attachments (actively used by containers)
+    public func getAllocatedIPs(networkID: String) throws -> Set<String> {
+        let query = networkAttachments
+            .filter(self.attachedNetworkID == networkID)
+            .select(ipAddress)
+
+        var allocatedIPs = Set<String>()
+        for row in try db.prepare(query) {
+            allocatedIPs.insert(row[ipAddress])
+        }
+
+        return allocatedIPs
+    }
+
+    /// Check if an IP is already allocated in a network
+    public func isIPAllocated(networkID: String, ip: String) throws -> Bool {
+        let query = networkAttachments
+            .filter(self.attachedNetworkID == networkID && ipAddress == ip)
+        return try db.scalar(query.count) > 0
+    }
+
     // MARK: - Subnet Allocation Operations
 
     /// Get next available subnet byte for auto-allocation
@@ -817,6 +836,35 @@ public actor StateStore {
         try db.run(allocation.update(nextSubnetByte <- value))
 
         logger.debug("Subnet allocation updated", metadata: ["nextSubnetByte": "\(value)"])
+    }
+
+    /// Get all allocated subnet bytes from existing networks
+    /// Parses subnets like "172.18.0.0/16" to extract the second octet (18)
+    /// Returns set of allocated subnet bytes (e.g., [18, 19, 20])
+    public func getAllocatedSubnetBytes() throws -> Set<UInt8> {
+        var allocatedBytes = Set<UInt8>()
+
+        for row in try db.prepare(networks) {
+            let subnetStr = row[subnet]
+
+            // Parse subnet like "172.18.0.0/16" -> extract second octet (18)
+            let components = subnetStr.split(separator: "/")
+            guard let ipPart = components.first else { continue }
+
+            let octets = ipPart.split(separator: ".")
+            guard octets.count >= 2,
+                  let secondOctet = UInt8(octets[1]) else {
+                continue
+            }
+
+            allocatedBytes.insert(secondOctet)
+        }
+
+        logger.debug("Found allocated subnet bytes", metadata: [
+            "subnets": "\(Array(allocatedBytes).sorted())"
+        ])
+
+        return allocatedBytes
     }
 
     // MARK: - Volume Operations
