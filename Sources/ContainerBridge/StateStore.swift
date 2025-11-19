@@ -723,6 +723,66 @@ public actor StateStore {
         logger.debug("Network deleted from database", metadata: ["id": "\(id)"])
     }
 
+    /// Get a single network by ID
+    public func getNetwork(id: String) throws -> (
+        id: String,
+        name: String,
+        driver: String,
+        scope: String,
+        createdAt: Date,
+        subnet: String,
+        gateway: String,
+        ipRange: String?,
+        optionsJSON: String?,
+        labelsJSON: String?,
+        isDefault: Bool
+    )? {
+        let query = networks.filter(self.networkID == id)
+        guard let row = try db.pluck(query) else {
+            return nil
+        }
+
+        let createdDate = Date(iso8601String: row[networkCreatedAt]) ?? Date()
+
+        return (
+            id: row[networkID],
+            name: row[networkName],
+            driver: row[driver],
+            scope: row[scope],
+            createdAt: createdDate,
+            subnet: row[subnet],
+            gateway: row[gateway],
+            ipRange: row[ipRange],
+            optionsJSON: row[optionsJSON],
+            labelsJSON: row[labelsJSON],
+            isDefault: row[isDefault]
+        )
+    }
+
+    /// Get all container IDs attached to a network
+    public func getNetworkContainers(networkID: String) throws -> Set<String> {
+        let query = networkAttachments.filter(self.attachedNetworkID == networkID)
+        var containerIDs = Set<String>()
+
+        for row in try db.prepare(query) {
+            containerIDs.insert(row[containerID])
+        }
+
+        return containerIDs
+    }
+
+    /// Get all network IDs a container is attached to
+    public func getContainerNetworks(containerID: String) throws -> Set<String> {
+        let query = networkAttachments.filter(self.containerID == containerID)
+        var networkIDs = Set<String>()
+
+        for row in try db.prepare(query) {
+            networkIDs.insert(row[attachedNetworkID])
+        }
+
+        return networkIDs
+    }
+
     // MARK: - Network Attachment Operations
 
     /// Save network attachment
@@ -771,6 +831,35 @@ public actor StateStore {
 
             result.append((
                 networkID: row[attachedNetworkID],
+                ipAddress: row[ipAddress],
+                macAddress: row[macAddress],
+                aliases: aliases
+            ))
+        }
+
+        return result
+    }
+
+    /// Load container attachments for a network
+    public func loadAttachmentsForNetwork(networkID: String) throws -> [(
+        containerID: String,
+        ipAddress: String,
+        macAddress: String,
+        aliases: [String]
+    )] {
+        var result: [(containerID: String, ipAddress: String, macAddress: String, aliases: [String])] = []
+
+        let query = networkAttachments.filter(self.attachedNetworkID == networkID)
+        for row in try db.prepare(query) {
+            let aliases: [String]
+            if let aliasesData = row[aliasesJSON]?.data(using: .utf8) {
+                aliases = (try? JSONDecoder().decode([String].self, from: aliasesData)) ?? []
+            } else {
+                aliases = []
+            }
+
+            result.append((
+                containerID: row[self.containerID],
                 ipAddress: row[ipAddress],
                 macAddress: row[macAddress],
                 aliases: aliases

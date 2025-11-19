@@ -457,7 +457,7 @@ public actor NetworkManager {
         // Route to appropriate backend based on driver
         switch driver {
         case "bridge", "wireguard":
-            return await wireGuardBackend?.getNetwork(id: id)
+            return try? await wireGuardBackend?.getNetwork(id: id)
 
         case "vmnet":
             return await vmnetBackend?.getNetwork(id: id)
@@ -523,8 +523,10 @@ public actor NetworkManager {
     /// Get container attachments for a network
     public func getNetworkAttachments(networkID: String) async -> [String: NetworkAttachment] {
         // Try WireGuard backend first (default for bridge)
-        if let backend = wireGuardBackend, await backend.getNetwork(id: networkID) != nil {
-            return await backend.getNetworkAttachments(networkID: networkID)
+        if let backend = wireGuardBackend {
+            if let attachments = try? await backend.getNetworkAttachments(networkID: networkID) {
+                return attachments
+            }
         }
 
         // Try vmnet backend
@@ -544,7 +546,9 @@ public actor NetworkManager {
         }
 
         if let backend = wireGuardBackend {
-            networks.append(contentsOf: await backend.listNetworks())
+            if let wgNetworks = try? await backend.listNetworks() {
+                networks.append(contentsOf: wgNetworks)
+            }
         }
 
         // Add null driver networks from StateStore
@@ -568,7 +572,9 @@ public actor NetworkManager {
         }
 
         if let backend = wireGuardBackend {
-            networks.append(contentsOf: await backend.getContainerNetworks(containerID: containerID))
+            if let wgNetworks = try? await backend.getContainerNetworks(containerID: containerID) {
+                networks.append(contentsOf: wgNetworks)
+            }
         }
 
         return networks

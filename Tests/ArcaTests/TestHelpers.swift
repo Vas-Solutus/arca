@@ -84,6 +84,10 @@ func startDaemon(socketPath: String, arcaBinary: String = ".build/debug/Arca", l
     // Create log file if it doesn't exist
     FileManager.default.createFile(atPath: logFile, contents: nil, attributes: nil)
 
+    // CRITICAL: Code sign the binary before running to give it vmnet entitlements
+    // Tests run via 'swift test' don't get automatic signing from Makefile
+    _ = try? shell("codesign --force --sign - --entitlements Arca.entitlements \(arcaBinary)")
+
     // Start daemon in background
     let task = Process()
     task.executableURL = URL(fileURLWithPath: arcaBinary)

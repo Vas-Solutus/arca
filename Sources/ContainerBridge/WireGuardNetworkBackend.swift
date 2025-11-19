@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import Containerization
+import IP
 
 /// WireGuard backend for Docker bridge networks
 ///
@@ -26,15 +27,9 @@ public actor WireGuardNetworkBackend {
     private let stateStore: StateStore
     private let getContainer: (String) async throws -> Containerization.LinuxContainer
 
-    // Network state tracking
-    private var networks: [String: NetworkMetadata] = [:]  // Network ID -> Metadata
-    private var networksByName: [String: String] = [:]  // Name -> Network ID
-    private var containerNetworks: [String: Set<String>] = [:]  // Container ID -> Set of Network IDs
+    // WireGuard runtime state (ephemeral - recreated on container start)
+    // This state does NOT persist across daemon restarts - it's rebuilt when containers start
 
-    // Container attachment details: networkID -> containerID -> (ip, mac, aliases)
-    private var containerAttachments: [String: [String: NetworkAttachment]] = [:]
-
-    // WireGuard interface state (Phase 2.2 - multi-network)
     // Track network index for each container-network pair: containerID -> networkID -> networkIndex
     private var containerNetworkIndices: [String: [String: UInt32]] = [:]
 
@@ -57,8 +52,8 @@ public actor WireGuardNetworkBackend {
         self.getContainer = getContainer
     }
 
-    /// Restore networks from database on daemon startup
-    /// This populates the in-memory networks dictionary with persisted network metadata
+    /// Restore network state from database on daemon startup
+    /// Database is the source of truth - networks will be loaded on-demand
     public func restoreNetworks() async throws {
         // Restore nextSubnetByte from database (CRITICAL for preventing subnet overlaps after restart)
         let persistedSubnetByte = try await stateStore.getNextSubnetByte()
@@ -68,59 +63,12 @@ public actor WireGuardNetworkBackend {
             "next_subnet_byte": "\(nextSubnetByte)"
         ])
 
+        // Count networks for logging (database is source of truth - no need to load into memory)
         let persistedNetworks = try await stateStore.loadAllNetworks()
+        let wireGuardNetworkCount = persistedNetworks.filter { $0.driver == "bridge" || $0.driver == "wireguard" }.count
 
-        for networkData in persistedNetworks {
-            // Only restore WireGuard/bridge networks
-            guard networkData.driver == "bridge" || networkData.driver == "wireguard" else {
-                continue
-            }
-
-            // Decode options and labels from JSON
-            let options: [String: String]
-            if let optionsJSON = networkData.optionsJSON,
-               let data = optionsJSON.data(using: .utf8) {
-                options = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
-            } else {
-                options = [:]
-            }
-
-            let labels: [String: String]
-            if let labelsJSON = networkData.labelsJSON,
-               let data = labelsJSON.data(using: .utf8) {
-                labels = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
-            } else {
-                labels = [:]
-            }
-
-            // Create NetworkMetadata and restore to in-memory state
-            let metadata = NetworkMetadata(
-                id: networkData.id,
-                name: networkData.name,
-                driver: networkData.driver,
-                subnet: networkData.subnet,
-                gateway: networkData.gateway,
-                ipRange: networkData.ipRange,
-                containers: [],  // Containers will be reattached when they start
-                created: networkData.createdAt,
-                options: options,
-                labels: labels,
-                isDefault: networkData.isDefault
-            )
-
-            networks[networkData.id] = metadata
-            networksByName[networkData.name] = networkData.id
-
-            logger.debug("Restored network from database", metadata: [
-                "network_id": "\(networkData.id)",
-                "name": "\(networkData.name)",
-                "subnet": "\(networkData.subnet)",
-                "gateway": "\(networkData.gateway)"
-            ])
-        }
-
-        logger.info("Restored WireGuard networks from database", metadata: [
-            "count": "\(networks.count)"
+        logger.info("WireGuard network backend ready - networks in database", metadata: [
+            "count": "\(wireGuardNetworkCount)"
         ])
     }
 
@@ -195,26 +143,8 @@ public actor WireGuardNetworkBackend {
         // Instead, allocateIP() queries allocated IPs from network_attachments table
         // and finds first available IP, enabling automatic IP reclamation
 
-        // Create metadata
-        let createdDate = Date()
-        let metadata = NetworkMetadata(
-            id: id,
-            name: name,
-            driver: "wireguard",
-            subnet: effectiveSubnet,
-            gateway: effectiveGateway,
-            ipRange: ipRange,
-            containers: [],
-            created: createdDate,
-            options: options,
-            labels: labels,
-            isDefault: isDefault
-        )
-
-        networks[id] = metadata
-        networksByName[name] = id
-
         // Persist network to database
+        let createdDate = Date()
         do {
             let optionsJSON = try JSONEncoder().encode(options)
             let labelsJSON = try JSONEncoder().encode(labels)
@@ -248,37 +178,31 @@ public actor WireGuardNetworkBackend {
             "gateway": "\(effectiveGateway)"
         ])
 
-        return metadata
+        // Load the network we just created from database to return
+        guard let createdNetwork = try await loadNetwork(id: id) else {
+            throw NetworkManagerError.networkNotFound(id)
+        }
+
+        return createdNetwork
     }
 
     /// Delete a bridge network
     public func deleteBridgeNetwork(id: String) async throws {
-        guard networks[id] != nil else {
+        // Check if network exists
+        guard let metadata = try await loadNetwork(id: id) else {
             throw NetworkManagerError.networkNotFound(id)
         }
 
         // Check if any containers are still using this network
-        if let metadata = networks[id], !metadata.containers.isEmpty {
+        if !metadata.containers.isEmpty {
             throw NetworkManagerError.hasActiveEndpoints(metadata.name, metadata.containers.count)
         }
 
         logger.info("Deleting WireGuard bridge network", metadata: ["network_id": "\(id)"])
 
-        // Delete from database first
-        do {
-            try await stateStore.deleteNetwork(id: id)
-            logger.debug("WireGuard network deleted from database", metadata: ["network_id": "\(id)"])
-        } catch {
-            logger.error("Failed to delete WireGuard network from database", metadata: [
-                "network_id": "\(id)",
-                "error": "\(error)"
-            ])
-            // Continue - still delete from memory
-        }
-
-        networks.removeValue(forKey: id)
-        networksByName.removeValue(forKey: networksByName.first(where: { $0.value == id })?.key ?? "")
-        containerAttachments.removeValue(forKey: id)
+        // Delete from database
+        try await stateStore.deleteNetwork(id: id)
+        logger.debug("WireGuard network deleted from database", metadata: ["network_id": "\(id)"])
     }
 
     // MARK: - Container Attachment
@@ -294,7 +218,8 @@ public actor WireGuardNetworkBackend {
         aliases: [String],
         userSpecifiedIP: String? = nil
     ) async throws -> NetworkAttachment {
-        guard var metadata = networks[networkID] else {
+        // Load network metadata from database
+        guard let metadata = try await loadNetwork(id: networkID) else {
             throw NetworkManagerError.networkNotFound(networkID)
         }
 
@@ -305,13 +230,14 @@ public actor WireGuardNetworkBackend {
             "user_specified_ip": "\(userSpecifiedIP ?? "auto")"
         ])
 
-        // Check if already attached
-        if metadata.containers.contains(containerID) {
+        // Check if already attached by querying database
+        let containerNetworks = try await stateStore.getContainerNetworks(containerID: containerID)
+        if containerNetworks.contains(networkID) {
             // Container is already in this network - check if this is a restoration after restart
-            let existingAttachments = containerAttachments[networkID] ?? [:]
-            if let existingAttachment = existingAttachments[containerID],
+            let attachments = try await stateStore.loadNetworkAttachments(containerID: containerID)
+            if let existingAttachment = attachments.first(where: { $0.networkID == networkID }),
                let userIP = userSpecifiedIP,
-               userIP == existingAttachment.ip {
+               userIP == existingAttachment.ipAddress {
                 // This is a restoration after container restart - same container, same IP
                 // The WireGuard client was disconnected on stop, so we need to recreate interfaces
                 logger.info("Container restart detected - recreating WireGuard interface with existing IP", metadata: [
@@ -447,9 +373,9 @@ public actor WireGuardNetworkBackend {
             "this_ip": "\(ipAddress)"
         ])
 
-        // Get all OTHER containers already on this network
-        let existingAttachments = containerAttachments[networkID] ?? [:]
-        let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
+        // Get all OTHER containers already on this network from database
+        let networkAttachments = try await stateStore.loadAttachmentsForNetwork(networkID: networkID)
+        let otherContainerIDs = networkAttachments.map { $0.containerID }.filter { $0 != containerID }
 
         logger.debug("Found existing containers on network", metadata: [
             "network_id": "\(networkID)",
@@ -460,12 +386,17 @@ public actor WireGuardNetworkBackend {
         // 1. Add THIS container as a peer to THAT container
         // 2. Add THAT container as a peer to THIS container
         for otherContainerID in otherContainerIDs {
-            guard let otherAttachment = existingAttachments[otherContainerID],
-                  let otherPublicKey = containerInterfaceKeys[otherContainerID]?[networkID],
+            // Get peer runtime state (WireGuard keys and indices are ephemeral - recreated on start)
+            guard let otherPublicKey = containerInterfaceKeys[otherContainerID]?[networkID],
                   let otherNetworkIndex = containerNetworkIndices[otherContainerID]?[networkID] else {
-                logger.warning("Skipping peer - missing metadata", metadata: [
+                logger.warning("Skipping peer - missing runtime state (container likely stopped)", metadata: [
                     "other_container_id": "\(otherContainerID)"
                 ])
+                continue
+            }
+
+            // Get IP address from database
+            guard let otherAttachment = networkAttachments.first(where: { $0.containerID == otherContainerID }) else {
                 continue
             }
 
@@ -515,7 +446,7 @@ public actor WireGuardNetworkBackend {
                 "container_id": "\(containerID)",
                 "peer_container_id": "\(otherContainerID)",
                 "peer_endpoint": "\(otherEndpoint)",
-                "peer_ip": "\(otherAttachment.ip)"
+                "peer_ip": "\(otherAttachment.ipAddress)"
             ])
 
             // Add THIS container as a peer to OTHER container
@@ -554,7 +485,7 @@ public actor WireGuardNetworkBackend {
                     networkIndex: networkIndex,
                     peerPublicKey: otherPublicKey,
                     peerEndpoint: otherEndpoint,
-                    peerIPAddress: otherAttachment.ip,
+                    peerIPAddress: otherAttachment.ipAddress,
                     peerName: otherName,
                     peerContainerID: otherContainerID,
                     peerAliases: otherAliases
@@ -590,19 +521,16 @@ public actor WireGuardNetworkBackend {
             aliases: aliases + [containerName]
         )
 
-        // Update state
-        metadata.containers.insert(containerID)
-        networks[networkID] = metadata
+        // Save attachment to database
+        try await stateStore.saveNetworkAttachment(
+            containerID: containerID,
+            networkID: networkID,
+            ipAddress: ipAddress,
+            macAddress: mac,
+            aliases: aliases + [containerName]
+        )
 
-        var attachments = containerAttachments[networkID] ?? [:]
-        attachments[containerID] = attachment
-        containerAttachments[networkID] = attachments
-
-        var containerNets = containerNetworks[containerID] ?? []
-        containerNets.insert(networkID)
-        containerNetworks[containerID] = containerNets
-
-        // Store container name for DNS (Phase 3.1)
+        // Store container name for DNS (Phase 3.1) - still needs in-memory for WireGuard client access
         containerNames[containerID] = containerName
 
         logger.info("Container attached to WireGuard network", metadata: [
@@ -622,7 +550,8 @@ public actor WireGuardNetworkBackend {
         container: Containerization.LinuxContainer,
         networkID: String
     ) async throws {
-        guard var metadata = networks[networkID] else {
+        // Load network metadata from database
+        guard let metadata = try await loadNetwork(id: networkID) else {
             throw NetworkManagerError.networkNotFound(networkID)
         }
 
@@ -631,8 +560,9 @@ public actor WireGuardNetworkBackend {
             "network_id": "\(networkID)"
         ])
 
-        // Check if attached
-        guard metadata.containers.contains(containerID) else {
+        // Check if attached by querying database
+        let containerNetworks = try await stateStore.getContainerNetworks(containerID: containerID)
+        guard containerNetworks.contains(networkID) else {
             throw NetworkManagerError.notConnected(containerID, metadata.name)
         }
 
@@ -671,9 +601,9 @@ public actor WireGuardNetworkBackend {
         if let networkIndex = networkIndex,
            let thisPublicKey = containerInterfaceKeys[containerID]?[networkID] {
 
-            // Get all OTHER containers on this network
-            let existingAttachments = containerAttachments[networkID] ?? [:]
-            let otherContainerIDs = existingAttachments.keys.filter { $0 != containerID }
+            // Get all OTHER containers on this network from database
+            let networkContainers = try await stateStore.getNetworkContainers(networkID: networkID)
+            let otherContainerIDs = networkContainers.filter { $0 != containerID }
 
             logger.debug("Removing this container as peer from other containers", metadata: [
                 "container_id": "\(containerID)",
@@ -779,7 +709,6 @@ public actor WireGuardNetworkBackend {
 
                 containerNetworkIndices.removeValue(forKey: containerID)
                 containerInterfaceKeys.removeValue(forKey: containerID)
-                containerNetworks.removeValue(forKey: containerID)
                 containerNames.removeValue(forKey: containerID)  // Phase 3.1: Clean up DNS name
             } else {
                 containerNetworkIndices[containerID] = updatedIndices
@@ -787,10 +716,6 @@ public actor WireGuardNetworkBackend {
                 var keys = containerInterfaceKeys[containerID] ?? [:]
                 keys.removeValue(forKey: networkID)
                 containerInterfaceKeys[containerID] = keys
-
-                var containerNets = containerNetworks[containerID] ?? []
-                containerNets.remove(networkID)
-                containerNetworks[containerID] = containerNets
             }
         } else {
             // Container has no network index - already cleaned up or never had this network
@@ -800,14 +725,9 @@ public actor WireGuardNetworkBackend {
             ])
         }
 
-        // ALWAYS update metadata and attachments, even if container is stopped
-        // This ensures network state is consistent after container removal
-        metadata.containers.remove(containerID)
-        networks[networkID] = metadata
-
-        var attachments = containerAttachments[networkID] ?? [:]
-        attachments.removeValue(forKey: containerID)
-        containerAttachments[networkID] = attachments
+        // Delete attachment from database
+        // This is the source of truth - network's container list is derived from database
+        try await stateStore.deleteNetworkAttachment(containerID: containerID, networkID: networkID)
 
         logger.info("Container detached from WireGuard network", metadata: [
             "container_id": "\(containerID)",
@@ -818,35 +738,99 @@ public actor WireGuardNetworkBackend {
     // MARK: - Network Queries
 
     /// Get network metadata
-    public func getNetwork(id: String) -> NetworkMetadata? {
-        return networks[id]
+    public func getNetwork(id: String) async throws -> NetworkMetadata? {
+        return try await loadNetwork(id: id)
     }
 
     /// List all networks
-    public func listNetworks() -> [NetworkMetadata] {
-        return Array(networks.values)
+    public func listNetworks() async throws -> [NetworkMetadata] {
+        let dbNetworks = try await stateStore.loadAllNetworks()
+        var networks: [NetworkMetadata] = []
+
+        for dbNetwork in dbNetworks {
+            // Only include WireGuard/bridge networks
+            guard dbNetwork.driver == "wireguard" || dbNetwork.driver == "bridge" else {
+                continue
+            }
+
+            let containers = try await stateStore.getNetworkContainers(networkID: dbNetwork.id)
+            let options = try? (dbNetwork.optionsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+            let labels = try? (dbNetwork.labelsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+
+            networks.append(NetworkMetadata(
+                id: dbNetwork.id,
+                name: dbNetwork.name,
+                driver: dbNetwork.driver,
+                subnet: dbNetwork.subnet,
+                gateway: dbNetwork.gateway,
+                ipRange: dbNetwork.ipRange,
+                containers: containers,
+                created: dbNetwork.createdAt,
+                options: options ?? [:],
+                labels: labels ?? [:],
+                isDefault: dbNetwork.isDefault
+            ))
+        }
+
+        return networks
     }
 
     /// Get network by name
-    public func getNetworkByName(name: String) -> NetworkMetadata? {
-        guard let id = networksByName[name] else {
+    public func getNetworkByName(name: String) async throws -> NetworkMetadata? {
+        // Query all networks and find by name
+        let allNetworks = try await stateStore.loadAllNetworks()
+        guard let dbNetwork = allNetworks.first(where: { $0.name == name }) else {
             return nil
         }
-        return networks[id]
+
+        let containers = try await stateStore.getNetworkContainers(networkID: dbNetwork.id)
+        let options = try? (dbNetwork.optionsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+        let labels = try? (dbNetwork.labelsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+
+        return NetworkMetadata(
+            id: dbNetwork.id,
+            name: dbNetwork.name,
+            driver: dbNetwork.driver,
+            subnet: dbNetwork.subnet,
+            gateway: dbNetwork.gateway,
+            ipRange: dbNetwork.ipRange,
+            containers: containers,
+            created: dbNetwork.createdAt,
+            options: options ?? [:],
+            labels: labels ?? [:],
+            isDefault: dbNetwork.isDefault
+        )
     }
 
     /// Get container attachments for a network
-    public func getNetworkAttachments(networkID: String) -> [String: NetworkAttachment] {
-        return containerAttachments[networkID] ?? [:]
+    public func getNetworkAttachments(networkID: String) async throws -> [String: NetworkAttachment] {
+        let attachments = try await stateStore.loadAttachmentsForNetwork(networkID: networkID)
+        var result: [String: NetworkAttachment] = [:]
+
+        for attachment in attachments {
+            result[attachment.containerID] = NetworkAttachment(
+                networkID: networkID,
+                ip: attachment.ipAddress,
+                mac: attachment.macAddress,
+                aliases: attachment.aliases
+            )
+        }
+
+        return result
     }
 
     /// Get networks for a container
-    public func getContainerNetworks(containerID: String) -> [NetworkMetadata] {
-        guard let networkIDs = containerNetworks[containerID] else {
-            return []
+    public func getContainerNetworks(containerID: String) async throws -> [NetworkMetadata] {
+        let networkIDs = try await stateStore.getContainerNetworks(containerID: containerID)
+        var networks: [NetworkMetadata] = []
+
+        for networkID in networkIDs {
+            if let network = try await loadNetwork(id: networkID) {
+                networks.append(network)
+            }
         }
 
-        return networkIDs.compactMap { networks[$0] }
+        return networks
     }
 
     /// Clean up in-memory network state for a stopped/exited container
@@ -863,96 +847,108 @@ public actor WireGuardNetworkBackend {
 
     // MARK: - Helper Methods
 
+    /// Load NetworkMetadata from database
+    private func loadNetwork(id: String) async throws -> NetworkMetadata? {
+        guard let dbNetwork = try await stateStore.getNetwork(id: id) else {
+            return nil
+        }
+
+        // Get containers attached to this network from database
+        let containers = try await stateStore.getNetworkContainers(networkID: id)
+
+        // Parse options and labels from JSON
+        let options = try? (dbNetwork.optionsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+        let labels = try? (dbNetwork.labelsJSON.flatMap { try JSONDecoder().decode([String: String].self, from: $0.data(using: .utf8)!) }) ?? [:]
+
+        return NetworkMetadata(
+            id: dbNetwork.id,
+            name: dbNetwork.name,
+            driver: dbNetwork.driver,
+            subnet: dbNetwork.subnet,
+            gateway: dbNetwork.gateway,
+            ipRange: dbNetwork.ipRange,
+            containers: containers,
+            created: dbNetwork.createdAt,
+            options: options ?? [:],
+            labels: labels ?? [:],
+            isDefault: dbNetwork.isDefault
+        )
+    }
 
     /// Allocate an IP address for a container in a network
     /// Uses smart IP reclamation - finds first available IP by querying allocated IPs from database
     private func allocateIP(networkID: String, subnet: String) async throws -> String {
-        // Extract network prefix (e.g., "172.18.0.0/16" -> "172.18")
-        let components = subnet.split(separator: "/")[0].split(separator: ".")
-        guard components.count >= 3 else {
+        // Parse subnet using swift-ip for type safety
+        guard let block = IP.Block<IP.V4>(subnet) else {
             throw NetworkManagerError.ipAllocationFailed("Invalid subnet format: \(subnet)")
-        }
-
-        let prefix = "\(components[0]).\(components[1])"
-
-        // Parse CIDR to get subnet mask
-        let cidrComponents = subnet.split(separator: "/")
-        guard cidrComponents.count == 2, let cidr = Int(cidrComponents[1]) else {
-            throw NetworkManagerError.ipAllocationFailed("Invalid subnet format: \(subnet)")
-        }
-
-        // Calculate broadcast address based on CIDR
-        // For /30: 4 IPs total (2^(32-30) = 4)
-        // For /24: 256 IPs total (2^(32-24) = 256)
-        let hostBits = 32 - cidr
-        let totalIPs = 1 << hostBits  // 2^hostBits
-
-        // Calculate max usable IP (exclude network address and broadcast)
-        // For /30 (4 IPs): .0 (network), .1 (gateway), .2 (usable), .3 (broadcast) -> max = 2
-        // For /24 (256 IPs): .0 (network), .1 (gateway), .2-.254 (usable), .255 (broadcast) -> max = 254
-        let broadcastOctet = UInt8(totalIPs - 1)
-
-        // Determine IP allocation range
-        var minOctet: UInt8 = 2  // .1 is gateway, start at .2
-        var maxOctet: UInt8 = broadcastOctet - 1  // Exclude broadcast address
-
-        // Check if ipRange is specified for this network
-        if let metadata = networks[networkID], let ipRange = metadata.ipRange {
-            // Parse ipRange to get the bounds
-            // Example: "172.18.0.128/25" -> allocate from .128 to .255
-            let rangeComponents = ipRange.split(separator: "/")
-            if rangeComponents.count == 2, let cidr = Int(rangeComponents[1]) {
-                // Calculate number of host bits
-                let hostBits = 32 - cidr
-                let numHosts = (1 << hostBits) - 2  // -2 for network and broadcast
-
-                // Get starting IP from ipRange
-                let ipComponents = rangeComponents[0].split(separator: ".")
-                if ipComponents.count == 4, let startOctet = UInt8(ipComponents[3]) {
-                    minOctet = startOctet  // Start from the specified IP
-                    maxOctet = min(254, startOctet + UInt8(numHosts))
-                }
-            }
         }
 
         // Get all currently allocated IPs from database (network_attachments table)
         // This automatically reflects freed IPs when containers are removed (CASCADE DELETE)
         let allocatedIPs = try await stateStore.getAllocatedIPs(networkID: networkID)
 
-        // Find first available IP by scanning from minOctet to maxOctet
-        for octet in minOctet...maxOctet {
-            let candidateIP = "\(prefix).0.\(octet)"
+        // Determine IP allocation range
+        // For Docker compatibility, we allocate from .2 (gateway is .1) to broadcast-1
+        let networkAddr = block.base
+        let gatewayIP = IP.V4(value: networkAddr.value + 1)  // .1 is gateway
+        let startIP = IP.V4(value: gatewayIP.value + 1)  // Start at .2
 
-            // Skip if already allocated
-            if allocatedIPs.contains(candidateIP) {
-                continue
+        // Check if ipRange is specified for this network to constrain allocation
+        let (rangeStart, rangeEnd): (IP.V4, IP.V4)
+        if let metadata = try await loadNetwork(id: networkID), let ipRangeStr = metadata.ipRange,
+           let ipRange = IP.Block<IP.V4>(ipRangeStr) {
+            // Use ip-range to constrain allocation
+            rangeStart = ipRange.range.lowerBound
+            rangeEnd = ipRange.range.upperBound
+        } else {
+            // Use full subnet range (excluding network address and broadcast)
+            rangeStart = startIP
+            rangeEnd = block.range.upperBound  // This is broadcast - 1 already
+        }
+
+        // Iterate through IP range to find first available
+        var currentValue = rangeStart.value
+        let endValue = rangeEnd.value
+
+        while currentValue <= endValue {
+            let currentIP = IP.V4(value: currentValue)
+            let candidateIPStr = String(describing: currentIP)
+
+            // Skip gateway (.1) and already allocated IPs
+            if currentIP != gatewayIP && !allocatedIPs.contains(candidateIPStr) {
+                // Found an available IP!
+                logger.debug("Allocated IP (reclaimed if previously used)", metadata: [
+                    "network_id": "\(networkID)",
+                    "ip": "\(candidateIPStr)",
+                    "total_allocated": "\(allocatedIPs.count)"
+                ])
+
+                return candidateIPStr
             }
 
-            // Found an available IP!
-            logger.debug("Allocated IP (reclaimed if previously used)", metadata: [
-                "network_id": "\(networkID)",
-                "ip": "\(candidateIP)",
-                "total_allocated": "\(allocatedIPs.count)"
-            ])
-
-            return candidateIP
+            // Move to next IP (handles overflow gracefully)
+            if currentValue == UInt32.max {
+                break  // Reached end of address space
+            }
+            currentValue += 1
         }
 
         // No available IPs in range
         throw NetworkManagerError.ipAllocationFailed(
-            "IP pool exhausted for network \(networkID): all IPs from \(prefix).0.\(minOctet) to \(prefix).0.\(maxOctet) are allocated"
+            "IP pool exhausted for network \(networkID): all IPs from \(rangeStart) to \(rangeEnd) are allocated"
         )
     }
 
     /// Calculate gateway IP from subnet CIDR
     private func calculateGateway(subnet: String) -> String {
-        // For simplicity, use .1 as gateway (e.g., 172.18.0.1 for 172.18.0.0/16)
-        let components = subnet.split(separator: "/")[0].split(separator: ".")
-        guard components.count >= 3 else {
+        // For Docker compatibility, use .1 as gateway (e.g., 172.18.0.1 for 172.18.0.0/16)
+        guard let block = IP.Block<IP.V4>(subnet) else {
             return "172.18.0.1"  // Fallback
         }
 
-        return "\(components[0]).\(components[1]).0.1"
+        // Gateway is always .1 (first host address after network address)
+        let gatewayIP = IP.V4(value: block.base.value + 1)
+        return String(describing: gatewayIP)
     }
 
     /// Generate a deterministic MAC address for a container on a network
@@ -987,38 +983,13 @@ public actor WireGuardNetworkBackend {
 
     /// Check if an IP address is within a subnet (CIDR)
     private func isIPInSubnet(_ ip: String, subnet: String) -> Bool {
-        let parts = subnet.split(separator: "/")
-        guard parts.count == 2,
-              let cidr = Int(parts[1]) else {
+        // Parse subnet and IP using swift-ip for type-safe checking
+        guard let block = IP.Block<IP.V4>(subnet),
+              let address = IP.V4(ip) else {
             return false
         }
 
-        let subnetIP = String(parts[0])
-
-        // Parse both IPs into octets
-        let ipOctets = ip.split(separator: ".").compactMap { Int($0) }
-        let subnetOctets = subnetIP.split(separator: ".").compactMap { Int($0) }
-
-        guard ipOctets.count == 4, subnetOctets.count == 4 else {
-            return false
-        }
-
-        // Convert CIDR to number of bits to check
-        let bitsToCheck = cidr
-
-        // Check bit by bit
-        for bit in 0..<bitsToCheck {
-            let octetIndex = bit / 8
-            let bitIndex = 7 - (bit % 8)
-
-            let ipBit = (ipOctets[octetIndex] >> bitIndex) & 1
-            let subnetBit = (subnetOctets[octetIndex] >> bitIndex) & 1
-
-            if ipBit != subnetBit {
-                return false
-            }
-        }
-
-        return true
+        // Use swift-ip's built-in contains check
+        return block.contains(address)
     }
 }
