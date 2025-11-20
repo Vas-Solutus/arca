@@ -99,7 +99,10 @@ public final class ConfigManager {
     /// Expand ~ to home directory in path
     private func expandTilde(_ path: String) -> String {
         if path.hasPrefix("~") {
-            let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+            // Prefer HOME environment variable (reliable for LaunchAgents)
+            // Fall back to FileManager if HOME is not set
+            let homeDir = ProcessInfo.processInfo.environment["HOME"]
+                ?? FileManager.default.homeDirectoryForCurrentUser.path
             return path.replacingOccurrences(of: "~", with: homeDir, options: [.anchored])
         }
         return path

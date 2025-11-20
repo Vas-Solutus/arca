@@ -47,6 +47,12 @@ extension Daemon {
 
         @Option(
             name: .long,
+            help: "Path to Linux kernel (default: ~/.arca/vmlinux)"
+        )
+        var kernelPath: String?
+
+        @Option(
+            name: .long,
             help: "Log level (trace, debug, info, warning, error, critical)"
         )
         var logLevel: String = "info"
@@ -66,13 +72,13 @@ extension Daemon {
             var logger = Logger(label: "com.vassolutus.arca")
             logger.logLevel = parseLogLevel(logLevel)
 
-            // Check if daemon is already running
+            // Check if daemon is already running (stale sockets are automatically cleaned)
             if ArcaDaemon.isRunning(socketPath: socketPath) {
-                logger.error("Daemon appears to be already running", metadata: [
+                logger.error("Daemon is already running", metadata: [
                     "socket_path": "\(socketPath)"
                 ])
-                print("Error: Socket already exists at \(socketPath)")
-                print("If the daemon is not running, remove the socket file and try again.")
+                print("Error: Daemon is already running at \(socketPath)")
+                print("Stop the daemon first: launchctl unload ~/Library/LaunchAgents/com.liquescent.arca.plist")
                 throw ExitCode.failure
             }
 
@@ -93,7 +99,7 @@ extension Daemon {
             print()
 
             // Create and start daemon
-            let daemon = ArcaDaemon(socketPath: socketPath, logger: logger)
+            let daemon = ArcaDaemon(socketPath: socketPath, kernelPath: kernelPath, logger: logger)
             let shutdownLogger = logger  // Capture for signal handlers
 
             // Ignore SIGPIPE (broken pipe when client disconnects)

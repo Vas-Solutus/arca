@@ -42,9 +42,51 @@ docker ps
 
 ## Installation
 
-For persistent use, install as a LaunchAgent service:
+### Option 1: macOS Installer (Recommended)
+
+Download and install the latest `.pkg` installer:
 
 ```bash
+# Download from GitHub Releases
+curl -LO https://github.com/liquescent-development/arca/releases/latest/download/Arca-latest.pkg
+
+# Install (includes kernel, vminit, and auto-start daemon)
+sudo installer -pkg Arca-latest.pkg -target /
+
+# Configure your shell
+export DOCKER_HOST=unix://~/.arca/arca.sock
+echo 'export DOCKER_HOST=unix://~/.arca/arca.sock' >> ~/.zshrc
+
+# Start using Docker!
+docker run hello-world
+```
+
+The `.pkg` installer:
+- ✅ Includes pre-built kernel and vminit (no manual setup required)
+- ✅ Auto-starts daemon on boot via LaunchAgent
+- ✅ Installs to `/usr/local/bin/Arca`
+- ✅ Works on macOS 15.0+ (Sequoia)
+
+### Option 2: Homebrew (Coming Soon)
+
+```bash
+brew install liquescent-development/arca/arca
+brew services start arca
+```
+
+### Option 3: Build from Source
+
+For development or if you want to build yourself:
+
+```bash
+# Clone repository with submodules
+git clone --recurse-submodules https://github.com/Liquescent-Development/arca.git
+cd arca
+
+# Build pre-built assets (one-time, ~20-25 minutes)
+make build-assets
+
+# Install as LaunchAgent service
 make install-service    # Install service (no sudo required)
 make start-service      # Start service
 make configure-shell    # Add DOCKER_HOST to shell profile

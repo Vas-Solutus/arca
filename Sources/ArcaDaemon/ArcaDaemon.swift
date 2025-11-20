@@ -7,6 +7,7 @@ import ContainerBridge
 /// The main Arca daemon that implements the Docker Engine API server
 public final class ArcaDaemon: @unchecked Sendable {
     private let socketPath: String
+    private let kernelPath: String?
     private let logger: Logger
     private var server: ArcaServer?
     private var containerManager: ContainerBridge.ContainerManager?
@@ -16,8 +17,9 @@ public final class ArcaDaemon: @unchecked Sendable {
     private var volumeManager: VolumeManager?
     private var eventManager: EventManager?
 
-    public init(socketPath: String, logger: Logger) {
+    public init(socketPath: String, kernelPath: String? = nil, logger: Logger) {
         self.socketPath = socketPath
+        self.kernelPath = kernelPath
         self.logger = logger
     }
 
@@ -30,7 +32,16 @@ public final class ArcaDaemon: @unchecked Sendable {
 
         // Load and validate configuration
         let configManager = ConfigManager(logger: logger)
-        let config = try configManager.loadConfig()
+        var config = try configManager.loadConfig()
+
+        // Override kernel path if provided via command line
+        if let kernelPath = self.kernelPath {
+            config = ArcaConfig(
+                kernelPath: kernelPath,
+                socketPath: config.socketPath,
+                logLevel: config.logLevel
+            )
+        }
 
         logger.info("Configuration loaded", metadata: [
             "kernel_path": "\(config.kernelPath)",

@@ -1,0 +1,25 @@
+#!/bin/bash
+#
+# Arca Launcher
+# Entry point when user double-clicks Arca.app
+# Runs first-time setup if needed
+#
+
+# Get the app bundle path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
+
+# Check if setup has been run (kernel exists in ~/.arca/)
+if [ -f "$HOME/.arca/vmlinux" ]; then
+    # Already set up - show status
+    osascript -e 'display dialog "Arca is already installed and running.\n\nThe Arca daemon runs in the background via LaunchAgent.\n\nUse Docker CLI commands with:\nexport DOCKER_HOST=unix://$HOME/.arca/arca.sock" buttons {"OK"} default button "OK" with title "Arca" with icon note'
+else
+    # First launch - run setup
+    # Run setup in Terminal so user can see output
+    osascript -e "tell application \"Terminal\"
+        do script \"$SETUP_SCRIPT; echo ''; echo 'Press Enter to close this window...'; read\"
+        activate
+    end tell"
+fi
+
+exit 0

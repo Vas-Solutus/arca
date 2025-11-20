@@ -7,11 +7,13 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/Arca</string>
+        <string>HOME_DIR/Library/Application Support/Arca/bin/Arca</string>
         <string>daemon</string>
         <string>start</string>
         <string>--socket-path</string>
         <string>HOME_DIR/.arca/arca.sock</string>
+        <string>--kernel-path</string>
+        <string>HOME_DIR/.arca/vmlinux</string>
         <string>--log-level</string>
         <string>info</string>
         <string>--foreground</string>
@@ -39,6 +41,8 @@
     <dict>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>HOME_DIR</string>
     </dict>
 </dict>
 </plist>

@@ -119,8 +119,34 @@ public final class ArcaServer: @unchecked Sendable {
         logger.info("Arca server stopped")
     }
 
-    /// Check if a socket file exists and is accessible
+    /// Check if a socket file exists and has an active process listening
+    /// Automatically removes stale socket files (no process bound)
     public static func socketExists(at path: String) -> Bool {
-        return FileManager.default.fileExists(atPath: path)
+        guard FileManager.default.fileExists(atPath: path) else {
+            return false
+        }
+
+        // Check if socket is actually bound to a process by attempting to connect
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer {
+            try? group.syncShutdownGracefully()
+        }
+
+        let clientBootstrap = ClientBootstrap(group: group)
+            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.eventLoop.makeSucceededFuture(())
+            }
+
+        do {
+            let channel = try clientBootstrap.connect(unixDomainSocketPath: path).wait()
+            try channel.close().wait()
+            // Connection succeeded - socket is active
+            return true
+        } catch {
+            // Connection failed - socket is stale, remove it
+            try? FileManager.default.removeItem(atPath: path)
+            return false
+        }
     }
 }

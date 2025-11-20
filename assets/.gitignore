@@ -1,0 +1,14 @@
+# Exclude large pre-built binary assets from git
+# These are uploaded to GitHub Releases instead
+
+# Linux kernel (compressed)
+vmlinux-*.gz
+
+# vminit OCI image (compressed)
+vminit-oci-*.tar.gz
+
+# Checksums file is tracked
+!SHA256SUMS
+
+# README is tracked
+!README.md
