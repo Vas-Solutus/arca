@@ -9,14 +9,13 @@
 # - LIMITATIONS.md
 # - DISTRIBUTION.md
 
-# Ignore all markdown files by default
+# Ignore all markdown and yaml files by default
 *.md
+*.yaml
 
 # But keep the public-facing documentation
 !ARCHITECTURE.md
 !OVERVIEW.md
 !LIMITATIONS.md
 !DISTRIBUTION.md
-
-# Keep the Docker Engine API spec (reference documentation)
-!DOCKER_ENGINE_v1.51.yaml
+!VMINIT_BUILD.md
