@@ -38,6 +38,11 @@ public protocol Arca_Process_V1_ProcessServiceClientProtocol: GRPCClient {
     _ request: Arca_Process_V1_GetProcessStatusRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Process_V1_GetProcessStatusRequest, Arca_Process_V1_GetProcessStatusResponse>
+
+  func listProcesses(
+    _ request: Arca_Process_V1_ListProcessesRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Process_V1_ListProcessesRequest, Arca_Process_V1_ListProcessesResponse>
 }
 
 extension Arca_Process_V1_ProcessServiceClientProtocol {
@@ -84,6 +89,27 @@ extension Arca_Process_V1_ProcessServiceClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeGetProcessStatusInterceptors() ?? []
+    )
+  }
+
+  /// List all processes running in the container
+  ///
+  /// Reads /proc filesystem directly to get process information.
+  /// Returns data in ps-compatible format for Docker top API.
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to ListProcesses.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func listProcesses(
+    _ request: Arca_Process_V1_ListProcessesRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Process_V1_ListProcessesRequest, Arca_Process_V1_ListProcessesResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.listProcesses.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeListProcessesInterceptors() ?? []
     )
   }
 }
@@ -171,6 +197,11 @@ public protocol Arca_Process_V1_ProcessServiceAsyncClientProtocol: GRPCClient {
     _ request: Arca_Process_V1_GetProcessStatusRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Process_V1_GetProcessStatusRequest, Arca_Process_V1_GetProcessStatusResponse>
+
+  func makeListProcessesCall(
+    _ request: Arca_Process_V1_ListProcessesRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Process_V1_ListProcessesRequest, Arca_Process_V1_ListProcessesResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -206,6 +237,18 @@ extension Arca_Process_V1_ProcessServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeGetProcessStatusInterceptors() ?? []
     )
   }
+
+  public func makeListProcessesCall(
+    _ request: Arca_Process_V1_ListProcessesRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Process_V1_ListProcessesRequest, Arca_Process_V1_ListProcessesResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.listProcesses.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeListProcessesInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -231,6 +274,18 @@ extension Arca_Process_V1_ProcessServiceAsyncClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeGetProcessStatusInterceptors() ?? []
+    )
+  }
+
+  public func listProcesses(
+    _ request: Arca_Process_V1_ListProcessesRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Process_V1_ListProcessesResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.listProcesses.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeListProcessesInterceptors() ?? []
     )
   }
 }
@@ -259,6 +314,9 @@ public protocol Arca_Process_V1_ProcessServiceClientInterceptorFactoryProtocol: 
 
   /// - Returns: Interceptors to use when invoking 'getProcessStatus'.
   func makeGetProcessStatusInterceptors() -> [ClientInterceptor<Arca_Process_V1_GetProcessStatusRequest, Arca_Process_V1_GetProcessStatusResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'listProcesses'.
+  func makeListProcessesInterceptors() -> [ClientInterceptor<Arca_Process_V1_ListProcessesRequest, Arca_Process_V1_ListProcessesResponse>]
 }
 
 public enum Arca_Process_V1_ProcessServiceClientMetadata {
@@ -268,6 +326,7 @@ public enum Arca_Process_V1_ProcessServiceClientMetadata {
     methods: [
       Arca_Process_V1_ProcessServiceClientMetadata.Methods.startProcess,
       Arca_Process_V1_ProcessServiceClientMetadata.Methods.getProcessStatus,
+      Arca_Process_V1_ProcessServiceClientMetadata.Methods.listProcesses,
     ]
   )
 
@@ -281,6 +340,12 @@ public enum Arca_Process_V1_ProcessServiceClientMetadata {
     public static let getProcessStatus = GRPCMethodDescriptor(
       name: "GetProcessStatus",
       path: "/arca.process.v1.ProcessService/GetProcessStatus",
+      type: GRPCCallType.unary
+    )
+
+    public static let listProcesses = GRPCMethodDescriptor(
+      name: "ListProcesses",
+      path: "/arca.process.v1.ProcessService/ListProcesses",
       type: GRPCCallType.unary
     )
   }

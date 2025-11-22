@@ -1,4 +1,4 @@
-.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel install-grpc-plugin test vminit gen-grpc dist dist-pkg notarize install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
+.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel kernel-rebuild install-grpc-plugin test vminit vminit-rebuild vminit-debug gen-grpc dist dist-pkg notarize install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -151,15 +151,35 @@ run-with-setup: codesign
 	@echo ""
 	@DOCKER_HOST=unix:///tmp/arca.sock ./scripts/setup-builder.sh
 
-# Build kernel with TUN support
+# Build kernel with TUN support (only if not already built)
 kernel:
-	@echo "Building Linux kernel with TUN support..."
+	@if [ ! -f ~/.arca/vmlinux ]; then \
+		echo "Building Linux kernel with TUN support..."; \
+		./scripts/build-kernel.sh; \
+	else \
+		echo "✓ Kernel already exists at ~/.arca/vmlinux (use 'make kernel-rebuild' to rebuild)"; \
+	fi
+
+# Force rebuild kernel even if it exists
+kernel-rebuild:
+	@echo "Rebuilding Linux kernel with TUN support..."
+	@rm -f ~/.arca/vmlinux
 	@./scripts/build-kernel.sh
 
-# Build custom vminit with WireGuard networking extension
+# Build custom vminit with WireGuard networking extension (only if not already built)
 # The build script builds arca-wireguard-service from the vminitd submodule
 vminit:
-	@echo "Building custom vminit:latest with networking extensions (release)..."
+	@if [ ! -d ~/.arca/vminit ]; then \
+		echo "Building custom vminit:latest with networking extensions (release)..."; \
+		./scripts/build-vminit.sh release; \
+	else \
+		echo "✓ vminit already exists at ~/.arca/vminit (use 'make vminit-rebuild' to rebuild)"; \
+	fi
+
+# Force rebuild vminit even if it exists
+vminit-rebuild:
+	@echo "Rebuilding custom vminit:latest with networking extensions (release)..."
+	@rm -rf ~/.arca/vminit
 	@./scripts/build-vminit.sh release
 
 # Build custom vminit in DEBUG mode (better logging)
@@ -503,8 +523,10 @@ help:
 	@echo "  make notarize        - Notarize .dmg (requires Apple Developer account)"
 	@echo ""
 	@echo "Advanced:"
-	@echo "  make kernel          - Build Linux kernel with TUN support (10-15 min)"
-	@echo "  make vminit          - Build custom vminit:latest (release, production use)"
+	@echo "  make kernel          - Build Linux kernel (only if missing, 10-15 min)"
+	@echo "  make kernel-rebuild  - Force rebuild kernel even if exists"
+	@echo "  make vminit          - Build custom vminit:latest (only if missing, ~5 min)"
+	@echo "  make vminit-rebuild  - Force rebuild vminit even if exists"
 	@echo "  make vminit-debug    - Build custom vminit:latest (debug, better logging)"
 	@echo "  make build-assets    - Build all pre-built assets (kernel + vminit, ~20-25 min)"
 	@echo "  make gen-grpc        - Generate gRPC code from proto files"

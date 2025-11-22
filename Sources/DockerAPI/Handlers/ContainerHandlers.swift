@@ -1470,53 +1470,31 @@ public struct ContainerHandlers: Sendable {
             return .failure(ContainerError.invalidRequest("Container is not running"))
         }
 
-        // Use exec to run ps inside the container
-        let args = psArgs ?? "-ef"
-        let command = ["/bin/ps", args]
+        // Get native container for gRPC connection
+        guard let nativeContainer = await containerManager.getNativeContainer(id: id) else {
+            logger.error("Native container not found", metadata: ["id": "\(id)"])
+            return .failure(ContainerError.notFound(id))
+        }
 
         do {
-            // Create exec instance
-            let execID = try await execManager.createExec(
+            // Use ProcessControlClient to list processes via gRPC (reads /proc directly)
+            // This avoids the race condition of spawning /bin/ps inside the container
+            let processClient = ProcessControlClient(
                 containerID: id,
-                cmd: command,
-                env: nil,
-                workingDir: nil,
-                user: "root",
-                tty: false,
-                attachStdin: false,
-                attachStdout: true,
-                attachStderr: true
+                container: nativeContainer,
+                logger: logger
             )
 
-            // Create writer to capture stdout
-            let writer = DataWriter()
+            let processListResponse = try await processClient.listProcesses(psArgs: psArgs)
 
-            // Start exec and capture output
-            try await execManager.startExec(
-                execID: execID,
-                detach: false,
-                tty: false,
-                stdout: writer
+            // Disconnect from process control service
+            try await processClient.disconnect()
+
+            // Convert to ContainerTopResponse format
+            let response = ContainerTopResponse(
+                Titles: processListResponse.titles,
+                Processes: processListResponse.processes
             )
-
-            // Get exec info to check exit code
-            guard let execInfo = await execManager.getExecInfo(execID: execID),
-                  let exitCode = execInfo.exitCode else {
-                logger.error("Failed to get exec result", metadata: ["id": "\(id)"])
-                return .failure(ContainerError.topFailed("Failed to get exec result"))
-            }
-
-            // Check if exec succeeded
-            guard exitCode == 0, let output = String(data: writer.data, encoding: .utf8) else {
-                logger.error("ps command failed", metadata: [
-                    "id": "\(id)",
-                    "exit_code": "\(exitCode)"
-                ])
-                return .failure(ContainerError.topFailed("Failed to execute ps command"))
-            }
-
-            // Parse ps output
-            let response = parsePsOutput(output)
 
             logger.info("Container top completed", metadata: [
                 "id": "\(id)",
@@ -1531,66 +1509,6 @@ public struct ContainerHandlers: Sendable {
             ])
             return .failure(ContainerError.topFailed(errorDescription(error)))
         }
-    }
-
-    /// Parse ps command output into ContainerTopResponse
-    private func parsePsOutput(_ output: String) -> ContainerTopResponse {
-        let lines = output.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-
-        guard !lines.isEmpty else {
-            return ContainerTopResponse(Titles: [], Processes: [])
-        }
-
-        // First line is the header with column titles
-        let headerLine = lines[0]
-        let titles = headerLine.components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-
-        // Remaining lines are processes
-        var processes: [[String]] = []
-        for line in lines.dropFirst() {
-            // Split by whitespace, but handle command column which may contain spaces
-            let parts = parseProcessLine(line, columnCount: titles.count)
-            if !parts.isEmpty {
-                processes.append(parts)
-            }
-        }
-
-        return ContainerTopResponse(Titles: titles, Processes: processes)
-    }
-
-    /// Parse a single process line from ps output
-    /// Handles the case where the last column (CMD) may contain spaces
-    private func parseProcessLine(_ line: String, columnCount: Int) -> [String] {
-        var parts: [String] = []
-        var remaining = line
-
-        // Parse first n-1 columns (before CMD)
-        for _ in 0..<(columnCount - 1) {
-            remaining = remaining.trimmingCharacters(in: .whitespaces)
-            if remaining.isEmpty { break }
-
-            // Find next whitespace
-            if let spaceRange = remaining.rangeOfCharacter(from: .whitespaces) {
-                let part = String(remaining[..<spaceRange.lowerBound])
-                parts.append(part)
-                remaining = String(remaining[spaceRange.upperBound...])
-            } else {
-                // No more whitespace, this is the last column
-                parts.append(remaining)
-                remaining = ""
-                break
-            }
-        }
-
-        // Remaining text is the CMD column (may contain spaces)
-        if !remaining.isEmpty {
-            parts.append(remaining.trimmingCharacters(in: .whitespaces))
-        }
-
-        return parts
     }
 
     /// Handle POST /containers/{id}/resize

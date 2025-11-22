@@ -101,6 +101,33 @@ fi
 
 echo "  ✓ Filesystem service built: arca-filesystem-service"
 
+# Build Process Control service (Go binary cross-compiled to Linux)
+echo ""
+echo "→ Building Process Control service (Go → Linux ARM64)..."
+cd "$VMINITD_DIR/vminitd/extensions/process-control"
+
+if [ ! -f build.sh ]; then
+    echo "ERROR: process-control/build.sh not found"
+    exit 1
+fi
+
+# Generate protobuf code first if needed
+if [ ! -f proto/process.pb.go ]; then
+    echo "  Generating protobuf code..."
+    protoc --go_out=. --go_opt=paths=source_relative \
+           --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+           proto/process.proto
+fi
+
+./build.sh
+
+if [ ! -f arca-process-service ]; then
+    echo "ERROR: arca-process-service binary not built"
+    exit 1
+fi
+
+echo "  ✓ Process Control service built: arca-process-service"
+
 # WireGuard tools (wg command) no longer needed - using netlink API
 # Build vminitd (Swift cross-compiled to Linux)
 echo ""
@@ -155,6 +182,7 @@ echo "  Using cctl to create rootfs with Swift runtime..."
     --vmexec "$VMEXEC_BINARY" \
     --add-file "$VMINITD_DIR/vminitd/extensions/wireguard-service/arca-wireguard-service:/sbin/arca-wireguard-service" \
     --add-file "$VMINITD_DIR/vminitd/extensions/filesystem-service/arca-filesystem-service:/sbin/arca-filesystem-service" \
+    --add-file "$VMINITD_DIR/vminitd/extensions/process-control/arca-process-service:/sbin/arca-process-service" \
     --image arca-vminit:latest \
     --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
     "$ROOTFS_TAR"
@@ -279,6 +307,7 @@ echo "  /sbin/vminitd                  - Init system (PID 1)"
 echo "  /sbin/vmexec                   - Exec helper"
 echo "  /sbin/arca-wireguard-service   - WireGuard network service (vsock:51820) with integrated DNS (127.0.0.11:53)"
 echo "  /sbin/arca-filesystem-service  - Filesystem operations service (vsock:51821)"
+echo "  /sbin/arca-process-service     - Process control service (vsock:51822)"
 echo "  + Swift runtime and system libraries (via cctl)"
 echo ""
 echo "This image will be loaded as 'arca-vminit:latest' and used by all containers."
