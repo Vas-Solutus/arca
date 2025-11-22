@@ -1,4 +1,4 @@
-.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel kernel-rebuild install-grpc-plugin test vminit vminit-rebuild vminit-debug gen-grpc dist dist-pkg notarize install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
+.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel kernel-rebuild install-grpc-plugin test vminit vminit-rebuild vminit-debug gen-grpc dist dist-pkg dist-dmg notarize publish install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -388,6 +388,40 @@ dist-dmg: release
 notarize: dist-dmg
 	@echo "Starting notarization workflow..."
 	@./scripts/notarize.sh $(DIST_DIR)/arca-$(VERSION).dmg
+
+# Publish release to GitHub
+# Creates a GitHub release and uploads the DMG with checksums
+# Usage: make publish [VERSION=v1.0.0]
+publish: dist-dmg
+	@echo "Publishing release $(VERSION) to GitHub..."
+	@if echo "$(VERSION)" | grep -q dirty; then \
+		echo "ERROR: Cannot publish dirty version: $(VERSION)"; \
+		echo "Commit your changes and ensure working tree is clean"; \
+		exit 1; \
+	fi
+	@if ! command -v gh >/dev/null 2>&1; then \
+		echo "ERROR: GitHub CLI (gh) not found"; \
+		echo "Install with: brew install gh"; \
+		exit 1; \
+	fi
+	@echo "Generating SHA256 checksum for DMG..."
+	@cd $(DIST_DIR) && shasum -a 256 arca-$(VERSION).dmg > arca-$(VERSION).dmg.sha256
+	@echo "✓ Checksum: $$(cat $(DIST_DIR)/arca-$(VERSION).dmg.sha256)"
+	@echo ""
+	@echo "Creating GitHub release $(VERSION)..."
+	@gh release create "$(VERSION)" \
+		--title "Arca $(VERSION)" \
+		--notes "Release $(VERSION)" \
+		--draft \
+		$(DIST_DIR)/arca-$(VERSION).dmg \
+		$(DIST_DIR)/arca-$(VERSION).dmg.sha256
+	@echo ""
+	@echo "✓ Release created successfully (draft mode)"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. Visit: https://github.com/$$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases"
+	@echo "  2. Edit the release notes and add changelog"
+	@echo "  3. Publish the release when ready"
 
 # Clean distribution artifacts
 clean-dist:
