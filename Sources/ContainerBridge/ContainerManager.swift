@@ -518,7 +518,7 @@ public actor ContainerManager {
     // MARK: - Container Lifecycle
 
     /// List all containers
-    public func listContainers(all: Bool = false, filters: [String: String] = [:]) async throws -> [ContainerSummary] {
+    public func listContainers(all: Bool = false, filters: [String: [String]] = [:]) async throws -> [ContainerSummary] {
         logger.debug("Listing containers", metadata: [
             "all": "\(all)",
             "filters": "\(filters)"
@@ -526,7 +526,10 @@ public actor ContainerManager {
 
         // Check if user wants to see internal containers
         // By default, internal containers (com.arca.internal=true) are hidden
-        let showInternal = filters["label"]?.contains("com.arca.internal") ?? false
+        let showInternal = filters["label"]?.contains(where: { $0.contains("com.arca.internal") }) ?? false
+
+        // Extract label filters for matching
+        let labelFilters = filters["label"] ?? []
 
         // List containers from our internal state tracking
         // Background monitoring tasks automatically update state when containers exit
@@ -539,6 +542,27 @@ public actor ContainerManager {
             // Filter out internal containers unless explicitly requested
             if !showInternal && info.labels["com.arca.internal"] == "true" {
                 return nil
+            }
+
+            // Apply label filters
+            // Each filter can be "key" (label exists) or "key=value" (exact match)
+            if !labelFilters.isEmpty {
+                let matchesAllLabels = labelFilters.allSatisfy { labelFilter in
+                    if labelFilter.contains("=") {
+                        // Exact match: "key=value"
+                        let parts = labelFilter.split(separator: "=", maxSplits: 1)
+                        let key = String(parts[0])
+                        let value = parts.count > 1 ? String(parts[1]) : ""
+                        return info.labels[key] == value
+                    } else {
+                        // Existence check: "key"
+                        return info.labels[labelFilter] != nil
+                    }
+                }
+
+                if !matchesAllLabels {
+                    return nil
+                }
             }
 
             // Get the docker ID for this container

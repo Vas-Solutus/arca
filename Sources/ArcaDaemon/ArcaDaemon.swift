@@ -416,7 +416,7 @@ public final class ArcaDaemon: @unchecked Sendable {
                 let all = QueryParameterValidator.parseBoolean(request.queryParameters["all"])
                 let limit = try QueryParameterValidator.parsePositiveInt(request.queryParameters["limit"], paramName: "limit")
                 let size = QueryParameterValidator.parseBoolean(request.queryParameters["size"])
-                let filters = try QueryParameterValidator.parseDockerFiltersToSingle(request.queryParameters["filters"])
+                let filters = try QueryParameterValidator.parseDockerFiltersToArray(request.queryParameters["filters"])
 
                 // Call handler asynchronously
                 let listResponse = await containerHandlers.handleListContainers(

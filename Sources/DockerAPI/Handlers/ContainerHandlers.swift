@@ -59,7 +59,7 @@ public struct ContainerHandlers: Sendable {
     /// - limit: Limit the number of results
     /// - size: Return container size information
     /// - filters: JSON encoded filters
-    public func handleListContainers(all: Bool = false, limit: Int? = nil, size: Bool = false, filters: [String: String] = [:]) async -> ContainerListResponse {
+    public func handleListContainers(all: Bool = false, limit: Int? = nil, size: Bool = false, filters: [String: [String]] = [:]) async -> ContainerListResponse {
         logger.debug("Handling list containers request", metadata: [
             "all": "\(all)",
             "limit": "\(limit?.description ?? "none")",
@@ -1537,6 +1537,27 @@ public struct ContainerHandlers: Sendable {
         var deletedContainers: [String] = []
         var spaceReclaimed: Int64 = 0
 
+        // Parse filters
+        var untilDate: Date? = nil
+        var labelFilters: [String] = []
+
+        if let filters = filters {
+            if let untilValues = filters["until"], let untilStr = untilValues.first {
+                // Parse timestamp (Unix timestamp, RFC3339, or duration like "24h")
+                if let timestamp = Double(untilStr) {
+                    untilDate = Date(timeIntervalSince1970: timestamp)
+                } else if let date = ISO8601DateFormatter().date(from: untilStr) {
+                    untilDate = date
+                } else if untilStr.hasSuffix("h"), let hours = Double(untilStr.dropLast()) {
+                    untilDate = Date().addingTimeInterval(-hours * 3600)
+                }
+            }
+
+            if let labels = filters["label"] {
+                labelFilters = labels
+            }
+        }
+
         // Get all containers (including stopped ones)
         do {
             let containers = try await containerManager.listContainers(all: true)
@@ -1551,6 +1572,33 @@ public struct ContainerHandlers: Sendable {
                 // Skip control plane
                 if await isControlPlane(id: container.id) {
                     continue
+                }
+
+                // Apply until filter
+                if let until = untilDate {
+                    let containerCreated = Date(timeIntervalSince1970: TimeInterval(container.created))
+                    if containerCreated > until {
+                        continue
+                    }
+                }
+
+                // Apply label filters
+                if !labelFilters.isEmpty {
+                    let matchesLabels = labelFilters.allSatisfy { labelFilter in
+                        if labelFilter.contains("=") {
+                            // Exact match: "key=value"
+                            let parts = labelFilter.split(separator: "=", maxSplits: 1)
+                            let key = String(parts[0])
+                            let value = parts.count > 1 ? String(parts[1]) : ""
+                            return container.labels[key] == value
+                        } else {
+                            // Existence check: "key"
+                            return container.labels[labelFilter] != nil
+                        }
+                    }
+                    if !matchesLabels {
+                        continue
+                    }
                 }
 
                 // Calculate container size before removal
