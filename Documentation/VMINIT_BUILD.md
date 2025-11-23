@@ -22,7 +22,7 @@ cd /Users/kiener/code/arca
 git submodule update --init --recursive
 ```
 
-This clones the `Vas-Solutus/arca-vminitd` fork into `containerization/`.
+This clones the `Vas-Solutus/arca-containerization` fork into `containerization/`.
 
 ### 2. Install Swift Static Linux SDK (One-Time Setup)
 
