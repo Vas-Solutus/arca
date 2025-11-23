@@ -59,7 +59,7 @@ public struct ContainerHandlers: Sendable {
     /// - limit: Limit the number of results
     /// - size: Return container size information
     /// - filters: JSON encoded filters
-    public func handleListContainers(all: Bool = false, limit: Int? = nil, size: Bool = false, filters: [String: String] = [:]) async -> ContainerListResponse {
+    public func handleListContainers(all: Bool = false, limit: Int? = nil, size: Bool = false, filters: [String: [String]] = [:]) async -> ContainerListResponse {
         logger.debug("Handling list containers request", metadata: [
             "all": "\(all)",
             "limit": "\(limit?.description ?? "none")",
