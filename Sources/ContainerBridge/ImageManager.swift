@@ -1,0 +1,747 @@
+import Foundation
+import Logging
+import Containerization
+import ContainerizationOCI
+import ContainerizationExtras
+
+/// Manages OCI images using Apple's Containerization API
+/// Provides translation layer between Docker API and Containerization image operations
+/// Thread-safe via Swift actor isolation
+public actor ImageManager {
+    private let logger: Logger
+    private let imageStore: ImageStore
+    private let defaultPlatform: Platform
+    private var eventEmitter: EventEmitter?
+
+    public init(logger: Logger, imageStorePath: URL? = nil) throws {
+        self.logger = logger
+
+        // Initialize ImageStore with default or custom path
+        if let path = imageStorePath {
+            self.imageStore = try ImageStore(path: path)
+        } else {
+            self.imageStore = ImageStore.default
+        }
+
+        // Use the current platform
+        self.defaultPlatform = Platform.current
+    }
+
+    /// Initialize the image manager
+    public func initialize() async throws {
+        logger.info("Initializing ImageManager", metadata: [
+            "store_path": "\(imageStore.path.path)"
+        ])
+
+        // ImageStore is already initialized in init()
+        logger.info("ImageManager initialized")
+    }
+
+    /// Set the EventEmitter for emitting Docker events
+    public func setEventEmitter(_ emitter: EventEmitter) {
+        self.eventEmitter = emitter
+    }
+
+    /// Load images from an OCI Image Layout directory into the ImageStore
+    public func loadFromOCILayout(directory: URL) async throws -> [Containerization.Image] {
+        logger.info("Loading images from OCI layout", metadata: [
+            "directory": "\(directory.path)"
+        ])
+
+        let loadedImages = try await imageStore.load(from: directory)
+
+        logger.info("Successfully loaded images from OCI layout", metadata: [
+            "count": "\(loadedImages.count)",
+            "images": "\(loadedImages.map { $0.reference }.joined(separator: ", "))"
+        ])
+
+        return loadedImages
+    }
+
+    /// Load images from a tar archive (OCI or Docker format)
+    /// - Parameter tarData: The tar archive data
+    /// - Returns: Array of loaded images
+    public func loadImageFromTar(_ tarData: Data) async throws -> [Containerization.Image] {
+        logger.info("Loading images from tar archive", metadata: [
+            "size_bytes": "\(tarData.count)"
+        ])
+
+        // Create temp directory for extraction
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("arca-image-load-\(UUID().uuidString)")
+
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            logger.debug("Created temp directory", metadata: ["path": "\(tempDir.path)"])
+
+            // Write tar data to temp file
+            let tarPath = tempDir.appendingPathComponent("image.tar")
+            try tarData.write(to: tarPath)
+            logger.debug("Wrote tar archive", metadata: ["path": "\(tarPath.path)"])
+
+            // Extract tar archive
+            let extractDir = tempDir.appendingPathComponent("extracted")
+            try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            process.arguments = ["-xf", tarPath.path, "-C", extractDir.path]
+
+            let pipe = Pipe()
+            process.standardError = pipe
+
+            try process.run()
+            process.waitUntilExit()
+
+            if process.terminationStatus != 0 {
+                let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
+                let errorMsg = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                logger.error("Failed to extract tar", metadata: ["error": "\(errorMsg)"])
+                throw ImageManagerError.tarExtractionFailed(errorMsg)
+            }
+
+            logger.debug("Extracted tar archive", metadata: ["path": "\(extractDir.path)"])
+
+            // Load from OCI layout
+            let loadedImages = try await loadFromOCILayout(directory: extractDir)
+
+            // Clean up temp directory
+            try? FileManager.default.removeItem(at: tempDir)
+            logger.debug("Cleaned up temp directory")
+
+            return loadedImages
+        } catch {
+            // Clean up temp directory on error
+            try? FileManager.default.removeItem(at: tempDir)
+            logger.error("Failed to load image from tar", metadata: ["error": "\(error)"])
+            throw error
+        }
+    }
+
+    // MARK: - Image Listing
+
+    /// List all images
+    public func listImages(filters: [String: [String]] = [:]) async throws -> [ImageSummary] {
+        logger.debug("Listing images", metadata: [
+            "filters": "\(filters)"
+        ])
+
+        let images = try await imageStore.list()
+
+        var summaries: [ImageSummary] = []
+        for image in images {
+            do {
+                // Try to get manifest and config for the current platform
+                // Note: For images pulled with a platform filter, only that platform's content is available
+                let manifest = try await image.manifest(for: defaultPlatform)
+                let config = try await image.config(for: defaultPlatform)
+
+                // Generate Docker-compatible ID from digest
+                let dockerID = generateDockerID(from: image.digest)
+
+                // Calculate sizes - sum of all layer sizes (the actual image data)
+                // NOTE: These are COMPRESSED sizes (tar.gz blobs) from OCI manifest.layers[].size
+                // Docker reports UNCOMPRESSED sizes, so our values will be smaller (~3x for gzip)
+                // Example: alpine shows 4.14MB here vs 13.3MB in Docker
+                // See Documentation/LIMITATIONS.md - "Image Size Reporting" section
+                // TODO: Track uncompressed sizes during pull (see IMPLEMENTATION_PLAN.md Phase 4)
+                let size = manifest.layers.reduce(Int64(0)) { $0 + Int64($1.size) }
+                let virtualSize = size
+
+                // Parse created timestamp from ISO 8601 string
+                let created = parseCreatedTimestamp(config.created)
+
+                let summary = ImageSummary(
+                    id: dockerID,
+                    repoTags: [image.reference],
+                    repoDigests: [image.digest],
+                    created: created,
+                    size: size,
+                    virtualSize: virtualSize,
+                    labels: config.config?.labels ?? [:]
+                )
+
+                summaries.append(summary)
+            } catch {
+                logger.warning("Failed to process image", metadata: [
+                    "reference": "\(image.reference)",
+                    "error": "\(error)"
+                ])
+                continue
+            }
+        }
+
+        logger.info("Listed images", metadata: ["count": "\(summaries.count)"])
+        return summaries
+    }
+
+    // MARK: - Image Inspection
+
+    /// Get detailed information about an image
+    public func inspectImage(nameOrId: String) async throws -> ImageDetails? {
+        logger.debug("Inspecting image", metadata: ["name_or_id": "\(nameOrId)"])
+
+        // Resolve image by name or ID
+        guard let image = try? await resolveImage(nameOrId: nameOrId) else {
+            logger.warning("Image not found", metadata: ["name_or_id": "\(nameOrId)"])
+            return nil
+        }
+
+        // Get manifest and config for default platform
+        let manifest = try await image.manifest(for: defaultPlatform)
+        let config = try await image.config(for: defaultPlatform)
+
+        let dockerID = generateDockerID(from: image.digest)
+
+        // Calculate sizes - sum of all layer sizes (the actual image data)
+        let size = manifest.layers.reduce(Int64(0)) { $0 + Int64($1.size) }
+        let virtualSize = size
+
+        // Build layer list
+        let layers = manifest.layers.map { $0.digest }
+
+        // Extract parent and comment from history (if available)
+        let parent = ""  // OCI doesn't have parent field
+        let comment = config.history?.first?.comment ?? ""
+
+        // Parse created date from ISO 8601 string
+        let createdDate = parseCreatedDate(config.created) ?? Date()
+
+        let details = ImageDetails(
+            id: dockerID,
+            repoTags: [image.reference],
+            repoDigests: [image.digest],
+            parent: parent,
+            comment: comment,
+            created: createdDate,
+            container: "",
+            containerConfig: mapToImageContainerConfig(config.config),
+            dockerVersion: "",
+            author: config.author ?? "",
+            config: mapToImageContainerConfig(config.config),
+            architecture: config.architecture,
+            os: config.os,
+            size: size,
+            virtualSize: virtualSize,
+            graphDriver: GraphDriver(name: "overlay2"),
+            rootFS: RootFS(type: "layers", layers: layers),
+            metadata: ImageMetadata()
+        )
+
+        logger.info("Image inspected", metadata: ["name_or_id": "\(nameOrId)"])
+        return details
+    }
+
+    // MARK: - Image Pulling
+
+    /// Resolve the manifest for an image and extract layer digests and manifest digest
+    /// This allows us to get real layer IDs and the manifest digest before pulling
+    public func resolveManifestLayersWithDigest(
+        reference: String,
+        auth: RegistryAuthentication? = nil
+    ) async throws -> (layerDigests: [String], layerSizes: [Int64], manifestDigest: String) {
+        logger.debug("Resolving manifest layers", metadata: ["reference": "\(reference)"])
+
+        // Normalize image reference
+        let normalizedRef = normalizeImageReference(reference)
+
+        // Create authentication if provided
+        var authentication: Authentication?
+        if let auth = auth, let username = auth.username, let password = auth.password {
+            authentication = BasicAuthentication(username: username, password: password)
+        }
+
+        // Create registry client
+        let client = try RegistryClient(reference: normalizedRef, insecure: false, auth: authentication)
+
+        // Parse reference to get name and tag
+        let ref = try Reference.parse(normalizedRef)
+        let name = ref.path
+        guard let tag = ref.tag ?? ref.digest else {
+            throw ImageManagerError.invalidReference("Invalid tag/digest for image reference \(normalizedRef)")
+        }
+
+        // Resolve root descriptor (manifest)
+        let rootDescriptor = try await client.resolve(name: name, tag: tag)
+
+        // Fetch the manifest and track the manifest digest
+        let manifest: Manifest
+        let manifestDigest: String
+
+        switch rootDescriptor.mediaType {
+        case MediaTypes.imageManifest, MediaTypes.dockerManifest:
+            // Direct manifest
+            manifest = try await client.fetch(name: name, descriptor: rootDescriptor)
+            manifestDigest = rootDescriptor.digest
+        case MediaTypes.index, MediaTypes.dockerManifestList:
+            // Manifest list - need to select platform-specific manifest
+            let index: Index = try await client.fetch(name: name, descriptor: rootDescriptor)
+
+            // Find manifest for our platform
+            guard let platformManifest = index.manifests.first(where: { manifestDesc in
+                guard let platform = manifestDesc.platform else { return false }
+                // Check if platform matches (os and architecture)
+                return platform.os == self.defaultPlatform.os &&
+                       platform.architecture == self.defaultPlatform.architecture
+            }) else {
+                throw ImageManagerError.platformNotFound("No manifest found for platform \(self.defaultPlatform)")
+            }
+
+            // Fetch the platform-specific manifest
+            manifest = try await client.fetch(name: name, descriptor: platformManifest)
+            manifestDigest = platformManifest.digest
+        default:
+            throw ImageManagerError.unsupportedMediaType("Unsupported media type: \(rootDescriptor.mediaType)")
+        }
+
+        // Extract layer digests and sizes (in the order they appear in the manifest)
+        let layerDigests = manifest.layers.map { $0.digest }
+        let layerSizes = manifest.layers.map { Int64($0.size) }
+
+        logger.debug("Resolved manifest layers", metadata: [
+            "count": "\(layerDigests.count)",
+            "manifest_digest": "\(manifestDigest.prefix(19))...",
+            "digests": "\(layerDigests.prefix(3).joined(separator: ", "))...",
+            "total_layer_size": "\(layerSizes.reduce(0, +))"
+        ])
+
+        return (layerDigests, layerSizes, manifestDigest)
+    }
+
+    /// Pull an image from a registry
+    public func pullImage(
+        reference: String,
+        auth: RegistryAuthentication? = nil,
+        progress: ContainerizationExtras.ProgressHandler? = nil
+    ) async throws -> ImageDetails {
+        logger.info("Pulling image", metadata: ["reference": "\(reference)"])
+
+        // Normalize image reference (add :latest if needed, add docker.io registry)
+        let normalizedRef = normalizeImageReference(reference)
+        logger.debug("Normalized reference for pull", metadata: [
+            "original": "\(reference)",
+            "normalized": "\(normalizedRef)"
+        ])
+
+        // Create authentication if provided
+        var authentication: Authentication?
+        if let auth = auth, let username = auth.username, let password = auth.password {
+            authentication = BasicAuthentication(username: username, password: password)
+        }
+
+        // Pull image using ImageStore with normalized reference
+        let image = try await imageStore.pull(
+            reference: normalizedRef,
+            platform: defaultPlatform,
+            insecure: false,
+            auth: authentication,
+            progress: progress
+        )
+
+        // Get image details
+        let manifest = try await image.manifest(for: defaultPlatform)
+        let config = try await image.config(for: defaultPlatform)
+
+        let dockerID = generateDockerID(from: image.digest)
+
+        // Calculate sizes - sum of all layer sizes (the actual image data)
+        let size = manifest.layers.reduce(Int64(0)) { $0 + Int64($1.size) }
+        let virtualSize = size
+
+        // Build layer list
+        let layers = manifest.layers.map { $0.digest }
+
+        // Extract parent and comment from history (if available)
+        let parent = ""  // OCI doesn't have parent field
+        let comment = config.history?.first?.comment ?? ""
+
+        // Parse created date from ISO 8601 string
+        let createdDate = parseCreatedDate(config.created) ?? Date()
+
+        let details = ImageDetails(
+            id: dockerID,
+            repoTags: [reference],
+            repoDigests: [image.digest],
+            parent: parent,
+            comment: comment,
+            created: createdDate,
+            container: "",
+            containerConfig: mapToImageContainerConfig(config.config),
+            dockerVersion: "",
+            author: config.author ?? "",
+            config: mapToImageContainerConfig(config.config),
+            architecture: config.architecture,
+            os: config.os,
+            size: size,
+            virtualSize: virtualSize,
+            graphDriver: GraphDriver(name: "overlay2"),
+            rootFS: RootFS(type: "layers", layers: layers),
+            metadata: ImageMetadata()
+        )
+
+        logger.info("Image pulled successfully", metadata: [
+            "reference": "\(reference)",
+            "digest": "\(image.digest)"
+        ])
+
+        // Emit image pull event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": reference
+            ]
+            await eventEmitter.emitImageEvent(
+                action: "pull",
+                imageID: dockerID,
+                attributes: attributes
+            )
+        }
+
+        return details
+    }
+
+    // MARK: - Image Deletion
+
+    /// Delete an image
+    public func deleteImage(nameOrId: String, force: Bool = false) async throws -> [ImageDeleteItem] {
+        logger.info("Deleting image", metadata: [
+            "name_or_id": "\(nameOrId)",
+            "force": "\(force)"
+        ])
+
+        // Resolve image by name or ID
+        let image = try await resolveImage(nameOrId: nameOrId)
+
+        let imageDigest = image.digest
+        let dockerID = generateDockerID(from: imageDigest)
+        let imageReference = image.reference
+
+        logger.debug("Image resolved for deletion", metadata: [
+            "reference": "\(imageReference)",
+            "digest": "\(imageDigest)",
+            "docker_id": "\(dockerID)"
+        ])
+
+        // Check if image is in use by containers (if not force)
+        if !force {
+            // TODO: Check with ContainerManager if image is in use
+        }
+
+        // Delete the image by reference
+        try await imageStore.delete(reference: imageReference, performCleanup: true)
+
+        logger.info("Image deleted", metadata: [
+            "name_or_id": "\(nameOrId)",
+            "digest": "\(imageDigest)"
+        ])
+
+        // Emit image delete event
+        if let eventEmitter = eventEmitter {
+            var attributes: [String: String] = [
+                "name": imageReference
+            ]
+            await eventEmitter.emitImageEvent(
+                action: "delete",
+                imageID: dockerID,
+                attributes: attributes
+            )
+        }
+
+        return [
+            ImageDeleteItem(untagged: imageReference),
+            ImageDeleteItem(deleted: dockerID)
+        ]
+    }
+
+    // MARK: - Image Tagging
+
+    /// Tag an image
+    public func tagImage(source: String, target: String) async throws {
+        logger.info("Tagging image", metadata: [
+            "source": "\(source)",
+            "target": "\(target)"
+        ])
+
+        _ = try await imageStore.tag(existing: source, new: target)
+
+        logger.info("Image tagged", metadata: [
+            "source": "\(source)",
+            "target": "\(target)"
+        ])
+
+        // Emit image tag event
+        if let eventEmitter = eventEmitter {
+            // For tag events, we need to resolve the image to get its ID
+            if let image = try? await resolveImage(nameOrId: source) {
+                let dockerID = generateDockerID(from: image.digest)
+                var attributes: [String: String] = [
+                    "name": target
+                ]
+                await eventEmitter.emitImageEvent(
+                    action: "tag",
+                    imageID: dockerID,
+                    attributes: attributes
+                )
+            }
+        }
+    }
+
+    // MARK: - Helper Methods
+
+    /// Resolve image by name or ID
+    /// Handles multiple input formats:
+    /// - Full reference: docker.io/library/nginx:alpine
+    /// - Short reference: nginx:alpine, nginx
+    /// - Short ID: 4986bf8c1536 (12 chars)
+    /// - Long ID: sha256:4986bf8c15... (full digest)
+    private func resolveImage(nameOrId: String) async throws -> Containerization.Image {
+        // Check if input is a Docker ID (short or long)
+        let isShortID = nameOrId.range(of: "^[a-f0-9]{12,64}$", options: .regularExpression) != nil
+        let isLongID = nameOrId.hasPrefix("sha256:")
+
+        logger.debug("Resolving image", metadata: [
+            "name_or_id": "\(nameOrId)",
+            "is_short_id": "\(isShortID)",
+            "is_long_id": "\(isLongID)"
+        ])
+
+        // For both ID-based and tag-based lookups, we need to list all images
+        // because the stored reference might not match our normalized version
+        let images = try await imageStore.list()
+
+        for image in images {
+            let dockerID = generateDockerID(from: image.digest)
+
+            // Match short ID (first 12+ chars)
+            if isShortID && dockerID.replacingOccurrences(of: "sha256:", with: "").hasPrefix(nameOrId) {
+                logger.debug("Matched image by short ID", metadata: [
+                    "input": "\(nameOrId)",
+                    "reference": "\(image.reference)",
+                    "digest": "\(image.digest)"
+                ])
+                return image
+            }
+
+            // Match long ID (full digest)
+            if isLongID && dockerID == nameOrId {
+                logger.debug("Matched image by long ID", metadata: [
+                    "input": "\(nameOrId)",
+                    "reference": "\(image.reference)",
+                    "digest": "\(image.digest)"
+                ])
+                return image
+            }
+
+            // Match by reference (tag) - need to check multiple variations
+            if !isShortID && !isLongID {
+                // Try to match the stored reference against the input in various ways
+                if matchesReference(stored: image.reference, input: nameOrId) {
+                    logger.debug("Matched image by reference", metadata: [
+                        "input": "\(nameOrId)",
+                        "reference": "\(image.reference)",
+                        "digest": "\(image.digest)"
+                    ])
+                    return image
+                }
+            }
+        }
+
+        // Not found
+        logger.warning("Image not found", metadata: ["name_or_id": "\(nameOrId)"])
+        throw ImageManagerError.imageNotFound(nameOrId)
+    }
+
+    /// Check if a stored image reference matches an input reference
+    /// Handles Docker reference formats with proper normalization:
+    /// - Exact match: stored=nginx:alpine, input=nginx:alpine
+    /// - Without tag: stored=nginx:latest, input=nginx
+    /// - Without registry: stored=docker.io/library/nginx:alpine, input=nginx:alpine
+    /// - User repos: stored=docker.io/apache/superset:tag, input=apache/superset:tag
+    ///
+    /// Docker reference format: [registry/][namespace/]repository[:tag|@digest]
+    /// - nginx → docker.io/library/nginx:latest
+    /// - nginx:alpine → docker.io/library/nginx:alpine
+    /// - apache/superset:tag → docker.io/apache/superset:tag
+    /// - myregistry.com/repo:tag → myregistry.com/repo:tag
+    private func matchesReference(stored: String, input: String) -> Bool {
+        // Exact match
+        if stored == input {
+            return true
+        }
+
+        // Normalize the input reference using the same logic as when images are stored
+        let normalizedInput = normalizeImageReference(input)
+
+        // Match normalized input against stored reference
+        if stored == normalizedInput {
+            return true
+        }
+
+        // Also try suffix matching for cases where stored might have different normalization
+        // e.g., stored=docker.io/library/nginx:alpine, input normalized to same
+        // This handles edge cases in normalization
+        let storedComponents = stored.components(separatedBy: "/")
+        let inputComponents = normalizedInput.components(separatedBy: "/")
+
+        // If input has fewer components after normalization, try suffix matching
+        if inputComponents.count < storedComponents.count {
+            let storedSuffix = storedComponents.suffix(inputComponents.count).joined(separator: "/")
+            if storedSuffix == normalizedInput {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// Generate Docker-compatible image ID from OCI digest
+    private func generateDockerID(from digest: String) -> String {
+        // Docker IDs are sha256: followed by 64 hex chars
+        if digest.hasPrefix("sha256:") {
+            return digest
+        }
+        return "sha256:\(digest)"
+    }
+
+    /// Check if an image exists
+    public func imageExists(nameOrId: String) async -> Bool {
+        do {
+            let image = try await inspectImage(nameOrId: nameOrId)
+            return image != nil
+        } catch {
+            return false
+        }
+    }
+
+    /// Get the Image object for use with Containerization API
+    public func getImage(nameOrId: String) async throws -> Containerization.Image {
+        logger.debug("Getting image", metadata: ["name_or_id": "\(nameOrId)"])
+
+        // Resolve image by name or ID
+        let image = try await resolveImage(nameOrId: nameOrId)
+
+        logger.debug("Image retrieved", metadata: [
+            "reference": "\(image.reference)",
+            "digest": "\(image.digest)"
+        ])
+
+        return image
+    }
+
+    /// Normalize image reference to Docker Hub format
+    /// Docker convention:
+    /// - "alpine" → "docker.io/library/alpine:latest"
+    /// - "alpine:3.18" → "docker.io/library/alpine:3.18"
+    /// - "myuser/image" → "docker.io/myuser/image:latest"
+    /// - "registry.com/image" → "registry.com/image:latest" (already has registry)
+    private func normalizeImageReference(_ reference: String) -> String {
+        var normalized = reference
+
+        // Add :latest tag if no tag or digest is specified
+        if !normalized.contains(":") && !normalized.contains("@") {
+            normalized = "\(normalized):latest"
+        }
+
+        // Add docker.io registry prefix if no registry is specified
+        // Check if reference already has a registry (contains '.' before first '/')
+        let hasRegistry = normalized.split(separator: "/").first?.contains(".") ?? false
+        if !hasRegistry {
+            // Check if it's a single-component name (e.g., "alpine:latest")
+            let components = normalized.split(separator: "/")
+            if components.count == 1 {
+                // Official image: alpine → docker.io/library/alpine
+                normalized = "docker.io/library/\(normalized)"
+            } else {
+                // User image: user/image → docker.io/user/image
+                normalized = "docker.io/\(normalized)"
+            }
+        }
+
+        return normalized
+    }
+
+    /// Parse ISO 8601 timestamp string to Unix timestamp
+    private func parseCreatedTimestamp(_ isoString: String?) -> Int64 {
+        guard let isoString = isoString else { return 0 }
+
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: isoString) else {
+            return 0
+        }
+
+        return Int64(date.timeIntervalSince1970)
+    }
+
+    /// Parse ISO 8601 timestamp string to Date
+    private func parseCreatedDate(_ isoString: String?) -> Date? {
+        guard let isoString = isoString else { return nil }
+
+        let formatter = ISO8601DateFormatter()
+        return formatter.date(from: isoString)
+    }
+
+    /// Map OCI ImageConfig to ImageContainerConfig
+    private func mapToImageContainerConfig(_ config: ContainerizationOCI.ImageConfig?) -> ImageContainerConfig? {
+        guard let config = config else { return nil }
+
+        return ImageContainerConfig(
+            hostname: "",
+            domainname: "",
+            user: config.user ?? "",
+            attachStdin: false,
+            attachStdout: false,
+            attachStderr: false,
+            exposedPorts: nil,
+            tty: false,
+            openStdin: false,
+            stdinOnce: false,
+            env: config.env ?? [],
+            cmd: config.cmd ?? [],
+            image: nil,
+            volumes: nil,
+            workingDir: config.workingDir ?? "",
+            entrypoint: config.entrypoint,
+            onBuild: nil,
+            labels: config.labels ?? [:]
+        )
+    }
+}
+
+// MARK: - Errors
+
+public enum ImageManagerError: Error, CustomStringConvertible {
+    case notInitialized
+    case notImplemented
+    case imageNotFound(String)
+    case pullFailed(String)
+    case deleteFailed(String)
+    case tagFailed(String)
+    case invalidReference(String)
+    case platformNotFound(String)
+    case unsupportedMediaType(String)
+    case tarExtractionFailed(String)
+
+    public var description: String {
+        switch self {
+        case .notInitialized:
+            return "ImageManager not initialized"
+        case .notImplemented:
+            return "Feature not yet implemented (Containerization API integration in progress)"
+        case .imageNotFound(let ref):
+            return "No such image: \(ref)"
+        case .pullFailed(let msg):
+            return "Failed to pull image: \(msg)"
+        case .deleteFailed(let msg):
+            return "Failed to delete image: \(msg)"
+        case .tagFailed(let msg):
+            return "Failed to tag image: \(msg)"
+        case .invalidReference(let ref):
+            return "Invalid image reference: \(ref)"
+        case .platformNotFound(let msg):
+            return "Platform not found: \(msg)"
+        case .unsupportedMediaType(let msg):
+            return "Unsupported media type: \(msg)"
+        case .tarExtractionFailed(let msg):
+            return "Failed to extract tar archive: \(msg)"
+        }
+    }
+}

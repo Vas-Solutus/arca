@@ -1,0 +1,16 @@
+{
+  "invocations": [
+    {
+      "protoFiles": ["network.proto"],
+      "visibility": "public",
+      "client": true,
+      "server": false
+    },
+    {
+      "protoFiles": ["proto/tapforwarder.proto"],
+      "visibility": "public",
+      "client": true,
+      "server": false
+    }
+  ]
+}

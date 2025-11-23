@@ -30,6 +30,9 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+.build-gui/
+.arca-build/
+dist/
 
 # CocoaPods
 #
@@ -60,3 +63,23 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Claude Code Configuration
+#
+# Private configuration and instructions for Claude Code CLI
+# These should not be shared in the repository
+CLAUDE.md
+.claude/
+
+# Local development
+#
+# Personal notes, scratch files, and local configuration
+*.local.md
+.DS_Store
+tmp_compose/
+
+# Internal planning documents
+Documentation/IMPLEMENTATION_PLAN.md
+
+# IDE settings
+.vscode/

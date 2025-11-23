@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Allow use of the Virtualization framework for running VMs -->
+    <key>com.apple.security.virtualization</key>
+    <true/>
+
+    <!-- Allow network connections for container networking -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Allow file access for container images and volumes -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Disable App Sandbox for development/testing -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+</dict>
+</plist>

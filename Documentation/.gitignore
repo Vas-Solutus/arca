@@ -1,0 +1,21 @@
+# Documentation .gitignore
+#
+# This directory contains both public-facing documentation (kept in git)
+# and internal planning/task list documents (ignored).
+#
+# Public documentation (NOT ignored):
+# - ARCHITECTURE.md
+# - OVERVIEW.md
+# - LIMITATIONS.md
+# - DISTRIBUTION.md
+
+# Ignore all markdown and yaml files by default
+*.md
+*.yaml
+
+# But keep the public-facing documentation
+!ARCHITECTURE.md
+!OVERVIEW.md
+!LIMITATIONS.md
+!DISTRIBUTION.md
+!VMINIT_BUILD.md
