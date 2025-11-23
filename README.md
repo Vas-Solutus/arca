@@ -19,7 +19,7 @@ Part of the [Vas Solutus](https://vassolutus.com) project - freeing containers o
 ### Clone Arca
 ```bash
 # Clone repository with submodules
-git clone --recurse-submodules https://github.com/Liquescent-Development/arca.git
+git clone --recurse-submodules https://github.com/Vas-Solutus/arca.git
 cd arca
 ```
 ### Configure Swift Linux SDK and build vminit
@@ -57,7 +57,7 @@ brew install docker-buildx
 brew install docker-compose
 ```
 
-### Download and install the latest `.dmg` [release](https://github.com/liquescent-development/arca/releases) and drag Arca to your applications folder.
+### Download and install the latest `.dmg` [release](https://github.com/Vas-Solutus/arca/releases) and drag Arca to your applications folder.
 
 ```bash
 # Configure your shell

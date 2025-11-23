@@ -184,7 +184,7 @@ echo "  Using cctl to create rootfs with Swift runtime..."
     --add-file "$VMINITD_DIR/vminitd/extensions/filesystem-service/arca-filesystem-service:/sbin/arca-filesystem-service" \
     --add-file "$VMINITD_DIR/vminitd/extensions/process-control/arca-process-service:/sbin/arca-process-service" \
     --image arca-vminit:latest \
-    --label org.opencontainers.image.source=https://github.com/liquescent-development/arca \
+    --label org.opencontainers.image.source=https://github.com/Vas-Solutus/arca \
     "$ROOTFS_TAR"
 
 if [ ! -f "$ROOTFS_TAR" ]; then

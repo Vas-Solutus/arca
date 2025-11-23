@@ -212,7 +212,7 @@ echo "  Stop:    launchctl unload ~/Library/LaunchAgents/com.liquescent.arca.pli
 echo "  Status:  launchctl list | grep arca"
 echo ""
 echo "For help: arca --help"
-echo "Documentation: https://github.com/liquescent-development/arca"
+echo "Documentation: https://github.com/Vas-Solutus/arca"
 echo ""
 
 exit 0
