@@ -391,8 +391,9 @@ notarize: dist-dmg
 
 # Publish release to GitHub
 # Creates a GitHub release and uploads the DMG with checksums
+# Notarizes the DMG before publishing (requires Apple Developer account)
 # Usage: make publish [VERSION=v1.0.0]
-publish: dist-dmg
+publish: notarize
 	@echo "Publishing release $(VERSION) to GitHub..."
 	@if echo "$(VERSION)" | grep -q dirty; then \
 		echo "ERROR: Cannot publish dirty version: $(VERSION)"; \
