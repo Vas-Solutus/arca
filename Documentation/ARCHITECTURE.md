@@ -246,18 +246,18 @@ graph TB
     end
 
     subgraph "Volume Storage ~/.arca/volumes/"
-        LocalVol[mydata/<br/>├── data/<br/>│   └── files]
-        BlockVol[mydb/<br/>├── volume.img<br/>   EXT4 filesystem]
+        LocalVol["mydata/<br/>├── data/<br/>│   └── files"]
+        BlockVol["mydb/<br/>└── volume.img<br/>    (EXT4 filesystem)"]
     end
 
     subgraph "Container VM"
         subgraph "VirtioFS Shares"
-            BindMount[/host-data<br/>macOS directory]
-            LocalMount[/app-data<br/>~/.arca/volumes/mydata/data]
+            BindMount["/host-data<br/>macOS directory"]
+            LocalMount["/app-data<br/>~/.arca/volumes/mydata/data"]
         end
 
         subgraph "Block Device"
-            BlockMount[/var/lib/db<br/>EXT4 block device]
+            BlockMount["/var/lib/db<br/>EXT4 block device"]
         end
     end
 
@@ -484,9 +484,9 @@ graph TB
     end
 
     subgraph "Built vminit:latest Image ~/.arca/vminit/"
-        Binary[/sbin/vminitd<br/>PID 1 in containers]
-        WGBin[/usr/local/bin/<br/>arca-wireguard-service]
-        FSBin[/usr/local/bin/<br/>arca-filesystem-service]
+        Binary["/sbin/vminitd<br/>PID 1 in containers"]
+        WGBin["/usr/local/bin/<br/>arca-wireguard-service"]
+        FSBin["/usr/local/bin/<br/>arca-filesystem-service"]
     end
 
     Submodule -.->|Points to| Upstream
@@ -635,6 +635,6 @@ graph LR
 ---
 
 For more information, see:
-- **OVERVIEW.md** - High-level project introduction
-- **LIMITATIONS.md** - Known differences from Docker
+- **DISTRIBUTION.md** - Build and release process
+- **VMINIT_BUILD.md** - Building custom vminit
 - **Source code** - `Sources/` directories with inline documentation
