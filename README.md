@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ArcaLogo.png" alt="Arca Logo" width="200"/>
+</p>
+
 # Arca
 
 **Docker compatible, Apple native, secure container engine for macOS**
