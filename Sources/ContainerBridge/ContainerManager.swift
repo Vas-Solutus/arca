@@ -531,6 +531,17 @@ public actor ContainerManager {
         // Extract label filters for matching
         let labelFilters = filters["label"] ?? []
 
+        // Pre-fetch health statuses if health filter is present
+        var healthStatuses: [String: String] = [:]
+        if let healthFilters = filters["health"], !healthFilters.isEmpty, let healthChecker = healthChecker {
+            // Fetch health status for all containers
+            for (dockerID, _) in containers {
+                if let health = await healthChecker.getStatus(containerID: dockerID) {
+                    healthStatuses[dockerID] = health.status
+                }
+            }
+        }
+
         // List containers from our internal state tracking
         // Background monitoring tasks automatically update state when containers exit
         return containers.values.compactMap { info -> ContainerSummary? in
@@ -673,11 +684,17 @@ public actor ContainerManager {
 
             // Apply health filter (match health status)
             if let healthFilters = filters["health"], !healthFilters.isEmpty {
-                // Health status not currently tracked in ContainerInfo
-                // This would require checking container config for healthcheck and tracking health state
-                // For now, we'll skip containers if health filter is specified
-                // TODO: Implement health status tracking in ContainerInfo
-                return nil
+                // Get current health status (pre-fetched or default to "none")
+                let currentHealth = healthStatuses[dockerID] ?? "none"
+
+                // Match against filter values (case-insensitive)
+                let matches = healthFilters.contains { filter in
+                    filter.lowercased() == currentHealth.lowercased()
+                }
+
+                if !matches {
+                    return nil
+                }
             }
 
             // Apply before filter (created before specified container)
