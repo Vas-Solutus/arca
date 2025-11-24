@@ -565,7 +565,7 @@ public actor ContainerManager {
                 }
             }
 
-            // Get the docker ID for this container
+            // Get the docker ID for this container (needed for some filters below)
             guard let dockerID = reverseMapping[info.nativeID] else {
                 logger.error("BUG: Container has invalid nativeID mapping", metadata: [
                     "native_id": "\(info.nativeID)",
@@ -574,6 +574,130 @@ public actor ContainerManager {
                     "reverse_mapping_keys": "\(reverseMapping.keys.sorted())"
                 ])
                 return nil
+            }
+
+            // Apply name filter (partial match on container name)
+            if let nameFilters = filters["name"], !nameFilters.isEmpty {
+                let containerName = info.name ?? ""
+                let matchesName = nameFilters.contains { filterName in
+                    containerName.contains(filterName)
+                }
+                if !matchesName {
+                    return nil
+                }
+            }
+
+            // Apply id filter (exact or prefix match on container ID)
+            if let idFilters = filters["id"], !idFilters.isEmpty {
+                let matchesID = idFilters.contains { filterId in
+                    dockerID.hasPrefix(filterId) || dockerID == filterId
+                }
+                if !matchesID {
+                    return nil
+                }
+            }
+
+            // Apply status filter (match container state)
+            if let statusFilters = filters["status"], !statusFilters.isEmpty {
+                let matchesStatus = statusFilters.contains { filterStatus in
+                    info.state.lowercased() == filterStatus.lowercased()
+                }
+                if !matchesStatus {
+                    return nil
+                }
+            }
+
+            // Apply network filter (check if container is on specific network)
+            if let networkFilters = filters["network"], !networkFilters.isEmpty {
+                let matchesNetwork = networkFilters.contains { filterNetwork in
+                    // Check if container is attached to this network (by ID or name)
+                    info.networkAttachments.contains { networkID, _ in
+                        networkID == filterNetwork || networkID.hasPrefix(filterNetwork)
+                    }
+                }
+                if !matchesNetwork {
+                    return nil
+                }
+            }
+
+            // Apply volume filter (check if container has specific volume/mount)
+            if let volumeFilters = filters["volume"], !volumeFilters.isEmpty {
+                let matchesVolume = volumeFilters.contains { filterVolume in
+                    // Check if any bind matches the volume name or mount point
+                    info.hostConfig.binds.contains { bind in
+                        // Binds format: "source:destination" or "source:destination:ro"
+                        let parts = bind.split(separator: ":")
+                        if parts.count >= 2 {
+                            let source = String(parts[0])
+                            let destination = String(parts[1])
+                            return source.contains(filterVolume) || destination.contains(filterVolume)
+                        }
+                        return false
+                    }
+                }
+                if !matchesVolume {
+                    return nil
+                }
+            }
+
+            // Apply ancestor filter (match imageID)
+            if let ancestorFilters = filters["ancestor"], !ancestorFilters.isEmpty {
+                let matchesAncestor = ancestorFilters.contains { filterAncestor in
+                    // Match against image name or imageID
+                    info.image == filterAncestor ||
+                    info.imageID == filterAncestor ||
+                    info.imageID.hasPrefix(filterAncestor)
+                }
+                if !matchesAncestor {
+                    return nil
+                }
+            }
+
+            // Apply exited filter (match exit code for exited containers)
+            if let exitedFilters = filters["exited"], !exitedFilters.isEmpty {
+                if info.state == "exited" {
+                    let matchesExitCode = exitedFilters.contains { filterExitCode in
+                        if let exitCodeInt = Int(filterExitCode) {
+                            return info.exitCode == exitCodeInt
+                        }
+                        return false
+                    }
+                    if !matchesExitCode {
+                        return nil
+                    }
+                } else {
+                    // Container is not exited, so it doesn't match the exited filter
+                    return nil
+                }
+            }
+
+            // Apply health filter (match health status)
+            if let healthFilters = filters["health"], !healthFilters.isEmpty {
+                // Health status not currently tracked in ContainerInfo
+                // This would require checking container config for healthcheck and tracking health state
+                // For now, we'll skip containers if health filter is specified
+                // TODO: Implement health status tracking in ContainerInfo
+                return nil
+            }
+
+            // Apply before filter (created before specified container)
+            if let beforeFilters = filters["before"], !beforeFilters.isEmpty {
+                if let beforeContainerID = beforeFilters.first,
+                   let beforeContainer = containers.values.first(where: { reverseMapping[$0.nativeID] == beforeContainerID }) {
+                    if info.created >= beforeContainer.created {
+                        return nil
+                    }
+                }
+            }
+
+            // Apply since filter (created after specified container)
+            if let sinceFilters = filters["since"], !sinceFilters.isEmpty {
+                if let sinceContainerID = sinceFilters.first,
+                   let sinceContainer = containers.values.first(where: { reverseMapping[$0.nativeID] == sinceContainerID }) {
+                    if info.created <= sinceContainer.created {
+                        return nil
+                    }
+                }
             }
 
             return ContainerSummary(
