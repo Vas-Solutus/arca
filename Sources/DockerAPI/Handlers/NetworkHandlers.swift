@@ -149,9 +149,12 @@ public struct NetworkHandlers: Sendable {
         let ipRange = request.ipam?.config?.first?.ipRange
 
         do {
+            // Normalize empty driver string to nil (Docker Compose sends "" instead of nil)
+            let normalizedDriver = request.driver?.isEmpty == false ? request.driver : nil
+
             let networkID = try await networkManager.createNetwork(
                 name: request.name,
-                driver: request.driver ?? "bridge",
+                driver: normalizedDriver ?? "bridge",
                 subnet: subnet,
                 gateway: gateway,
                 ipRange: ipRange,
