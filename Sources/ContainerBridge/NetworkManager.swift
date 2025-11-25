@@ -169,7 +169,9 @@ public actor NetworkManager {
         isDefault: Bool = false
     ) async throws -> String {
         // Determine effective driver (explicit driver or "bridge" as default)
-        let effectiveDriver = driver ?? "bridge"
+        // Normalize empty string to nil (Docker Compose and other clients may send "")
+        let normalizedDriver = driver?.isEmpty == false ? driver : nil
+        let effectiveDriver = normalizedDriver ?? "bridge"
 
         // Generate network ID
         let networkID = generateNetworkID()
