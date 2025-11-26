@@ -1339,8 +1339,15 @@ public actor ContainerManager {
             // Configure memory limits (Phase 5 - Task 5.1)
             // Wire Docker API memory parameters to Apple's Containerization framework
             // The framework uses cgroup v2 for enforcement via Cgroup2Manager
-            // Apple requires minimum 512MB, use 1GB default if not specified
-            let effectiveMemory = config.memory.map { $0 > 0 ? $0 : 1024 * 1024 * 1024 } ?? 1024 * 1024 * 1024
+            // Apple requires minimum 512MB, use 4GB default if not specified
+            // Memory ballooning means the VM only consumes physical memory as needed up to this limit
+            let defaultMemory: Int64 = 4 * 1024 * 1024 * 1024  // 4GB
+            let effectiveMemory: Int64
+            if let memory = config.memory, memory > 0 {
+                effectiveMemory = memory
+            } else {
+                effectiveMemory = defaultMemory
+            }
             containerConfig.memoryInBytes = UInt64(effectiveMemory)
 
             if let memory = config.memory, memory > 0 {
@@ -1352,7 +1359,7 @@ public actor ContainerManager {
             } else {
                 configLogger.debug("Using default memory limit", metadata: [
                     "docker_id": "\(dockerID)",
-                    "memory_mb": "1024"
+                    "memory_mb": "4096"
                 ])
             }
 
