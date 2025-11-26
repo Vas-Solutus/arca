@@ -252,7 +252,11 @@ public actor WireGuardNetworkBackend {
             }
         }
 
-        // Allocate IP address for this container in this network
+        // Generate MAC address early (needed for atomic IP reservation)
+        let mac = generateMACAddress(containerID: containerID, networkID: networkID)
+        let allAliases = aliases + [containerName]
+
+        // Allocate and reserve IP address atomically (fixes #13 - IPAM race condition)
         let ipAddress: String
         // Check if user specified an IP (and it's not empty string)
         // Docker CLI/API can send empty string "" when no IP is specified
@@ -262,31 +266,70 @@ public actor WireGuardNetworkBackend {
                 throw NetworkManagerError.invalidIPAddress("IP \(userIP) not in subnet \(metadata.subnet)")
             }
 
-            // Check if IP is already allocated (query database for accurate check)
-            // This catches IPs allocated to containers even if they're not currently running
-            let allocatedIPs = try await stateStore.getAllocatedIPs(networkID: networkID)
-            if allocatedIPs.contains(userIP) {
-                // IP is already in use - check if it's the same container (reconnecting)
-                // Get all network attachments from database to find which container has this IP
-                let allAttachments = try await stateStore.loadNetworkAttachments(containerID: containerID)
-                let existingAttachment = allAttachments.first(where: { $0.networkID == networkID && $0.ipAddress == userIP })
+            // Check if this is a reconnect (same container, same IP)
+            let allAttachments = try await stateStore.loadNetworkAttachments(containerID: containerID)
+            let existingAttachment = allAttachments.first(where: { $0.networkID == networkID && $0.ipAddress == userIP })
 
-                // If attachment exists and IP matches, this is a reconnect - allow it
-                // Otherwise, IP is used by a different container - reject
-                if existingAttachment == nil {
+            if existingAttachment != nil {
+                // Reconnect - IP already reserved for this container
+                ipAddress = userIP
+                logger.info("Reconnecting with existing IP reservation", metadata: [
+                    "ip": "\(ipAddress)",
+                    "network_id": "\(networkID)"
+                ])
+            } else {
+                // New reservation - atomically reserve the specific IP
+                do {
+                    try await stateStore.reserveSpecificIP(
+                        containerID: containerID,
+                        networkID: networkID,
+                        ip: userIP,
+                        macAddress: mac,
+                        aliases: allAliases
+                    )
+                    ipAddress = userIP
+                    logger.info("Reserved user-specified IP address", metadata: [
+                        "ip": "\(ipAddress)",
+                        "network_id": "\(networkID)"
+                    ])
+                } catch {
                     throw NetworkManagerError.ipAlreadyInUse(userIP)
                 }
             }
+        } else {
+            // Auto-allocate IP atomically (prevents race condition)
+            guard let block = IP.Block<IP.V4>(metadata.subnet) else {
+                throw NetworkManagerError.ipAllocationFailed("Invalid subnet format: \(metadata.subnet)")
+            }
 
-            // Use user-specified IP
-            ipAddress = userIP
-            logger.info("Using user-specified IP address", metadata: [
+            let networkAddr = block.base
+            let gatewayIP = IP.V4(value: networkAddr.value + 1)
+            let startIP = IP.V4(value: gatewayIP.value + 1)
+
+            let rangeStart: Int64
+            let rangeEnd: Int64
+            if let ipRangeStr = metadata.ipRange, let ipRange = IP.Block<IP.V4>(ipRangeStr) {
+                rangeStart = Int64(ipRange.range.lowerBound.value)
+                rangeEnd = Int64(ipRange.range.upperBound.value)
+            } else {
+                rangeStart = Int64(startIP.value)
+                rangeEnd = Int64(block.range.upperBound.value)
+            }
+
+            ipAddress = try await stateStore.allocateAndReserveIP(
+                containerID: containerID,
+                networkID: networkID,
+                rangeStart: rangeStart,
+                rangeEnd: rangeEnd,
+                gatewayInt: Int64(gatewayIP.value),
+                macAddress: mac,
+                aliases: allAliases
+            )
+
+            logger.info("Auto-allocated IP address atomically", metadata: [
                 "ip": "\(ipAddress)",
                 "network_id": "\(networkID)"
             ])
-        } else {
-            // Auto-allocate IP (empty string or nil means auto-allocate)
-            ipAddress = try await allocateIP(networkID: networkID, subnet: metadata.subnet)
         }
 
         // Create WireGuard client for this container
@@ -510,24 +553,12 @@ public actor WireGuardNetworkBackend {
             "total_peers": "\(otherContainerIDs.count)"
         ])
 
-        // Generate MAC address (deterministic based on container ID and network ID)
-        let mac = generateMACAddress(containerID: containerID, networkID: networkID)
-
-        // Create attachment
+        // Create attachment (IP already reserved atomically in database)
         let attachment = NetworkAttachment(
             networkID: networkID,
             ip: ipAddress,
             mac: mac,
-            aliases: aliases + [containerName]
-        )
-
-        // Save attachment to database
-        try await stateStore.saveNetworkAttachment(
-            containerID: containerID,
-            networkID: networkID,
-            ipAddress: ipAddress,
-            macAddress: mac,
-            aliases: aliases + [containerName]
+            aliases: allAliases
         )
 
         // Store container name for DNS (Phase 3.1) - still needs in-memory for WireGuard client access
