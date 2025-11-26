@@ -1687,7 +1687,7 @@ public actor ContainerManager {
             }
         }
 
-        // Parse bind mounts and named volumes
+        // Parse bind mounts and named volumes (includes file bind mount handling)
         let mounts = try await parseVolumeMounts(effectiveBinds, dockerID: dockerID)
         if !mounts.isEmpty {
             logger.info("Container has volume mounts", metadata: [
@@ -3630,6 +3630,10 @@ public actor ContainerManager {
     /// Supports both bind mounts and named volumes:
     /// - Bind mounts: "/host/path:/container/path[:ro]" or "relative/path:/container/path[:ro]"
     /// - Named volumes: "volume-name:/container/path[:ro]"
+    ///
+    /// For file bind mounts, VirtioFS only supports directory shares, so:
+    /// - Parent directory is mounted to unique location (/mnt/arca-file-mounts/<hash>/)
+    /// Returns: mounts array
     private func parseVolumeMounts(_ binds: [String]?, dockerID: String) async throws -> [Containerization.Mount] {
         guard let binds = binds else {
             return []
@@ -3769,39 +3773,96 @@ public actor ContainerManager {
                 }
             } else {
                 // Bind mounts: Use VirtioFS share
-                // Validate host path exists (create directory if needed for rw mounts)
+                // Check if source is a file or directory (VirtioFS only supports directory shares)
                 let fileManager = FileManager.default
                 var isDirectory: ObjCBool = false
                 let exists = fileManager.fileExists(atPath: expandedHostPath, isDirectory: &isDirectory)
 
-                if !exists && !isReadOnly {
-                    // For read-write mounts, create the directory if it doesn't exist
-                    logger.info("Creating host directory for bind mount", metadata: [
-                        "path": "\(expandedHostPath)"
-                    ])
-                    try fileManager.createDirectory(
-                        atPath: expandedHostPath,
-                        withIntermediateDirectories: true,
-                        attributes: nil
-                    )
-                } else if !exists && isReadOnly {
-                    logger.error("Read-only bind mount source does not exist", metadata: [
-                        "path": "\(expandedHostPath)"
-                    ])
-                    throw ContainerManagerError.volumeSourceNotFound(expandedHostPath)
+                if !exists {
+                    if isReadOnly {
+                        logger.error("Read-only bind mount source does not exist", metadata: [
+                            "path": "\(expandedHostPath)"
+                        ])
+                        throw ContainerManagerError.volumeSourceNotFound(expandedHostPath)
+                    } else {
+                        // For read-write mounts, create directory if it doesn't exist
+                        // (will create as directory, not file)
+                        logger.info("Creating host directory for bind mount", metadata: [
+                            "path": "\(expandedHostPath)"
+                        ])
+                        try fileManager.createDirectory(
+                            atPath: expandedHostPath,
+                            withIntermediateDirectories: true,
+                            attributes: nil
+                        )
+                    }
                 }
 
-                mount = Containerization.Mount.share(
-                    source: expandedHostPath,
-                    destination: containerPath,
-                    options: options
-                )
-                logger.debug("Created VirtioFS share for bind mount", metadata: [
-                    "source": "\(source)",
-                    "resolvedPath": "\(expandedHostPath)",
-                    "destination": "\(containerPath)",
-                    "readOnly": "\(isReadOnly)"
-                ])
+                // Check if this is a file mount (VirtioFS limitation workaround)
+                let isFile = exists && !isDirectory.boolValue
+                if isFile {
+                    // File bind mount: VirtioFS only supports directory shares
+                    // Solution: Mount parent directory to unique location, then bind mount the file
+                    let parentDir = (expandedHostPath as NSString).deletingLastPathComponent
+                    let filename = (expandedHostPath as NSString).lastPathComponent
+
+                    // Create unique mount point for parent directory using deterministic hash
+                    // Must use hashMountSource() which is the same hash used for VirtioFS tags
+                    // This ensures consistency between the VirtioFS mount and bind mount paths
+                    let parentDirHash = try hashMountSource(source: parentDir)
+                    let guestParentMount = "/mnt/arca-file-mounts/\(parentDirHash)"
+
+                    // 1. Mount parent directory via VirtioFS (makes file available at guest path)
+                    let virtiofsMount = Containerization.Mount.share(
+                        source: parentDir,
+                        destination: guestParentMount,
+                        options: []  // Read-write at VirtioFS level
+                    )
+                    mounts.append(virtiofsMount)
+
+                    // 2. Add bind mount from VirtioFS location to container path
+                    // vmexec prefixes mount DESTINATIONS with rootfs path, but NOT sources
+                    // So VirtioFS gets mounted at: /run/container/{id}/rootfs/mnt/arca-file-mounts/{hash}/
+                    // We need the bind mount source to point there (with rootfs prefix)
+                    let containerRootfs = "/run/container/\(dockerID)/rootfs"
+                    let bindSource = "\(containerRootfs)\(guestParentMount)/\(filename)"
+
+                    // For file bind mounts, we need to signal to vminitd that the target
+                    // should be created as an empty file, not a directory
+                    // ContainerizationOS.Mount.mountToTarget() uses mkdirAll which creates directories
+                    var bindOptions = ["bind", "arca-file-bind"]
+                    if isReadOnly {
+                        bindOptions.append("ro")
+                    }
+                    mount = Containerization.Mount.any(
+                        type: "",  // Bind mounts have no filesystem type
+                        source: bindSource,
+                        destination: containerPath,
+                        options: bindOptions
+                    )
+
+                    logger.info("File bind mount: VirtioFS share + bind mount", metadata: [
+                        "file": "\(expandedHostPath)",
+                        "parentDir": "\(parentDir)",
+                        "guestParentMount": "\(guestParentMount)",
+                        "bindSource": "\(bindSource)",
+                        "containerPath": "\(containerPath)",
+                        "readOnly": "\(isReadOnly)"
+                    ])
+                } else {
+                    // Directory bind mount: Normal VirtioFS share
+                    mount = Containerization.Mount.share(
+                        source: expandedHostPath,
+                        destination: containerPath,
+                        options: options
+                    )
+                    logger.debug("Created VirtioFS share for directory bind mount", metadata: [
+                        "source": "\(source)",
+                        "resolvedPath": "\(expandedHostPath)",
+                        "destination": "\(containerPath)",
+                        "readOnly": "\(isReadOnly)"
+                    ])
+                }
             }
 
             mounts.append(mount)
@@ -4245,6 +4306,7 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
     case volumeNotFound(String)
     case volumeManagerNotAvailable
     case logWriterCreationFailed(String)
+    case fileBindMountFailed(String, String)  // (target path, error message)
 
     public var description: String {
         switch self {
@@ -4278,6 +4340,8 @@ public enum ContainerManagerError: Error, CustomStringConvertible {
             return "VolumeManager not available - named volumes are not supported"
         case .logWriterCreationFailed(let msg):
             return "Failed to create log writers: \(msg)"
+        case .fileBindMountFailed(let target, let error):
+            return "Failed to create file bind mount at \(target): \(error)"
         }
     }
 }
