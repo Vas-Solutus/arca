@@ -240,6 +240,44 @@ public actor FilesystemClient {
             "path": "\(path)"
         ])
     }
+
+    /// Create bind mount - bind mount a file or directory inside the container
+    /// Works like "mount --bind /source /target" inside the container
+    /// Used for file bind mounts (VirtioFS only supports directory shares)
+    public func createBindMount(source: String, target: String, readOnly: Bool) async throws {
+        logger.debug("Creating bind mount", metadata: [
+            "container": "\(containerID)",
+            "source": "\(source)",
+            "target": "\(target)",
+            "readOnly": "\(readOnly)"
+        ])
+
+        let client = try await getClient()
+        var request = Arca_Filesystem_V1_CreateBindMountRequest()
+        request.containerID = containerID
+        request.source = source
+        request.target = target
+        request.readOnly = readOnly
+
+        let response = try await client.createBindMount(request)
+
+        guard response.success else {
+            logger.error("Create bind mount failed", metadata: [
+                "container": "\(containerID)",
+                "source": "\(source)",
+                "target": "\(target)",
+                "error": "\(response.error)"
+            ])
+            throw FilesystemClientError.createBindMountFailed(response.error)
+        }
+
+        logger.info("Bind mount created successfully", metadata: [
+            "container": "\(containerID)",
+            "source": "\(source)",
+            "target": "\(target)",
+            "readOnly": "\(readOnly)"
+        ])
+    }
 }
 
 /// Entry in the OverlayFS upperdir (for docker diff)
@@ -283,6 +321,7 @@ public enum FilesystemClientError: Error, CustomStringConvertible {
     case enumerationFailed(String)
     case readArchiveFailed(String)
     case writeArchiveFailed(String)
+    case createBindMountFailed(String)
 
     public var description: String {
         switch self {
@@ -296,6 +335,8 @@ public enum FilesystemClientError: Error, CustomStringConvertible {
             return "Read archive failed: \(msg)"
         case .writeArchiveFailed(let msg):
             return "Write archive failed: \(msg)"
+        case .createBindMountFailed(let msg):
+            return "Create bind mount failed: \(msg)"
         }
     }
 }

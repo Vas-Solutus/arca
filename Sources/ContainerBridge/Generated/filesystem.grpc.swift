@@ -38,6 +38,11 @@ public protocol Arca_Filesystem_V1_FilesystemServiceClientProtocol: GRPCClient {
     _ request: Arca_Filesystem_V1_WriteArchiveRequest,
     callOptions: CallOptions?
   ) -> UnaryCall<Arca_Filesystem_V1_WriteArchiveRequest, Arca_Filesystem_V1_WriteArchiveResponse>
+
+  func createBindMount(
+    _ request: Arca_Filesystem_V1_CreateBindMountRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Filesystem_V1_CreateBindMountRequest, Arca_Filesystem_V1_CreateBindMountResponse>
 }
 
 extension Arca_Filesystem_V1_FilesystemServiceClientProtocol {
@@ -122,6 +127,26 @@ extension Arca_Filesystem_V1_FilesystemServiceClientProtocol {
       request: request,
       callOptions: callOptions ?? self.defaultCallOptions,
       interceptors: self.interceptors?.makeWriteArchiveInterceptors() ?? []
+    )
+  }
+
+  /// Create bind mount - bind mount a file or directory to another location
+  /// Works like "mount --bind /source /target" inside the container
+  /// Used for file bind mounts (VirtioFS only supports directory shares)
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to CreateBindMount.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func createBindMount(
+    _ request: Arca_Filesystem_V1_CreateBindMountRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Filesystem_V1_CreateBindMountRequest, Arca_Filesystem_V1_CreateBindMountResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.createBindMount.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeCreateBindMountInterceptors() ?? []
     )
   }
 }
@@ -209,6 +234,11 @@ public protocol Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol: GRPCCli
     _ request: Arca_Filesystem_V1_WriteArchiveRequest,
     callOptions: CallOptions?
   ) -> GRPCAsyncUnaryCall<Arca_Filesystem_V1_WriteArchiveRequest, Arca_Filesystem_V1_WriteArchiveResponse>
+
+  func makeCreateBindMountCall(
+    _ request: Arca_Filesystem_V1_CreateBindMountRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Filesystem_V1_CreateBindMountRequest, Arca_Filesystem_V1_CreateBindMountResponse>
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -268,6 +298,18 @@ extension Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeWriteArchiveInterceptors() ?? []
     )
   }
+
+  public func makeCreateBindMountCall(
+    _ request: Arca_Filesystem_V1_CreateBindMountRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Filesystem_V1_CreateBindMountRequest, Arca_Filesystem_V1_CreateBindMountResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.createBindMount.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeCreateBindMountInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -319,6 +361,18 @@ extension Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol {
       interceptors: self.interceptors?.makeWriteArchiveInterceptors() ?? []
     )
   }
+
+  public func createBindMount(
+    _ request: Arca_Filesystem_V1_CreateBindMountRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Filesystem_V1_CreateBindMountResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.createBindMount.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeCreateBindMountInterceptors() ?? []
+    )
+  }
 }
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
@@ -351,6 +405,9 @@ public protocol Arca_Filesystem_V1_FilesystemServiceClientInterceptorFactoryProt
 
   /// - Returns: Interceptors to use when invoking 'writeArchive'.
   func makeWriteArchiveInterceptors() -> [ClientInterceptor<Arca_Filesystem_V1_WriteArchiveRequest, Arca_Filesystem_V1_WriteArchiveResponse>]
+
+  /// - Returns: Interceptors to use when invoking 'createBindMount'.
+  func makeCreateBindMountInterceptors() -> [ClientInterceptor<Arca_Filesystem_V1_CreateBindMountRequest, Arca_Filesystem_V1_CreateBindMountResponse>]
 }
 
 public enum Arca_Filesystem_V1_FilesystemServiceClientMetadata {
@@ -362,6 +419,7 @@ public enum Arca_Filesystem_V1_FilesystemServiceClientMetadata {
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.enumerateUpperdir,
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.readArchive,
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.writeArchive,
+      Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.createBindMount,
     ]
   )
 
@@ -387,6 +445,12 @@ public enum Arca_Filesystem_V1_FilesystemServiceClientMetadata {
     public static let writeArchive = GRPCMethodDescriptor(
       name: "WriteArchive",
       path: "/arca.filesystem.v1.FilesystemService/WriteArchive",
+      type: GRPCCallType.unary
+    )
+
+    public static let createBindMount = GRPCMethodDescriptor(
+      name: "CreateBindMount",
+      path: "/arca.filesystem.v1.FilesystemService/CreateBindMount",
       type: GRPCCallType.unary
     )
   }

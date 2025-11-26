@@ -224,6 +224,47 @@ public struct Arca_Filesystem_V1_WriteArchiveResponse: Sendable {
   public init() {}
 }
 
+/// Request to create a bind mount inside the container
+public struct Arca_Filesystem_V1_CreateBindMountRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Container ID (for resolving /run/container/{id}/rootfs path)
+  public var containerID: String = String()
+
+  /// Source path inside VM (absolute path, e.g., "/mnt/arca-file-mounts/abc123/myfile.txt")
+  /// Can be a file or directory
+  public var source: String = String()
+
+  /// Target path relative to container root (e.g., "/test.txt" or "/app/config.yaml")
+  /// Will be resolved to /run/container/{container_id}/rootfs{target}
+  public var target: String = String()
+
+  /// Read-only mount (default: false for read-write)
+  public var readOnly: Bool = false
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public struct Arca_Filesystem_V1_CreateBindMountResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Success status
+  public var success: Bool = false
+
+  /// Error message if success = false
+  public var error: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "arca.filesystem.v1"
@@ -593,6 +634,86 @@ extension Arca_Filesystem_V1_WriteArchiveResponse: SwiftProtobuf.Message, SwiftP
   }
 
   public static func ==(lhs: Arca_Filesystem_V1_WriteArchiveResponse, rhs: Arca_Filesystem_V1_WriteArchiveResponse) -> Bool {
+    if lhs.success != rhs.success {return false}
+    if lhs.error != rhs.error {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Filesystem_V1_CreateBindMountRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CreateBindMountRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}container_id\0\u{1}source\0\u{1}target\0\u{3}read_only\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.containerID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.source) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.target) }()
+      case 4: try { try decoder.decodeSingularBoolField(value: &self.readOnly) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.containerID.isEmpty {
+      try visitor.visitSingularStringField(value: self.containerID, fieldNumber: 1)
+    }
+    if !self.source.isEmpty {
+      try visitor.visitSingularStringField(value: self.source, fieldNumber: 2)
+    }
+    if !self.target.isEmpty {
+      try visitor.visitSingularStringField(value: self.target, fieldNumber: 3)
+    }
+    if self.readOnly != false {
+      try visitor.visitSingularBoolField(value: self.readOnly, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Filesystem_V1_CreateBindMountRequest, rhs: Arca_Filesystem_V1_CreateBindMountRequest) -> Bool {
+    if lhs.containerID != rhs.containerID {return false}
+    if lhs.source != rhs.source {return false}
+    if lhs.target != rhs.target {return false}
+    if lhs.readOnly != rhs.readOnly {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Arca_Filesystem_V1_CreateBindMountResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CreateBindMountResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{1}error\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.success) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.error) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.success != false {
+      try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
+    }
+    if !self.error.isEmpty {
+      try visitor.visitSingularStringField(value: self.error, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Arca_Filesystem_V1_CreateBindMountResponse, rhs: Arca_Filesystem_V1_CreateBindMountResponse) -> Bool {
     if lhs.success != rhs.success {return false}
     if lhs.error != rhs.error {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}

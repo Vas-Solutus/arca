@@ -23,7 +23,7 @@ public struct SystemHandlers: Sendable {
     /// Returns: Version information about the Docker Engine API
     public static func handleVersion() -> VersionResponse {
         return VersionResponse(
-            version: "0.1.0",
+            version: "0.1.3-alpha",
             apiVersion: "1.51",
             minAPIVersion: "1.24",
             gitCommit: "unknown",
@@ -80,14 +80,14 @@ public struct SystemHandlers: Sendable {
             cgroupVersion: "2",
             kernelVersion: processInfo.kernelVersion,
             operatingSystem: "Arca Container Runtime",
-            osVersion: "0.1.0",
+            osVersion: "0.1.3-alpha",
             osType: "linux",
             architecture: processInfo.machineArchitecture,
             ncpu: processInfo.activeProcessorCount,
             memTotal: Int64(processInfo.physicalMemory),
             name: processInfo.hostName,
             experimentalBuild: false,
-            serverVersion: "0.1.0"
+            serverVersion: "0.1.3-alpha"
         )
     }
 
