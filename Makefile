@@ -390,7 +390,7 @@ notarize: dist-dmg
 	@./scripts/notarize.sh $(DIST_DIR)/arca-$(VERSION).dmg
 
 # Publish release to GitHub
-# Creates a GitHub release and uploads the DMG with checksums
+# Creates a signed git tag, pushes it, and creates a GitHub pre-release
 # Notarizes the DMG before publishing (requires Apple Developer account)
 # Usage: make publish [VERSION=v1.0.0]
 publish: notarize
@@ -405,24 +405,37 @@ publish: notarize
 		echo "Install with: brew install gh"; \
 		exit 1; \
 	fi
+	@echo ""
+	@echo "Creating signed git tag $(VERSION)..."
+	@if git rev-parse "$(VERSION)" >/dev/null 2>&1; then \
+		echo "Tag $(VERSION) already exists, skipping tag creation"; \
+	else \
+		git tag -s "$(VERSION)" -m "Release $(VERSION)"; \
+		echo "✓ Signed tag created: $(VERSION)"; \
+	fi
+	@echo ""
+	@echo "Pushing tag to origin..."
+	@git push origin "$(VERSION)"
+	@echo "✓ Tag pushed to origin"
+	@echo ""
+	@echo "Verifying tag signature..."
+	@git tag -v "$(VERSION)" 2>&1 | head -5 || echo "⚠️  Tag verification requires GPG key in keyring"
+	@echo ""
 	@echo "Generating SHA256 checksum for DMG..."
 	@cd $(DIST_DIR) && shasum -a 256 arca-$(VERSION).dmg > arca-$(VERSION).dmg.sha256
 	@echo "✓ Checksum: $$(cat $(DIST_DIR)/arca-$(VERSION).dmg.sha256)"
 	@echo ""
-	@echo "Creating GitHub release $(VERSION)..."
+	@echo "Creating GitHub pre-release $(VERSION)..."
 	@gh release create "$(VERSION)" \
 		--title "Arca $(VERSION)" \
 		--notes "Release $(VERSION)" \
-		--draft \
+		--prerelease \
 		$(DIST_DIR)/arca-$(VERSION).dmg \
 		$(DIST_DIR)/arca-$(VERSION).dmg.sha256
 	@echo ""
-	@echo "✓ Release created successfully (draft mode)"
+	@echo "✓ Pre-release published successfully"
 	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Visit: https://github.com/$$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases"
-	@echo "  2. Edit the release notes and add changelog"
-	@echo "  3. Publish the release when ready"
+	@echo "Release URL: https://github.com/$$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$(VERSION)"
 
 # Clean distribution artifacts
 clean-dist:
@@ -556,6 +569,7 @@ help:
 	@echo "  make dist            - Create distribution tarball (.tar.gz)"
 	@echo "  make dist-dmg        - Create macOS .dmg installer with Arca.app"
 	@echo "  make notarize        - Notarize .dmg (requires Apple Developer account)"
+	@echo "  make publish         - Create signed tag, push, and publish pre-release to GitHub"
 	@echo ""
 	@echo "Advanced:"
 	@echo "  make kernel          - Build Linux kernel (only if missing, 10-15 min)"
