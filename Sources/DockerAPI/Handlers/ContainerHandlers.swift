@@ -155,14 +155,17 @@ public struct ContainerHandlers: Sendable {
                 }
             }
 
-            // Extract user-specified IP from NetworkingConfig (if provided)
+            // Extract user-specified IP and aliases from NetworkingConfig (if provided)
+            // Docker Compose sets Aliases to include the service name (e.g., "minio")
             var initialNetworkUserIP: String? = nil
+            var initialNetworkAliases: [String] = []
             if let networkingConfig = request.networkingConfig,
                let endpointsConfig = networkingConfig.endpointsConfig {
                 // Get the network mode to find the correct endpoint config
                 let networkMode = request.hostConfig?.networkMode ?? "bridge"
                 if let endpointConfig = endpointsConfig[networkMode] {
                     initialNetworkUserIP = endpointConfig.ipamConfig?.ipv4Address
+                    initialNetworkAliases = endpointConfig.aliases ?? []
                 }
             }
 
@@ -193,6 +196,7 @@ public struct ContainerHandlers: Sendable {
                 volumes: request.volumes?.mapValues { $0.value },  // Convert AnyCodable to Any
                 portBindings: portBindings,
                 initialNetworkUserIP: initialNetworkUserIP,
+                initialNetworkAliases: initialNetworkAliases,
                 // Memory Limits (Phase 5 - Task 5.1)
                 memory: request.hostConfig?.memory,
                 memoryReservation: request.hostConfig?.memoryReservation,

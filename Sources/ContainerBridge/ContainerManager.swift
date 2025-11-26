@@ -373,7 +373,8 @@ public actor ContainerManager {
                 needsCreate: false,
                 networkAttachments: networkAttachments,
                 anonymousVolumes: [],  // Anonymous volumes loaded from volume_mounts table
-                initialNetworkUserIP: nil  // Only relevant during container creation, not restoration
+                initialNetworkUserIP: nil,  // Only relevant during container creation, not restoration
+                initialNetworkAliases: []  // Aliases from network attachments, not needed for restoration
             )
 
             // Store in containers map
@@ -1519,6 +1520,7 @@ public actor ContainerManager {
         volumes: [String: Any]? = nil,  // Anonymous volumes: {"/container/path": {}}
         portBindings: [String: [PortBinding]]? = nil,  // Port mappings: {"80/tcp": [PortBinding(hostIp: "0.0.0.0", hostPort: "8080")]}
         initialNetworkUserIP: String? = nil,  // User-specified IP for initial network (from docker run --ip)
+        initialNetworkAliases: [String] = [],  // Aliases for initial network (from Docker Compose service name)
         // Memory Limits (Phase 5 - Task 5.1)
         memory: Int64? = nil,
         memoryReservation: Int64? = nil,
@@ -1852,7 +1854,8 @@ public actor ContainerManager {
             needsCreate: shouldDeferCreate,
             networkAttachments: [:],  // Start with no network attachments
             anonymousVolumes: anonymousVolumeNames,  // Track anonymous volumes for cleanup
-            initialNetworkUserIP: initialNetworkUserIP  // User-specified IP for initial network
+            initialNetworkUserIP: initialNetworkUserIP,  // User-specified IP for initial network
+            initialNetworkAliases: initialNetworkAliases  // Aliases for initial network (from Docker Compose)
         )
 
         containers[dockerID] = containerInfo
@@ -2277,7 +2280,7 @@ public actor ContainerManager {
                         container: nativeContainer,
                         networkID: resolvedNetworkID,
                         containerName: containerName,
-                        aliases: [],
+                        aliases: info.initialNetworkAliases,  // Pass aliases from Docker Compose
                         userSpecifiedIP: info.initialNetworkUserIP  // Pass user-specified IP for validation
                     )
 
@@ -4269,6 +4272,7 @@ public actor ContainerManager {
         var networkAttachments: [String: NetworkAttachment]  // Network ID -> Attachment details
         var anonymousVolumes: [String]  // Names of anonymous volumes to delete on container removal
         let initialNetworkUserIP: String?  // User-specified IP for initial network (from docker run --ip)
+        let initialNetworkAliases: [String]  // Aliases for initial network (from Docker Compose service name)
     }
 
     /// Network attachment details for a container
