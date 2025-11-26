@@ -2,6 +2,7 @@ import Foundation
 import SQLite
 import Logging
 import Containerization
+import IP
 
 /// StateStore manages persistent container and network state in SQLite
 /// All operations are atomic and thread-safe via actor isolation
@@ -59,6 +60,7 @@ public actor StateStore {
     private nonisolated(unsafe) let containerID = Expression<String>("container_id")
     private nonisolated(unsafe) let attachedNetworkID = Expression<String>("network_id")
     private nonisolated(unsafe) let ipAddress = Expression<String>("ip_address")
+    private nonisolated(unsafe) let ipAddressInt = Expression<Int64>("ip_address_int")  // IPv4 as integer for efficient SQL
     private nonisolated(unsafe) let macAddress = Expression<String>("mac_address")
     private nonisolated(unsafe) let aliasesJSON = Expression<String?>("aliases_json")
     private nonisolated(unsafe) let attachedAt = Expression<String>("attached_at")
@@ -179,7 +181,40 @@ public actor StateStore {
             try createSchemaV1Synchronously()
         }
 
-        // Future migrations would go here
+        // Migration to v2: Add unique index on (network_id, ip_address) to prevent IPAM race conditions
+        if currentVersion < 2 {
+            try migrateToV2Synchronously()
+        }
+    }
+
+    /// Migration to v2: Add ip_address_int column and unique index for atomic IPAM
+    /// This prevents the TOCTOU race condition where multiple containers could get the same IP
+    /// (fixes #13)
+    private nonisolated func migrateToV2Synchronously() throws {
+        try db.transaction {
+            // Add ip_address_int column for efficient SQL-based IP allocation
+            try db.run("ALTER TABLE network_attachments ADD COLUMN ip_address_int INTEGER")
+
+            // Populate ip_address_int from existing ip_address strings using swift-ip
+            for row in try db.prepare(networkAttachments) {
+                let ipStr = row[ipAddress]
+                if let ip = IP.V4(ipStr) {
+                    let attachment = networkAttachments.filter(attachmentID == row[attachmentID])
+                    try db.run(attachment.update(ipAddressInt <- Int64(ip.value)))
+                }
+            }
+
+            // Add unique index on (network_id, ip_address_int) to prevent duplicate IPs per network
+            // This ensures atomic IP allocation at the database level
+            try db.run(networkAttachments.createIndex(
+                attachedNetworkID, ipAddressInt,
+                unique: true,
+                ifNotExists: true
+            ))
+
+            // Update schema version
+            try db.run(schemaVersion.insert(or: .replace, version <- 2))
+        }
     }
 
     private nonisolated func createSchemaV1Synchronously() throws {
@@ -796,10 +831,19 @@ public actor StateStore {
         let aliasesData = try JSONEncoder().encode(aliases)
         let aliasesString = String(data: aliasesData, encoding: .utf8)
 
+        // Convert IP string to integer using swift-ip
+        let ipInt: Int64
+        if let ip = IP.V4(ipAddress) {
+            ipInt = Int64(ip.value)
+        } else {
+            ipInt = 0  // Fallback for invalid IPs
+        }
+
         try db.run(networkAttachments.insert(or: .replace,
             self.containerID <- containerID,
             self.attachedNetworkID <- networkID,
             self.ipAddress <- ipAddress,
+            self.ipAddressInt <- ipInt,
             self.macAddress <- macAddress,
             self.aliasesJSON <- aliasesString,
             self.attachedAt <- Date().iso8601String
@@ -901,6 +945,160 @@ public actor StateStore {
         let query = networkAttachments
             .filter(self.attachedNetworkID == networkID && ipAddress == ip)
         return try db.scalar(query.count) > 0
+    }
+
+    /// Atomically allocate and reserve an IP address for a container on a network
+    /// Uses SQL to find the first available IP in range and inserts in a single transaction.
+    /// The unique index on (network_id, ip_address_int) prevents race conditions. (fixes #13)
+    ///
+    /// - Parameters:
+    ///   - containerID: The container to allocate IP for
+    ///   - networkID: The network to allocate IP on
+    ///   - rangeStart: First IP in allocation range as integer
+    ///   - rangeEnd: Last IP in allocation range as integer
+    ///   - gatewayInt: Gateway IP as integer (to skip)
+    ///   - macAddress: MAC address for the attachment
+    ///   - aliases: DNS aliases for the attachment
+    /// - Returns: The allocated IP address as string
+    /// - Throws: StateStoreError.transactionFailed if no IPs available
+    public func allocateAndReserveIP(
+        containerID: String,
+        networkID: String,
+        rangeStart: Int64,
+        rangeEnd: Int64,
+        gatewayInt: Int64,
+        macAddress: String,
+        aliases: [String]
+    ) throws -> String {
+        var allocatedIP: String?
+
+        try db.transaction {
+            // Find the first available IP using SQL
+            // Strategy: Find MIN(ip + 1) where (ip + 1) is not already allocated
+            // Start from rangeStart - 1 so we can find rangeStart itself if available
+
+            // First, check if rangeStart is available (most common case for new networks)
+            let startAvailable = try db.scalar(
+                networkAttachments
+                    .filter(attachedNetworkID == networkID && ipAddressInt == rangeStart)
+                    .count
+            ) == 0
+
+            let nextIP: Int64
+            if startAvailable && rangeStart != gatewayInt {
+                nextIP = rangeStart
+            } else {
+                // Find first gap: SELECT MIN(ip_address_int) + 1 WHERE (ip + 1) NOT IN allocated
+                // This is complex in SQLite, so we use a simpler approach:
+                // Get MAX allocated IP and use MAX + 1, or find first gap by iteration
+
+                // Simple approach: use MAX + 1 (no gap reclamation, but fast)
+                let maxIP = try db.scalar(
+                    networkAttachments
+                        .filter(attachedNetworkID == networkID)
+                        .select(ipAddressInt.max)
+                ) ?? (rangeStart - 1)
+
+                var candidate = maxIP + 1
+                // Skip gateway if needed
+                if candidate == gatewayInt {
+                    candidate += 1
+                }
+
+                if candidate > rangeEnd {
+                    // Pool exhausted with simple approach, try finding gaps
+                    // Iterate through range to find first available (fallback)
+                    var found: Int64? = nil
+                    for ip in rangeStart...rangeEnd {
+                        if ip == gatewayInt { continue }
+                        let taken = try db.scalar(
+                            networkAttachments
+                                .filter(attachedNetworkID == networkID && ipAddressInt == ip)
+                                .count
+                        ) ?? 0
+                        if taken == 0 {
+                            found = ip
+                            break
+                        }
+                    }
+                    guard let foundIP = found else {
+                        throw StateStoreError.transactionFailed("IP pool exhausted for network \(networkID)")
+                    }
+                    candidate = foundIP
+                }
+                nextIP = candidate
+            }
+
+            // Convert to string using swift-ip
+            let ipv4 = IP.V4(value: UInt32(nextIP))
+            let ipStr = String(describing: ipv4)
+
+            // Insert the reservation atomically
+            let aliasesData = try JSONEncoder().encode(aliases)
+            let aliasesString = String(data: aliasesData, encoding: .utf8)
+
+            try db.run(networkAttachments.insert(
+                self.containerID <- containerID,
+                attachedNetworkID <- networkID,
+                self.ipAddress <- ipStr,
+                self.ipAddressInt <- nextIP,
+                self.macAddress <- macAddress,
+                aliasesJSON <- aliasesString,
+                attachedAt <- Date().iso8601String
+            ))
+
+            allocatedIP = ipStr
+        }
+
+        guard let ip = allocatedIP else {
+            throw StateStoreError.transactionFailed("IP allocation failed for network \(networkID)")
+        }
+
+        logger.debug("IP allocated and reserved atomically", metadata: [
+            "container": "\(containerID)",
+            "network": "\(networkID)",
+            "ip": "\(ip)"
+        ])
+
+        return ip
+    }
+
+    /// Atomically reserve a specific IP address for a container on a network
+    /// Used when user specifies an IP via --ip flag
+    public func reserveSpecificIP(
+        containerID: String,
+        networkID: String,
+        ip: String,
+        macAddress: String,
+        aliases: [String]
+    ) throws {
+        guard let ipv4 = IP.V4(ip) else {
+            throw StateStoreError.transactionFailed("Invalid IP address: \(ip)")
+        }
+
+        let aliasesData = try JSONEncoder().encode(aliases)
+        let aliasesString = String(data: aliasesData, encoding: .utf8)
+
+        do {
+            // The unique index on (network_id, ip_address_int) ensures this fails if IP is taken
+            try db.run(networkAttachments.insert(
+                self.containerID <- containerID,
+                attachedNetworkID <- networkID,
+                self.ipAddress <- ip,
+                self.ipAddressInt <- Int64(ipv4.value),
+                self.macAddress <- macAddress,
+                aliasesJSON <- aliasesString,
+                attachedAt <- Date().iso8601String
+            ))
+
+            logger.debug("Specific IP reserved", metadata: [
+                "container": "\(containerID)",
+                "network": "\(networkID)",
+                "ip": "\(ip)"
+            ])
+        } catch {
+            throw StateStoreError.transactionFailed("IP \(ip) is already allocated on network \(networkID)")
+        }
     }
 
     // MARK: - Subnet Allocation Operations
