@@ -185,7 +185,7 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
 
         case .streaming(let status, var headers, let callback):
             // Send response head with chunked transfer encoding
-            headers.add(name: "Server", value: "Arca/0.1.3-alpha")
+            headers.add(name: "Server", value: "Arca/0.1.4-alpha")
             headers.add(name: "Transfer-Encoding", value: "chunked")
 
             let responseHead = HTTPResponseHead(
@@ -219,7 +219,7 @@ final class HTTPHandler: ChannelInboundHandler, RemovableChannelHandler, @unchec
     private func sendResponse(context: ChannelHandlerContext, response: HTTPResponse) {
         // Send response head
         var headers = response.headers
-        headers.add(name: "Server", value: "Arca/0.1.3-alpha")
+        headers.add(name: "Server", value: "Arca/0.1.4-alpha")
 
         let responseHead = HTTPResponseHead(
             version: .http1_1,
