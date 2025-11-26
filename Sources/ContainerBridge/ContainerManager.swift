@@ -3636,13 +3636,19 @@ public actor ContainerManager {
     ///
     /// For file bind mounts, VirtioFS only supports directory shares, so:
     /// - Parent directory is mounted to unique location (/mnt/arca-file-mounts/<hash>/)
+    /// - VirtioFS mounts are deduplicated (same parent dir = one VirtioFS mount)
+    /// - VirtioFS mounts are collected first, then bind mounts are added after
     /// Returns: mounts array
     private func parseVolumeMounts(_ binds: [String]?, dockerID: String) async throws -> [Containerization.Mount] {
         guard let binds = binds else {
             return []
         }
 
-        var mounts: [Containerization.Mount] = []
+        // Track VirtioFS mounts separately to deduplicate and ensure they come before bind mounts
+        var virtioFSMounts: [String: Containerization.Mount] = [:]  // parentDir -> mount
+        var otherMounts: [Containerization.Mount] = []
+        // Track file bind mounts that need VirtioFS mounts to be processed first
+        var fileBindMounts: [(mount: Containerization.Mount, parentDir: String)] = []
 
         for bind in binds {
             let parts = bind.split(separator: ":")
@@ -3815,15 +3821,23 @@ public actor ContainerManager {
                     let parentDirHash = try hashMountSource(source: parentDir)
                     let guestParentMount = "/mnt/arca-file-mounts/\(parentDirHash)"
 
-                    // 1. Mount parent directory via VirtioFS (makes file available at guest path)
-                    let virtiofsMount = Containerization.Mount.share(
-                        source: parentDir,
-                        destination: guestParentMount,
-                        options: []  // Read-write at VirtioFS level
-                    )
-                    mounts.append(virtiofsMount)
+                    // 1. Track VirtioFS mount for parent directory (deduplicated)
+                    // Multiple files from the same parent dir share one VirtioFS mount
+                    if virtioFSMounts[parentDir] == nil {
+                        let virtiofsMount = Containerization.Mount.share(
+                            source: parentDir,
+                            destination: guestParentMount,
+                            options: []  // Read-write at VirtioFS level
+                        )
+                        virtioFSMounts[parentDir] = virtiofsMount
+                        logger.debug("Added VirtioFS mount for file bind mount parent", metadata: [
+                            "parentDir": "\(parentDir)",
+                            "guestParentMount": "\(guestParentMount)",
+                            "hash": "\(parentDirHash)"
+                        ])
+                    }
 
-                    // 2. Add bind mount from VirtioFS location to container path
+                    // 2. Create bind mount from VirtioFS location to container path
                     // vmexec prefixes mount DESTINATIONS with rootfs path, but NOT sources
                     // So VirtioFS gets mounted at: /run/container/{id}/rootfs/mnt/arca-file-mounts/{hash}/
                     // We need the bind mount source to point there (with rootfs prefix)
@@ -3844,6 +3858,9 @@ public actor ContainerManager {
                         options: bindOptions
                     )
 
+                    // Track file bind mount to add after VirtioFS mounts
+                    fileBindMounts.append((mount: mount, parentDir: parentDir))
+
                     logger.info("File bind mount: VirtioFS share + bind mount", metadata: [
                         "file": "\(expandedHostPath)",
                         "parentDir": "\(parentDir)",
@@ -3852,6 +3869,7 @@ public actor ContainerManager {
                         "containerPath": "\(containerPath)",
                         "readOnly": "\(isReadOnly)"
                     ])
+                    continue  // Skip the mounts.append below - file bind mounts are added later
                 } else {
                     // Directory bind mount: Normal VirtioFS share
                     mount = Containerization.Mount.share(
@@ -3868,8 +3886,43 @@ public actor ContainerManager {
                 }
             }
 
-            mounts.append(mount)
+            otherMounts.append(mount)
         }
+
+        // Build final mounts array with correct ordering:
+        // 1. VirtioFS mounts for file bind mount parent directories (must be mounted first)
+        // 2. Other mounts (directory VirtioFS shares, named volumes)
+        // 3. File bind mounts (depend on VirtioFS mounts being present)
+        var mounts: [Containerization.Mount] = []
+
+        // Add VirtioFS mounts first
+        for (parentDir, virtiofsMount) in virtioFSMounts {
+            mounts.append(virtiofsMount)
+            logger.debug("Added VirtioFS mount to final mounts array", metadata: [
+                "parentDir": "\(parentDir)",
+                "destination": "\(virtiofsMount.destination)"
+            ])
+        }
+
+        // Add other mounts (directory shares, named volumes)
+        mounts.append(contentsOf: otherMounts)
+
+        // Add file bind mounts last (they depend on VirtioFS mounts)
+        for fileBindMount in fileBindMounts {
+            mounts.append(fileBindMount.mount)
+            logger.debug("Added file bind mount to final mounts array", metadata: [
+                "source": "\(fileBindMount.mount.source)",
+                "destination": "\(fileBindMount.mount.destination)",
+                "parentDir": "\(fileBindMount.parentDir)"
+            ])
+        }
+
+        logger.info("Parsed volume mounts", metadata: [
+            "total_mounts": "\(mounts.count)",
+            "virtiofs_mounts": "\(virtioFSMounts.count)",
+            "file_bind_mounts": "\(fileBindMounts.count)",
+            "other_mounts": "\(otherMounts.count)"
+        ])
 
         return mounts
     }
