@@ -131,13 +131,13 @@ struct ContentView: View {
                 .padding(.bottom, 20)
 
             } else if setupManager.isRunningSetup {
-                // Setup in progress
+                // Setup or update in progress
                 VStack(spacing: 12) {
                     ProgressView()
                         .scaleEffect(1.5)
                         .padding()
 
-                    Text("Running first-time setup...")
+                    Text(setupManager.needsVminitUpdate ? "Updating Arca..." : "Running first-time setup...")
                         .font(.headline)
 
                     Text(setupManager.setupStatus)

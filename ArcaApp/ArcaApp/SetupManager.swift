@@ -14,6 +14,12 @@ class SetupManager: ObservableObject {
     @Published var isRunningSetup: Bool = false
     @Published var setupStatus: String = ""
     @Published var setupError: String? = nil
+    @Published var needsVminitUpdate: Bool = false
+
+    // Get app version from bundle
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
 
     init() {
         checkSetupStatus()
@@ -21,6 +27,11 @@ class SetupManager: ObservableObject {
         if !isSetupComplete {
             Task {
                 await runSetup()
+            }
+        } else if needsVminitUpdate {
+            // Full setup exists but vminit needs update
+            Task {
+                await updateVminit()
             }
         }
     }
@@ -30,11 +41,34 @@ class SetupManager: ObservableObject {
         let arcaDir = NSHomeDirectory() + "/.arca"
         let kernelPath = arcaDir + "/vmlinux"
         let vminitPath = arcaDir + "/vminit"
+        let vminitVersionPath = arcaDir + "/vminit/.version"
         let launchAgentPath = NSHomeDirectory() + "/Library/LaunchAgents/com.liquescent.arca.plist"
 
-        isSetupComplete = FileManager.default.fileExists(atPath: kernelPath)
+        let allFilesExist = FileManager.default.fileExists(atPath: kernelPath)
             && FileManager.default.fileExists(atPath: vminitPath)
             && FileManager.default.fileExists(atPath: launchAgentPath)
+
+        if allFilesExist {
+            // Check if vminit version matches app version
+            if let installedVersion = try? String(contentsOfFile: vminitVersionPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) {
+                if installedVersion == appVersion {
+                    // Versions match, setup is complete
+                    isSetupComplete = true
+                    needsVminitUpdate = false
+                } else {
+                    // Version mismatch - need to update vminit
+                    isSetupComplete = true
+                    needsVminitUpdate = true
+                }
+            } else {
+                // No version file - legacy install, needs update
+                isSetupComplete = true
+                needsVminitUpdate = true
+            }
+        } else {
+            isSetupComplete = false
+            needsVminitUpdate = false
+        }
     }
 
     func runSetup() async {
@@ -153,6 +187,55 @@ class SetupManager: ObservableObject {
             // Clean up temp file
             try? FileManager.default.removeItem(atPath: tempFile)
         }.value
+
+        // Write version file to track which app version extracted this vminit
+        let vminitVersionPath = NSHomeDirectory() + "/.arca/vminit/.version"
+        try appVersion.write(toFile: vminitVersionPath, atomically: true, encoding: .utf8)
+    }
+
+    /// Update vminit when app version changes (preserves other setup)
+    func updateVminit() async {
+        isRunningSetup = true
+        setupError = nil
+
+        do {
+            // Step 1: Stop daemon before updating vminit
+            setupStatus = "Stopping Arca daemon for update..."
+            try await stopDaemon()
+
+            // Step 2: Extract new vminit
+            setupStatus = "Updating container runtime..."
+            try await extractVminit()
+
+            // Step 3: Restart daemon with new vminit
+            setupStatus = "Restarting Arca daemon..."
+            try await startDaemon()
+
+            setupStatus = "Update complete!"
+            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
+            needsVminitUpdate = false
+            isRunningSetup = false
+
+        } catch {
+            setupError = error.localizedDescription
+            isRunningSetup = false
+        }
+    }
+
+    private func stopDaemon() async throws {
+        try await Task.detached {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            task.arguments = ["unload", "\(NSHomeDirectory())/Library/LaunchAgents/com.liquescent.arca.plist"]
+
+            try task.run()
+            task.waitUntilExit()
+            // Don't throw on failure - daemon might not be running
+        }.value
+
+        // Wait for daemon to stop
+        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
     }
 
     private func installLaunchAgent() async throws {
