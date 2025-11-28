@@ -87,7 +87,7 @@ public struct SystemHandlers: Sendable {
             memTotal: Int64(processInfo.physicalMemory),
             name: processInfo.hostName,
             experimentalBuild: false,
-            serverVersion: "0.1.8-alpha"
+            serverVersion: "0.1.9-alpha"
         )
     }
 
