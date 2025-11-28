@@ -91,6 +91,22 @@ else
     echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
 fi
 
+# Generate Go code for WireGuard Service
+echo ""
+echo "→ Generating Go code for WireGuard Service..."
+WIREGUARD_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/wireguard-service/proto"
+if [ -f "$WIREGUARD_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$WIREGUARD_PROTO" \
+        --proto_path="$(dirname "$WIREGUARD_PROTO")" \
+        --go_out="$WIREGUARD_GO_DIR" \
+        --go_opt=paths=source_relative \
+        --go-grpc_out="$WIREGUARD_GO_DIR" \
+        --go-grpc_opt=paths=source_relative
+    echo "  ✓ Generated Go code in $WIREGUARD_GO_DIR"
+else
+    echo "  ⚠ Skipping - proto file or Go plugins not found"
+fi
+
 # Generate Swift code for Filesystem Service (containerization/vminitd/extensions/filesystem-service/proto/filesystem.proto)
 echo ""
 echo "→ Generating Swift code for Filesystem Service..."

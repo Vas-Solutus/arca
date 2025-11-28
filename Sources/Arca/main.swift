@@ -16,7 +16,7 @@ struct Arca: AsyncParsableCommand {
 
             Part of the Vas Solutus project - freeing containers on macOS.
             """,
-        version: "0.1.8-alpha (API v1.51)",
+        version: "0.1.10-alpha (API v1.51)",
         subcommands: [Daemon.self],
         defaultSubcommand: Daemon.self
     )
