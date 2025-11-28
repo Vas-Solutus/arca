@@ -1121,7 +1121,9 @@ public actor ContainerManager {
         let mounter = OverlayFSMounter(logger: logger)
 
         if !FileManager.default.fileExists(atPath: writablePath.path) {
-            try mounter.createWritableFilesystem(at: writablePath.path, sizeMB: 10240)
+            // 64 GB provides sufficient space for build caches and large workloads
+            // Thin-provisioned (sparse file) so only actual data consumes disk space
+            try mounter.createWritableFilesystem(at: writablePath.path, sizeMB: 65536)
             logger.info("Created writable filesystem", metadata: [
                 "docker_id": "\(dockerID)",
                 "path": "\(writablePath.path)"
