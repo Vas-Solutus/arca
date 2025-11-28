@@ -57,6 +57,10 @@ public struct Arca_Wireguard_V1_AddNetworkRequest: Sendable {
   /// Gateway IP for this network (e.g., "172.18.0.1")
   public var gateway: String = String()
 
+  /// Host IP address for host.docker.internal DNS resolution (e.g., "192.168.2.100")
+  /// This is the macOS host's LAN IP, allowing containers to reach host services
+  public var hostIp: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -478,7 +482,7 @@ fileprivate let _protobuf_package = "arca.wireguard.v1"
 
 extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddNetworkRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0\u{3}private_key\0\u{3}listen_port\0\u{3}peer_endpoint\0\u{3}peer_public_key\0\u{3}ip_address\0\u{3}network_cidr\0\u{1}gateway\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}network_id\0\u{3}network_index\0\u{3}private_key\0\u{3}listen_port\0\u{3}peer_endpoint\0\u{3}peer_public_key\0\u{3}ip_address\0\u{3}network_cidr\0\u{1}gateway\0\u{3}host_ip\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -495,6 +499,7 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
       case 7: try { try decoder.decodeSingularStringField(value: &self.ipAddress) }()
       case 8: try { try decoder.decodeSingularStringField(value: &self.networkCidr) }()
       case 9: try { try decoder.decodeSingularStringField(value: &self.gateway) }()
+      case 10: try { try decoder.decodeSingularStringField(value: &self.hostIp) }()
       default: break
       }
     }
@@ -528,6 +533,9 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
     if !self.gateway.isEmpty {
       try visitor.visitSingularStringField(value: self.gateway, fieldNumber: 9)
     }
+    if !self.hostIp.isEmpty {
+      try visitor.visitSingularStringField(value: self.hostIp, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -541,6 +549,7 @@ extension Arca_Wireguard_V1_AddNetworkRequest: SwiftProtobuf.Message, SwiftProto
     if lhs.ipAddress != rhs.ipAddress {return false}
     if lhs.networkCidr != rhs.networkCidr {return false}
     if lhs.gateway != rhs.gateway {return false}
+    if lhs.hostIp != rhs.hostIp {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

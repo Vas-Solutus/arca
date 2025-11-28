@@ -42,6 +42,9 @@ public actor WireGuardNetworkBackend {
     // Subnet allocation tracking (simple counter for auto-allocation)
     private var nextSubnetByte: UInt8 = 18  // Start at 172.18.0.0/16
 
+    // Cached host IP for host.docker.internal DNS resolution
+    private var cachedHostIP: String?
+
     public init(
         logger: Logger,
         stateStore: StateStore,
@@ -70,6 +73,83 @@ public actor WireGuardNetworkBackend {
         logger.info("WireGuard network backend ready - networks in database", metadata: [
             "count": "\(wireGuardNetworkCount)"
         ])
+    }
+
+    /// Get the host's primary LAN IP address for host.docker.internal DNS resolution
+    /// Returns the first non-localhost IPv4 address found on the system
+    private func getHostIP() -> String {
+        // Return cached value if available
+        if let cached = cachedHostIP {
+            return cached
+        }
+
+        // Get all network interfaces
+        var addresses: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addresses) == 0, let firstAddr = addresses else {
+            logger.warning("Failed to get network interfaces for host IP detection")
+            return ""
+        }
+        defer { freeifaddrs(addresses) }
+
+        // Look for the first non-localhost IPv4 address
+        // Prefer en0 (WiFi/Ethernet) over other interfaces
+        var fallbackIP: String?
+
+        var currentAddr = firstAddr
+        while true {
+            let interface = currentAddr.pointee
+
+            // Only consider IPv4 addresses (AF_INET)
+            if interface.ifa_addr?.pointee.sa_family == UInt8(AF_INET) {
+                let interfaceName = String(cString: interface.ifa_name)
+
+                // Get the IP address
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                              &hostname, socklen_t(hostname.count),
+                              nil, 0, NI_NUMERICHOST) == 0 {
+                    let ipAddress = String(cString: hostname)
+
+                    // Skip localhost
+                    if ipAddress.hasPrefix("127.") {
+                        if let next = interface.ifa_next {
+                            currentAddr = next
+                            continue
+                        } else {
+                            break
+                        }
+                    }
+
+                    // Prefer en0 (primary network interface on macOS)
+                    if interfaceName == "en0" {
+                        logger.info("Detected host IP from en0", metadata: ["ip": "\(ipAddress)"])
+                        cachedHostIP = ipAddress
+                        return ipAddress
+                    }
+
+                    // Save as fallback if not en0
+                    if fallbackIP == nil {
+                        fallbackIP = ipAddress
+                    }
+                }
+            }
+
+            if let next = interface.ifa_next {
+                currentAddr = next
+            } else {
+                break
+            }
+        }
+
+        // Use fallback if en0 wasn't found
+        if let ip = fallbackIP {
+            logger.info("Detected host IP (fallback)", metadata: ["ip": "\(ip)"])
+            cachedHostIP = ip
+            return ip
+        }
+
+        logger.warning("Could not detect host IP address")
+        return ""
     }
 
     // MARK: - Network Management
@@ -375,6 +455,8 @@ public actor WireGuardNetworkBackend {
         let listenPort = 51820 + networkIndex
 
         // Create wgN/ethN interface for this network (hub created lazily)
+        // Pass host IP for host.docker.internal DNS resolution on first network
+        let hostIP = getHostIP()
         let result = try await wgClient.addNetwork(
             networkID: networkID,
             networkIndex: networkIndex,
@@ -384,7 +466,8 @@ public actor WireGuardNetworkBackend {
             peerPublicKey: "",  // Empty - no initial peer needed
             ipAddress: ipAddress,
             networkCIDR: metadata.subnet,
-            gateway: metadata.gateway
+            gateway: metadata.gateway,
+            hostIP: hostIP
         )
 
         // Store interface metadata

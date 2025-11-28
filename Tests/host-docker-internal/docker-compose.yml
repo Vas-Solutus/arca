@@ -1,0 +1,27 @@
+# Test for host.docker.internal DNS resolution
+#
+# Usage:
+#   1. Start a simple HTTP server on your host machine:
+#      python3 -m http.server 8888
+#
+#   2. Run the test:
+#      export DOCKER_HOST=unix:///tmp/arca.sock
+#      docker compose up
+#
+# Expected output:
+#   - dns-test: Should show gateway IP (e.g., 192.168.64.1) for host.docker.internal
+#   - http-test: Should successfully curl the host's HTTP server
+
+services:
+  # Test 1: Verify DNS resolution works
+  dns-test:
+    image: alpine:latest
+    command: ["sh", "-c", "apk add --no-cache bind-tools && nslookup host.docker.internal"]
+
+  # Test 2: Verify HTTP connectivity to host
+  http-test:
+    image: curlimages/curl:latest
+    command: ["curl", "-v", "--connect-timeout", "5", "http://host.docker.internal:8888/"]
+    depends_on:
+      dns-test:
+        condition: service_completed_successfully
