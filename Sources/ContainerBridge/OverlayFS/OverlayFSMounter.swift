@@ -159,9 +159,9 @@ public struct OverlayFSMounter: Sendable {
     ///
     /// - Parameters:
     ///   - path: Path where to create writable.ext4
-    ///   - sizeMB: Size in megabytes (default: 10240 MB = 10 GB)
+    ///   - sizeMB: Size in megabytes (default: 65536 MB = 64 GB, thin-provisioned)
     /// - Throws: If filesystem creation fails
-    public func createWritableFilesystem(at path: String, sizeMB: Int = 10240) throws {
+    public func createWritableFilesystem(at path: String, sizeMB: Int = 65536) throws {
         logger?.info("Creating writable filesystem", metadata: [
             "path": "\(path)",
             "size_mb": "\(sizeMB)"
