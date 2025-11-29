@@ -1269,13 +1269,30 @@ public actor StateStore {
     }
 
     /// Get all containers using a volume
-    public func getVolumeUsers(volumeName: String) throws -> [String] {
-        let query = volumeMounts
-            .filter(mountVolumeName == volumeName)
-            .select(distinct: mountContainerID)
+    /// - Parameters:
+    ///   - volumeName: Name of the volume
+    ///   - runningOnly: If true, only returns containers that are currently running
+    public func getVolumeUsers(volumeName: String, runningOnly: Bool = false) throws -> [String] {
+        if runningOnly {
+            // Join with containers table to filter by running state
+            // Must qualify containers[id] to avoid ambiguity with volumeMounts.id
+            let query = volumeMounts
+                .join(containers, on: mountContainerID == containers[id])
+                .filter(mountVolumeName == volumeName)
+                .filter(running == true)
+                .select(distinct: mountContainerID)
 
-        return try db.prepare(query).map { row in
-            row[mountContainerID]
+            return try db.prepare(query).map { row in
+                row[mountContainerID]
+            }
+        } else {
+            let query = volumeMounts
+                .filter(mountVolumeName == volumeName)
+                .select(distinct: mountContainerID)
+
+            return try db.prepare(query).map { row in
+                row[mountContainerID]
+            }
         }
     }
 
