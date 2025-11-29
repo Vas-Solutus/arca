@@ -1,4 +1,4 @@
-.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel kernel-rebuild install-grpc-plugin test vminit vminit-rebuild vminit-debug gen-grpc dist dist-pkg dist-dmg notarize publish install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
+.PHONY: clean clean-state clean-layers clean-containers clean-all-state clean-dist install uninstall debug release run run-with-setup setup-builder all codesign verify-entitlements help kernel kernel-rebuild install-grpc-plugin test vminit vminit-rebuild vminit-debug gen-grpc dist dist-pkg dist-dmg notarize check-publish-env publish install-service uninstall-service start-service stop-service restart-service service-status configure-shell build-assets
 
 # Default build configuration
 CONFIGURATION ?= debug
@@ -389,11 +389,69 @@ notarize: dist-dmg
 	@echo "Starting notarization workflow..."
 	@./scripts/notarize.sh $(DIST_DIR)/arca-$(VERSION).dmg
 
+# Check environment variables required for publishing
+# Validates CODESIGN_IDENTITY and notarization credentials before proceeding
+check-publish-env:
+	@echo "Checking publish environment..."
+	@# Check CODESIGN_IDENTITY is set to a Developer ID (not adhoc)
+	@if [ -z "$(CODESIGN_IDENTITY)" ] || [ "$(CODESIGN_IDENTITY)" = "-" ]; then \
+		echo ""; \
+		echo "ERROR: CODESIGN_IDENTITY must be set to a Developer ID Application certificate"; \
+		echo ""; \
+		echo "  export CODESIGN_IDENTITY=\"Developer ID Application: Your Name (TEAM_ID)\""; \
+		echo ""; \
+		echo "To find your certificate:"; \
+		echo "  security find-identity -v -p codesigning | grep 'Developer ID Application'"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "✓ CODESIGN_IDENTITY: $(CODESIGN_IDENTITY)"
+	@# Check notarization credentials (API key or keychain profile)
+	@if [ -n "$(NOTARY_KEY_ID)" ] && [ -n "$(NOTARY_ISSUER_ID)" ] && [ -n "$(NOTARY_KEY_FILE)" ]; then \
+		echo "✓ Notarization: API key authentication"; \
+		echo "  NOTARY_KEY_ID: $(NOTARY_KEY_ID)"; \
+		echo "  NOTARY_ISSUER_ID: $(NOTARY_ISSUER_ID)"; \
+		echo "  NOTARY_KEY_FILE: $(NOTARY_KEY_FILE)"; \
+		if [ ! -f "$(NOTARY_KEY_FILE)" ]; then \
+			echo ""; \
+			echo "ERROR: NOTARY_KEY_FILE does not exist: $(NOTARY_KEY_FILE)"; \
+			exit 1; \
+		fi; \
+	elif xcrun notarytool history --keychain-profile "AC_PASSWORD" > /dev/null 2>&1; then \
+		echo "✓ Notarization: Keychain profile 'AC_PASSWORD'"; \
+	else \
+		echo ""; \
+		echo "ERROR: No notarization credentials found"; \
+		echo ""; \
+		echo "Option 1 - Set API key environment variables:"; \
+		echo "  export NOTARY_KEY_ID=\"your-key-id\""; \
+		echo "  export NOTARY_ISSUER_ID=\"your-issuer-id\""; \
+		echo "  export NOTARY_KEY_FILE=\"/path/to/AuthKey.p8\""; \
+		echo ""; \
+		echo "Option 2 - Store credentials in keychain:"; \
+		echo "  xcrun notarytool store-credentials \"AC_PASSWORD\" \\"; \
+		echo "    --apple-id \"your@email.com\" \\"; \
+		echo "    --team-id \"YOUR_TEAM_ID\""; \
+		echo ""; \
+		exit 1; \
+	fi
+	@# Check GitHub CLI
+	@if ! command -v gh >/dev/null 2>&1; then \
+		echo ""; \
+		echo "ERROR: GitHub CLI (gh) not found"; \
+		echo "Install with: brew install gh"; \
+		exit 1; \
+	fi
+	@echo "✓ GitHub CLI: $(shell gh --version | head -1)"
+	@echo ""
+	@echo "All publish environment checks passed!"
+	@echo ""
+
 # Publish release to GitHub
 # Creates a signed git tag, pushes it, and creates a GitHub pre-release
 # Notarizes the DMG before publishing (requires Apple Developer account)
 # Usage: make publish [VERSION=v1.0.0]
-publish: notarize
+publish: check-publish-env notarize
 	@echo "Publishing release $(VERSION) to GitHub..."
 	@if echo "$(VERSION)" | grep -q dirty; then \
 		echo "ERROR: Cannot publish dirty version: $(VERSION)"; \
@@ -569,6 +627,7 @@ help:
 	@echo "  make dist            - Create distribution tarball (.tar.gz)"
 	@echo "  make dist-dmg        - Create macOS .dmg installer with Arca.app"
 	@echo "  make notarize        - Notarize .dmg (requires Apple Developer account)"
+	@echo "  make check-publish-env - Verify all environment variables for publishing"
 	@echo "  make publish         - Create signed tag, push, and publish pre-release to GitHub"
 	@echo ""
 	@echo "Advanced:"
@@ -590,10 +649,14 @@ help:
 	@echo "  CODESIGN_IDENTITY=\"-\"                                    - Adhoc binary signing (default)"
 	@echo "  CODESIGN_IDENTITY=\"Developer ID Application: Name (ID)\" - App bundle signing for release/notarization"
 	@echo ""
-	@echo "Distribution:"
-	@echo "  VERSION=1.0.0          - Set version (default: git tag or 'dev')"
-	@echo "  APPLE_ID=your@email.com - Apple ID for notarization"
-	@echo "  TEAM_ID=YOURTEAMID     - Team ID for notarization"
+	@echo "Publishing (make publish):"
+	@echo "  CODESIGN_IDENTITY      - Required: Developer ID Application certificate"
+	@echo "  Notarization (one of):"
+	@echo "    Option A - API key:"
+	@echo "      NOTARY_KEY_ID      - App Store Connect API key ID"
+	@echo "      NOTARY_ISSUER_ID   - App Store Connect API issuer ID"
+	@echo "      NOTARY_KEY_FILE    - Path to API key .p8 file"
+	@echo "    Option B - Keychain profile 'AC_PASSWORD' (via xcrun notarytool store-credentials)"
 	@echo ""
 	@echo "Dependencies:"
 	@echo "  protoc-gen-grpc-swift v1.27.0 (run 'make install-grpc-plugin')"
