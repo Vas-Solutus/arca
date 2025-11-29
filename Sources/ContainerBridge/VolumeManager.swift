@@ -419,8 +419,9 @@ public actor VolumeManager {
             return
         }
 
-        // Check if volume is already in use by a different container
-        let users = try await stateStore.getVolumeUsers(volumeName: volumeName)
+        // Check if volume is already in use by a different RUNNING container
+        // Stopped containers don't actually hold the block device, so they shouldn't block reuse
+        let users = try await stateStore.getVolumeUsers(volumeName: volumeName, runningOnly: true)
         if !users.isEmpty && !users.contains(containerID) {
             let ownerContainer = users[0]
             logger.error("Block volume exclusive access violation", metadata: [
