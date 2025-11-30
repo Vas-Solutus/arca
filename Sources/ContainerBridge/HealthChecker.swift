@@ -197,9 +197,8 @@ public actor HealthChecker {
                 attachStderr: true
             )
 
-            // Buffer to collect output
-            var outputBuffer = Data()
-            let outputWriter = BufferWriter(buffer: &outputBuffer)
+            // Buffer to collect output (uses safe owned storage)
+            let outputWriter = BufferWriter()
 
             // Capture timeout value to avoid actor isolation issues
             // timeout is already in seconds and defaults to 30.0 via EffectiveHealthConfig
@@ -257,7 +256,7 @@ public actor HealthChecker {
                 // Get exit code from exec info
                 if let execInfo = await execManager.getExecInfo(execID: execID) {
                     exitCode = execInfo.exitCode ?? 1  // Default to unhealthy if no exit code
-                    output = String(data: outputBuffer, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    output = String(data: outputWriter.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 } else {
                     exitCode = 1  // Exec not found, treat as unhealthy
                     output = "Health check exec instance not found"
@@ -358,19 +357,26 @@ public actor HealthChecker {
     }
 }
 
-/// Simple writer that buffers output to Data
+/// Simple writer that safely buffers output to Data
+/// Uses owned storage with proper thread-safe locking (same pattern as DataWriter in ContainerHandlers)
 private final class BufferWriter: Writer, @unchecked Sendable {
-    private let buffer: UnsafeMutablePointer<Data>
-
-    init(buffer: inout Data) {
-        self.buffer = withUnsafeMutablePointer(to: &buffer) { $0 }
-    }
+    private var buffer = Data()
+    private let lock = NSLock()
 
     func write(_ data: Data) throws {
-        buffer.pointee.append(data)
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(data)
     }
 
     func close() throws {
         // Nothing to close for a buffer
+    }
+
+    /// Get the collected output data
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
     }
 }
