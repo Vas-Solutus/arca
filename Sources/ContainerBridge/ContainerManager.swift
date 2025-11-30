@@ -3658,6 +3658,9 @@ public actor ContainerManager {
         var otherMounts: [Containerization.Mount] = []
         // Track file bind mounts that need VirtioFS mounts to be processed first
         var fileBindMounts: [(mount: Containerization.Mount, parentDir: String)] = []
+        // Track volume bind mounts that need VirtioFS mounts to be processed first
+        // This is used for local volumes to work around VirtioFS mount point permission issues
+        var volumeBindMounts: [(mount: Containerization.Mount, volumeRoot: String)] = []
 
         for bind in binds {
             let parts = bind.split(separator: ":")
@@ -3758,18 +3761,64 @@ public actor ContainerManager {
 
                 switch volumeMetadata.driver {
                 case "local":
-                    // Local driver: VirtioFS directory share
-                    mount = Containerization.Mount.share(
-                        source: volumeMetadata.mountpoint,  // Directory path
+                    // Local driver: VirtioFS + bind mount to work around mount point permission issues
+                    // VirtioFS mount points cannot be chmod/chown'd, but subdirectories can.
+                    // Solution: Mount volume root to hidden location, bind mount data/ subdirectory to container path
+                    // This way the container sees a subdirectory (data/) not the mount point root.
+
+                    // volumeMetadata.mountpoint is ~/.arca/volumes/{name}/data
+                    // We need to mount the parent (volume root) to VirtioFS
+                    let volumeRoot = (volumeMetadata.mountpoint as NSString).deletingLastPathComponent
+
+                    // Create unique mount point for volume root using deterministic hash
+                    let volumeRootHash = try hashMountSource(source: volumeRoot)
+                    let guestVolumeMount = "/mnt/arca-volumes/\(volumeRootHash)"
+
+                    // 1. Track VirtioFS mount for volume root (deduplicated)
+                    if virtioFSMounts[volumeRoot] == nil {
+                        let virtiofsMount = Containerization.Mount.share(
+                            source: volumeRoot,
+                            destination: guestVolumeMount,
+                            options: []  // Read-write at VirtioFS level
+                        )
+                        virtioFSMounts[volumeRoot] = virtiofsMount
+                        logger.debug("Added VirtioFS mount for local volume root", metadata: [
+                            "volumeRoot": "\(volumeRoot)",
+                            "guestVolumeMount": "\(guestVolumeMount)",
+                            "hash": "\(volumeRootHash)"
+                        ])
+                    }
+
+                    // 2. Create bind mount from VirtioFS data/ subdirectory to container path
+                    // vmexec prefixes mount DESTINATIONS with rootfs path, but NOT sources
+                    // So VirtioFS gets mounted at: /run/container/{id}/rootfs/mnt/arca-volumes/{hash}/
+                    // We need the bind mount source to point there (with rootfs prefix)
+                    let containerRootfs = "/run/container/\(dockerID)/rootfs"
+                    let bindSource = "\(containerRootfs)\(guestVolumeMount)/data"
+
+                    var bindOptions = ["bind"]
+                    if isReadOnly {
+                        bindOptions.append("ro")
+                    }
+                    mount = Containerization.Mount.any(
+                        type: "",  // Bind mounts have no filesystem type
+                        source: bindSource,
                         destination: containerPath,
-                        options: options
+                        options: bindOptions
                     )
-                    logger.debug("Created VirtioFS share for local volume", metadata: [
+
+                    // Track volume bind mount to add after VirtioFS mounts
+                    volumeBindMounts.append((mount: mount, volumeRoot: volumeRoot))
+
+                    logger.info("Local volume: VirtioFS share + bind mount for subdirectory mounting", metadata: [
                         "volume": "\(source)",
-                        "mountpoint": "\(volumeMetadata.mountpoint)",
-                        "destination": "\(containerPath)",
+                        "volumeRoot": "\(volumeRoot)",
+                        "guestVolumeMount": "\(guestVolumeMount)",
+                        "bindSource": "\(bindSource)",
+                        "containerPath": "\(containerPath)",
                         "readOnly": "\(isReadOnly)"
                     ])
+                    continue  // Skip the otherMounts.append below - volume bind mounts are added later
 
                 case "block":
                     // Block driver: Exclusive EXT4 block device
@@ -3899,9 +3948,10 @@ public actor ContainerManager {
         }
 
         // Build final mounts array with correct ordering:
-        // 1. VirtioFS mounts for file bind mount parent directories (must be mounted first)
-        // 2. Other mounts (directory VirtioFS shares, named volumes)
-        // 3. File bind mounts (depend on VirtioFS mounts being present)
+        // 1. VirtioFS mounts for file/volume bind mount parent directories (must be mounted first)
+        // 2. Other mounts (directory VirtioFS shares, block volumes)
+        // 3. Volume bind mounts (depend on VirtioFS mounts being present)
+        // 4. File bind mounts (depend on VirtioFS mounts being present)
         var mounts: [Containerization.Mount] = []
 
         // Add VirtioFS mounts first
@@ -3913,8 +3963,18 @@ public actor ContainerManager {
             ])
         }
 
-        // Add other mounts (directory shares, named volumes)
+        // Add other mounts (directory shares, block volumes)
         mounts.append(contentsOf: otherMounts)
+
+        // Add volume bind mounts (they depend on VirtioFS mounts)
+        for volumeBindMount in volumeBindMounts {
+            mounts.append(volumeBindMount.mount)
+            logger.debug("Added volume bind mount to final mounts array", metadata: [
+                "source": "\(volumeBindMount.mount.source)",
+                "destination": "\(volumeBindMount.mount.destination)",
+                "volumeRoot": "\(volumeBindMount.volumeRoot)"
+            ])
+        }
 
         // Add file bind mounts last (they depend on VirtioFS mounts)
         for fileBindMount in fileBindMounts {
@@ -3929,6 +3989,7 @@ public actor ContainerManager {
         logger.info("Parsed volume mounts", metadata: [
             "total_mounts": "\(mounts.count)",
             "virtiofs_mounts": "\(virtioFSMounts.count)",
+            "volume_bind_mounts": "\(volumeBindMounts.count)",
             "file_bind_mounts": "\(fileBindMounts.count)",
             "other_mounts": "\(otherMounts.count)"
         ])
