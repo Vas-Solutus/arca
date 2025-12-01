@@ -180,6 +180,7 @@ public struct ContainerHandlers: Sendable {
             let containerID = try await containerManager.createContainer(
                 image: request.image,
                 name: name,
+                hostname: request.hostname,
                 entrypoint: request.entrypoint,
                 command: request.cmd,
                 env: request.env,
@@ -218,7 +219,9 @@ public struct ContainerHandlers: Sendable {
                 capDrop: request.hostConfig?.capDrop,
                 securityOpt: request.hostConfig?.securityOpt,
                 // Health Check (Phase 6 - Task 6.2)
-                healthcheck: request.healthcheck
+                healthcheck: request.healthcheck,
+                // Extra Hosts (Issue #34)
+                extraHosts: request.hostConfig?.extraHosts
             )
 
             logger.info("Container created", metadata: [
@@ -977,7 +980,9 @@ public struct ContainerHandlers: Sendable {
                     // Security Capabilities (Phase 5 - Task 5.5)
                     capAdd: container.hostConfig.capAdd,
                     capDrop: container.hostConfig.capDrop,
-                    securityOpt: container.hostConfig.securityOpt
+                    securityOpt: container.hostConfig.securityOpt,
+                    // Extra Hosts (Issue #34)
+                    extraHosts: container.hostConfig.extraHosts
                 ),
                 config: ContainerConfigInspect(
                     hostname: container.config.hostname,

@@ -1513,6 +1513,7 @@ public actor ContainerManager {
     public func createContainer(
         image: String,
         name: String?,
+        hostname: String? = nil,  // Container hostname (--hostname flag)
         entrypoint: [String]?,
         command: [String]?,
         env: [String]?,
@@ -1551,7 +1552,9 @@ public actor ContainerManager {
         capDrop: [String]? = nil,
         securityOpt: [String]? = nil,
         // Health Check (Phase 6 - Task 6.2)
-        healthcheck: HealthConfig? = nil
+        healthcheck: HealthConfig? = nil,
+        // Extra Hosts (Issue #34)
+        extraHosts: [String]? = nil
     ) async throws -> String {
         logger.info("Creating container", metadata: [
             "image": "\(image)",
@@ -1723,13 +1726,16 @@ public actor ContainerManager {
             ])
 
             // Store deferred config for later use during start
+            // Hostname priority: user-specified (non-empty) > first 12 chars of container ID (Docker default)
+            // Note: Docker CLI sends empty string "" when hostname not specified, not nil
+            let effectiveHostname = (hostname?.isEmpty == false) ? hostname! : String(dockerID.prefix(12))
             deferredConfigs[dockerID] = DeferredContainerConfig(
                 image: containerImage,
                 entrypoint: entrypoint,
                 command: command,
                 env: env,
                 workingDir: workingDir,
-                hostname: containerName,
+                hostname: effectiveHostname,
                 mounts: mounts,  // Store mounts for deferred creation
                 // Memory Limits (Phase 5 - Task 5.1)
                 memory: memory,
@@ -1761,6 +1767,9 @@ public actor ContainerManager {
         } else {
             // Non-deferred containers: Create LinuxContainer immediately using helper
             // Use broadcast writers to support dynamic attach
+            // Hostname priority: user-specified (non-empty) > first 12 chars of container ID (Docker default)
+            // Note: Docker CLI sends empty string "" when hostname not specified, not nil
+            let effectiveHostname = (hostname?.isEmpty == false) ? hostname! : String(dockerID.prefix(12))
             let container = try await createNativeContainer(
                 config: NativeContainerConfig(
                     dockerID: dockerID,
@@ -1769,7 +1778,7 @@ public actor ContainerManager {
                     command: command,
                     env: env,
                     workingDir: workingDir,
-                    hostname: containerName,
+                    hostname: effectiveHostname,
                     tty: tty,
                     stdoutWriter: stdoutBroadcast,
                     stderrWriter: stderrBroadcast,
@@ -1843,10 +1852,13 @@ public actor ContainerManager {
                 groupAdd: groupAdd ?? [],
                 capAdd: capAdd ?? [],
                 capDrop: capDrop ?? [],
-                securityOpt: securityOpt ?? []
+                securityOpt: securityOpt ?? [],
+                extraHosts: extraHosts ?? []
             ),
             config: ContainerConfiguration(
-                hostname: containerName,
+                // Hostname priority: user-specified (non-empty) > first 12 chars of container ID (Docker default)
+                // Note: Docker CLI sends empty string "" when hostname not specified, not nil
+                hostname: (hostname?.isEmpty == false) ? hostname! : String(dockerID.prefix(12)),
                 env: env ?? [],
                 cmd: effectiveCmd,  // Use effective cmd (request.cmd ?? image.cmd)
                 image: image,
@@ -2290,7 +2302,8 @@ public actor ContainerManager {
                         networkID: resolvedNetworkID,
                         containerName: containerName,
                         aliases: info.initialNetworkAliases,  // Pass aliases from Docker Compose
-                        userSpecifiedIP: info.initialNetworkUserIP  // Pass user-specified IP for validation
+                        userSpecifiedIP: info.initialNetworkUserIP,  // Pass user-specified IP for validation
+                        extraHosts: info.hostConfig.extraHosts  // Pass extra hosts for DNS resolution (Issue #34)
                     )
 
                     // Record the attachment in ContainerManager
@@ -2367,7 +2380,8 @@ public actor ContainerManager {
                         networkID: networkID,
                         containerName: containerName,
                         aliases: attachment.aliases,
-                        userSpecifiedIP: attachment.ip  // Reuse persisted IP for restoration
+                        userSpecifiedIP: attachment.ip,  // Reuse persisted IP for restoration
+                        extraHosts: info.hostConfig.extraHosts  // Pass extra hosts for DNS resolution (Issue #34)
                     )
 
                     logger.info("Network attachment restored successfully", metadata: [
@@ -3303,7 +3317,8 @@ public actor ContainerManager {
             groupAdd: info.hostConfig.groupAdd,
             capAdd: info.hostConfig.capAdd,
             capDrop: info.hostConfig.capDrop,
-            securityOpt: info.hostConfig.securityOpt
+            securityOpt: info.hostConfig.securityOpt,
+            extraHosts: info.hostConfig.extraHosts
         )
 
         // Update container info with new HostConfig

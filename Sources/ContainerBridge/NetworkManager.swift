@@ -333,7 +333,8 @@ public actor NetworkManager {
         networkID: String,
         containerName: String,
         aliases: [String] = [],
-        userSpecifiedIP: String? = nil
+        userSpecifiedIP: String? = nil,
+        extraHosts: [String] = []
     ) async throws -> NetworkAttachment {
         // Look up driver from central mapping
         guard let driver = networkDrivers[networkID] else {
@@ -353,7 +354,8 @@ public actor NetworkManager {
                 networkID: networkID,
                 containerName: containerName,
                 aliases: aliases,
-                userSpecifiedIP: userSpecifiedIP
+                userSpecifiedIP: userSpecifiedIP,
+                extraHosts: extraHosts
             )
 
         case "vmnet":

@@ -99,7 +99,8 @@ public actor WireGuardClient {
         ipAddress: String,
         networkCIDR: String,
         gateway: String,
-        hostIP: String
+        hostIP: String,
+        extraHosts: [String] = []
     ) async throws -> (wgInterface: String, ethInterface: String, publicKey: String) {
         guard let client = client else {
             throw WireGuardClientError.notConnected
@@ -113,7 +114,8 @@ public actor WireGuardClient {
             "ipAddress": "\(ipAddress)",
             "networkCIDR": "\(networkCIDR)",
             "gateway": "\(gateway)",
-            "hostIP": "\(hostIP)"
+            "hostIP": "\(hostIP)",
+            "extraHostsCount": "\(extraHosts.count)"
         ])
 
         var request = Arca_Wireguard_V1_AddNetworkRequest()
@@ -127,6 +129,7 @@ public actor WireGuardClient {
         request.networkCidr = networkCIDR
         request.gateway = gateway
         request.hostIp = hostIP
+        request.extraHosts = extraHosts
 
         let call = client.addNetwork(request)
         let response = try await call.response.get()

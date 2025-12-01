@@ -281,6 +281,9 @@ public struct HostConfigCreate: Codable, Sendable {
     public let capDrop: [String]?          // --cap-drop (drop Linux capabilities)
     public let securityOpt: [String]?      // --security-opt (security options)
 
+    // Extra Hosts (Issue #34)
+    public let extraHosts: [String]?       // --add-host (extra hosts in "host:ip" format)
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -303,6 +306,7 @@ public struct HostConfigCreate: Codable, Sendable {
         case capAdd = "CapAdd"
         case capDrop = "CapDrop"
         case securityOpt = "SecurityOpt"
+        case extraHosts = "ExtraHosts"
     }
 }
 
@@ -533,6 +537,9 @@ public struct HostConfigInspect: Codable {
     public let capDrop: [String]
     public let securityOpt: [String]
 
+    // Extra Hosts (Issue #34)
+    public let extraHosts: [String]
+
     enum CodingKeys: String, CodingKey {
         case binds = "Binds"
         case networkMode = "NetworkMode"
@@ -555,6 +562,7 @@ public struct HostConfigInspect: Codable {
         case capAdd = "CapAdd"
         case capDrop = "CapDrop"
         case securityOpt = "SecurityOpt"
+        case extraHosts = "ExtraHosts"
     }
 
     public init(
@@ -578,7 +586,8 @@ public struct HostConfigInspect: Codable {
         groupAdd: [String] = [],
         capAdd: [String] = [],
         capDrop: [String] = [],
-        securityOpt: [String] = []
+        securityOpt: [String] = [],
+        extraHosts: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -601,6 +610,7 @@ public struct HostConfigInspect: Codable {
         self.capAdd = capAdd
         self.capDrop = capDrop
         self.securityOpt = securityOpt
+        self.extraHosts = extraHosts
     }
 }
 
