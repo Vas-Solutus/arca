@@ -16,23 +16,48 @@ public struct SystemHandlers: Sendable {
     /// Returns: "OK" with 200 status
     public static func handlePing() -> PingResponse {
         // Containers run Linux, not darwin (even though Arca runs on macOS)
-        return PingResponse(apiVersion: "1.51", osType: "linux")
+        return PingResponse(apiVersion: ArcaVersion.apiVersion, osType: "linux")
     }
 
     /// Handle GET /version
     /// Returns: Version information about the Docker Engine API
     public static func handleVersion() -> VersionResponse {
+        let arch = ProcessInfo.processInfo.machineArchitecture
+        let kernelVersion = ProcessInfo.processInfo.kernelVersion
+        let goVersion = "swift\(ArcaVersion.swiftVersion)"
+
+        // Build engine component with details
+        let engineDetails = ComponentDetails(
+            apiVersion: ArcaVersion.apiVersion,
+            arch: arch,
+            buildTime: ArcaVersion.buildTime,
+            experimental: ArcaVersion.experimental ? "true" : "false",
+            gitCommit: ArcaVersion.gitCommit,
+            goVersion: goVersion,
+            kernelVersion: kernelVersion,
+            minAPIVersion: ArcaVersion.minAPIVersion,
+            os: "linux"
+        )
+
+        let engineComponent = VersionComponent(
+            name: "Engine",
+            version: ArcaVersion.version,
+            details: engineDetails
+        )
+
         return VersionResponse(
-            version: "0.2.1-alpha",
-            apiVersion: "1.51",
-            minAPIVersion: "1.24",
-            gitCommit: "unknown",
-            goVersion: "go1.22.10",
+            platform: VersionPlatform(name: "Arca Container Runtime"),
+            components: [engineComponent],
+            version: ArcaVersion.version,
+            apiVersion: ArcaVersion.apiVersion,
+            minAPIVersion: ArcaVersion.minAPIVersion,
+            gitCommit: ArcaVersion.gitCommit,
+            goVersion: goVersion,
             os: "linux",  // Containers run Linux, not darwin
-            arch: ProcessInfo.processInfo.machineArchitecture,
-            kernelVersion: ProcessInfo.processInfo.kernelVersion,
-            experimental: false,
-            buildTime: "2024-01-01T00:00:00.000000000+00:00"
+            arch: arch,
+            kernelVersion: kernelVersion,
+            experimental: ArcaVersion.experimental,
+            buildTime: ArcaVersion.buildTime
         )
     }
 
@@ -80,14 +105,14 @@ public struct SystemHandlers: Sendable {
             cgroupVersion: "2",
             kernelVersion: processInfo.kernelVersion,
             operatingSystem: "Arca Container Runtime",
-            osVersion: "0.2.1-alpha",
+            osVersion: ArcaVersion.version,
             osType: "linux",
             architecture: processInfo.machineArchitecture,
             ncpu: processInfo.activeProcessorCount,
             memTotal: Int64(processInfo.physicalMemory),
             name: processInfo.hostName,
-            experimentalBuild: false,
-            serverVersion: "0.2.1-alpha"
+            experimentalBuild: ArcaVersion.experimental,
+            serverVersion: ArcaVersion.version
         )
     }
 
@@ -122,9 +147,90 @@ public struct PingResponse: Codable {
     }
 }
 
+/// Platform information for version response
+public struct VersionPlatform: Codable {
+    public let name: String
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+    }
+
+    public init(name: String) {
+        self.name = name
+    }
+}
+
+/// Component details for version response
+public struct ComponentDetails: Codable {
+    public let apiVersion: String
+    public let arch: String
+    public let buildTime: String
+    public let experimental: String
+    public let gitCommit: String
+    public let goVersion: String
+    public let kernelVersion: String
+    public let minAPIVersion: String
+    public let os: String
+
+    enum CodingKeys: String, CodingKey {
+        case apiVersion = "ApiVersion"
+        case arch = "Arch"
+        case buildTime = "BuildTime"
+        case experimental = "Experimental"
+        case gitCommit = "GitCommit"
+        case goVersion = "GoVersion"
+        case kernelVersion = "KernelVersion"
+        case minAPIVersion = "MinAPIVersion"
+        case os = "Os"
+    }
+
+    public init(
+        apiVersion: String,
+        arch: String,
+        buildTime: String,
+        experimental: String,
+        gitCommit: String,
+        goVersion: String,
+        kernelVersion: String,
+        minAPIVersion: String,
+        os: String
+    ) {
+        self.apiVersion = apiVersion
+        self.arch = arch
+        self.buildTime = buildTime
+        self.experimental = experimental
+        self.gitCommit = gitCommit
+        self.goVersion = goVersion
+        self.kernelVersion = kernelVersion
+        self.minAPIVersion = minAPIVersion
+        self.os = os
+    }
+}
+
+/// Component in version response
+public struct VersionComponent: Codable {
+    public let name: String
+    public let version: String
+    public let details: ComponentDetails?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case version = "Version"
+        case details = "Details"
+    }
+
+    public init(name: String, version: String, details: ComponentDetails? = nil) {
+        self.name = name
+        self.version = version
+        self.details = details
+    }
+}
+
 /// Response for /version endpoint
 /// Based on Docker Engine API v1.51 specification
 public struct VersionResponse: Codable {
+    public let platform: VersionPlatform
+    public let components: [VersionComponent]
     public let version: String
     public let apiVersion: String
     public let minAPIVersion: String
@@ -137,6 +243,8 @@ public struct VersionResponse: Codable {
     public let buildTime: String
 
     enum CodingKeys: String, CodingKey {
+        case platform = "Platform"
+        case components = "Components"
         case version = "Version"
         case apiVersion = "ApiVersion"
         case minAPIVersion = "MinAPIVersion"
@@ -150,6 +258,8 @@ public struct VersionResponse: Codable {
     }
 
     public init(
+        platform: VersionPlatform,
+        components: [VersionComponent],
         version: String,
         apiVersion: String,
         minAPIVersion: String,
@@ -161,6 +271,8 @@ public struct VersionResponse: Codable {
         experimental: Bool,
         buildTime: String
     ) {
+        self.platform = platform
+        self.components = components
         self.version = version
         self.apiVersion = apiVersion
         self.minAPIVersion = minAPIVersion
