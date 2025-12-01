@@ -573,7 +573,7 @@ public struct ContainerHandlers: Sendable {
             let dockerStats = transformToDockerStats(
                 stats: stats,
                 containerID: containerInfo.id,
-                containerName: containerInfo.name ?? "",
+                containerName: containerInfo.name,
                 timestamp: now
             )
 
@@ -769,7 +769,7 @@ public struct ContainerHandlers: Sendable {
                         var statsResponse = self.transformToDockerStats(
                             stats: currentStats,
                             containerID: containerInfo.id,
-                            containerName: containerInfo.name ?? "",
+                            containerName: containerInfo.name,
                             timestamp: currentTimestamp
                         )
 
@@ -1670,8 +1670,8 @@ public struct ContainerHandlers: Sendable {
             return .failure(.notFound(id))
         }
 
-        // Get current container state
-        guard let container = try? await containerManager.getContainer(id: containerID) else {
+        // Verify container exists
+        guard (try? await containerManager.getContainer(id: containerID)) != nil else {
             return .failure(.notFound(id))
         }
 
