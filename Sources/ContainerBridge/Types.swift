@@ -243,6 +243,9 @@ public struct HostConfig: Sendable {
     public let capDrop: [String]
     public let securityOpt: [String]
 
+    // Extra Hosts (Issue #34)
+    public let extraHosts: [String]
+
     public init(
         binds: [String] = [],
         networkMode: String = "default",
@@ -264,7 +267,8 @@ public struct HostConfig: Sendable {
         groupAdd: [String] = [],
         capAdd: [String] = [],
         capDrop: [String] = [],
-        securityOpt: [String] = []
+        securityOpt: [String] = [],
+        extraHosts: [String] = []
     ) {
         self.binds = binds
         self.networkMode = networkMode
@@ -287,6 +291,7 @@ public struct HostConfig: Sendable {
         self.capAdd = capAdd
         self.capDrop = capDrop
         self.securityOpt = securityOpt
+        self.extraHosts = extraHosts
     }
 }
 

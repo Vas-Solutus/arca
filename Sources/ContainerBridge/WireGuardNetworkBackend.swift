@@ -296,7 +296,8 @@ public actor WireGuardNetworkBackend {
         networkID: String,
         containerName: String,
         aliases: [String],
-        userSpecifiedIP: String? = nil
+        userSpecifiedIP: String? = nil,
+        extraHosts: [String] = []
     ) async throws -> NetworkAttachment {
         // Load network metadata from database
         guard let metadata = try await loadNetwork(id: networkID) else {
@@ -457,6 +458,17 @@ public actor WireGuardNetworkBackend {
         // Create wgN/ethN interface for this network (hub created lazily)
         // Pass host IP for host.docker.internal DNS resolution on first network
         let hostIP = getHostIP()
+
+        // Resolve "host-gateway" special value in extra_hosts to actual host IP (Issue #34)
+        // Docker Compose uses this for host.docker.internal:host-gateway
+        let resolvedExtraHosts = extraHosts.map { entry -> String in
+            if entry.hasSuffix(":host-gateway") {
+                let hostname = String(entry.dropLast(":host-gateway".count))
+                return "\(hostname):\(hostIP)"
+            }
+            return entry
+        }
+
         let result = try await wgClient.addNetwork(
             networkID: networkID,
             networkIndex: networkIndex,
@@ -467,7 +479,8 @@ public actor WireGuardNetworkBackend {
             ipAddress: ipAddress,
             networkCIDR: metadata.subnet,
             gateway: metadata.gateway,
-            hostIP: hostIP
+            hostIP: hostIP,
+            extraHosts: resolvedExtraHosts  // Pass extra hosts for DNS resolution (Issue #34)
         )
 
         // Store interface metadata
