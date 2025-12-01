@@ -1,4 +1,5 @@
 import ArgumentParser
+import ContainerBridge
 import Darwin
 import Foundation
 import Logging
@@ -16,7 +17,7 @@ struct Arca: AsyncParsableCommand {
 
             Part of the Vas Solutus project - freeing containers on macOS.
             """,
-        version: "0.2.1-alpha (API v1.51)",
+        version: ArcaVersion.fullVersion,
         subcommands: [Daemon.self],
         defaultSubcommand: Daemon.self
     )
