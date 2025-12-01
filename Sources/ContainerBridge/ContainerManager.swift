@@ -24,7 +24,7 @@ public actor ContainerManager {
 
     // Log management
     // logManager is immutable and thread-safe, so it can be accessed from nonisolated contexts
-    nonisolated(unsafe) public let logManager: ContainerLogManager
+    nonisolated public let logManager: ContainerLogManager
     private var logWriters: [String: (FileLogWriter, FileLogWriter)] = [:]  // Docker ID -> (stdout, stderr)
     private var broadcastWriters: [String: (BroadcastWriter, BroadcastWriter)] = [:]  // Docker ID -> (stdout, stderr) broadcast writers for dynamic attach
 
@@ -2634,15 +2634,6 @@ public actor ContainerManager {
             // Get WireGuard client for this container (optional - for nftables cleanup)
             let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
 
-            // Ensure we disconnect when done
-            if let client = wireguardClient {
-                defer {
-                    Task {
-                        try? await client.disconnect()
-                    }
-                }
-            }
-
             do {
                 try await portMapManager.unpublishPorts(
                     containerID: dockerID,
@@ -2658,6 +2649,11 @@ public actor ContainerManager {
                     "error": "\(error)"
                 ])
                 // Don't fail container stop on port unpublishing errors
+            }
+
+            // Disconnect WireGuard client after operations complete
+            if let client = wireguardClient {
+                try? await client.disconnect()
             }
         }
 
@@ -2784,6 +2780,7 @@ public actor ContainerManager {
     }
 
     /// Pause a running container
+    /// Note: pause/resume was removed from Apple's Containerization framework (PR #366)
     public func pauseContainer(id: String) async throws {
         logger.info("Pausing container", metadata: ["id": "\(id)"])
 
@@ -2792,34 +2789,17 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        guard var info = containers[dockerID] else {
+        guard containers[dockerID] != nil else {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Verify container is running
-        guard info.state == "running" else {
-            throw ContainerManagerError.invalidConfiguration("Container is not running")
-        }
-
-        // Get native container
-        guard let nativeContainer = nativeContainers[dockerID] else {
-            throw ContainerManagerError.containerNotFound(dockerID)
-        }
-
-        // Pause the container via Containerization API
-        try await nativeContainer.pause()
-
-        // Update state
-        info.state = "paused"
-        containers[dockerID] = info
-
-        // Persist state change
-        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
-
-        logger.info("Container paused successfully", metadata: ["id": "\(dockerID)"])
+        // pause/resume was removed from Apple's Containerization framework
+        // See: https://github.com/apple/containerization/pull/366
+        throw ContainerManagerError.invalidConfiguration("Container pause is not supported by the underlying runtime")
     }
 
     /// Unpause a paused container
+    /// Note: pause/resume was removed from Apple's Containerization framework (PR #366)
     public func unpauseContainer(id: String) async throws {
         logger.info("Unpausing container", metadata: ["id": "\(id)"])
 
@@ -2828,31 +2808,13 @@ public actor ContainerManager {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        guard var info = containers[dockerID] else {
+        guard containers[dockerID] != nil else {
             throw ContainerManagerError.containerNotFound(id)
         }
 
-        // Verify container is paused
-        guard info.state == "paused" else {
-            throw ContainerManagerError.invalidConfiguration("Container is not paused")
-        }
-
-        // Get native container
-        guard let nativeContainer = nativeContainers[dockerID] else {
-            throw ContainerManagerError.containerNotFound(dockerID)
-        }
-
-        // Resume the container via Containerization API
-        try await nativeContainer.resume()
-
-        // Update state back to running
-        info.state = "running"
-        containers[dockerID] = info
-
-        // Persist state change
-        try await persistContainerState(dockerID: dockerID, info: info, stoppedByUser: false)
-
-        logger.info("Container unpaused successfully", metadata: ["id": "\(dockerID)"])
+        // pause/resume was removed from Apple's Containerization framework
+        // See: https://github.com/apple/containerization/pull/366
+        throw ContainerManagerError.invalidConfiguration("Container unpause is not supported by the underlying runtime")
     }
 
     /// Get container statistics
@@ -3007,15 +2969,6 @@ public actor ContainerManager {
             // Get WireGuard client for this container (optional - for nftables cleanup)
             let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
 
-            // Ensure we disconnect when done
-            if let client = wireguardClient {
-                defer {
-                    Task {
-                        try? await client.disconnect()
-                    }
-                }
-            }
-
             do {
                 try await portMapManager.unpublishPorts(
                     containerID: dockerID,
@@ -3031,6 +2984,11 @@ public actor ContainerManager {
                     "error": "\(error)"
                 ])
                 // Don't fail container removal on port unpublishing errors
+            }
+
+            // Disconnect WireGuard client after operations complete
+            if let client = wireguardClient {
+                try? await client.disconnect()
             }
         }
 

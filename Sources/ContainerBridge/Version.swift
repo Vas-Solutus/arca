@@ -3,8 +3,8 @@ import Foundation
 /// Centralized version configuration for Arca
 /// Update version here for releases - all version strings are derived from this
 public struct ArcaVersion {
-    /// Arca version number (e.g., "0.2.2-alpha")
-    public static let version = "0.2.2-alpha"
+    /// Arca version number (e.g., "0.2.3-alpha")
+    public static let version = "0.2.3-alpha"
 
     /// Docker Engine API version we implement
     public static let apiVersion = "1.51"

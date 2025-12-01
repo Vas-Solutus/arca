@@ -504,76 +504,70 @@ public struct NetworkHandlers: Sendable {
     public func handlePruneNetworks(filters: [String: [String]] = [:]) async -> Result<NetworkPruneResponse, NetworkError> {
         logger.info("Handling prune networks request", metadata: ["filters": "\(filters)"])
 
-        do {
-            // Parse filters
-            var untilDate: Date? = nil
-            var labelFilters: [String] = []
+        // Parse filters
+        var untilDate: Date? = nil
+        var labelFilters: [String] = []
 
-            if let untilValues = filters["until"], let untilStr = untilValues.first {
-                // Parse timestamp (Unix timestamp, RFC3339, or duration like "24h")
-                untilDate = parseTimestamp(untilStr)
-            }
-
-            if let labels = filters["label"] {
-                labelFilters = labels
-            }
-
-            // Get all networks from NetworkManager
-            let allNetworks = await networkManager.listNetworks()
-
-            var deletedNetworkNames: [String] = []
-
-            for network in allNetworks {
-                // Skip default networks (bridge, host, none)
-                if network.isDefault {
-                    continue
-                }
-
-                // Skip networks with active containers
-                let attachments = await networkManager.getNetworkAttachments(networkID: network.id)
-                if !attachments.isEmpty {
-                    continue
-                }
-
-                // Apply until filter
-                if let until = untilDate, network.created > until {
-                    continue
-                }
-
-                // Apply label filters
-                if !labelFilters.isEmpty {
-                    let matchesLabels = labelFilters.allSatisfy { labelFilter in
-                        if let (key, value) = labelFilter.split(separator: "=", maxSplits: 1).map({ String($0) }).tuple() {
-                            return network.labels[key] == value
-                        } else {
-                            return network.labels[labelFilter] != nil
-                        }
-                    }
-                    if !matchesLabels {
-                        continue
-                    }
-                }
-
-                // Delete the network
-                do {
-                    try await networkManager.deleteNetwork(id: network.id)
-                    deletedNetworkNames.append(network.name)  // Docker returns names, not IDs
-                    logger.info("Pruned network", metadata: ["id": "\(network.id)", "name": "\(network.name)"])
-                } catch {
-                    logger.warning("Failed to prune network", metadata: [
-                        "id": "\(network.id)",
-                        "error": "\(error)"
-                    ])
-                }
-            }
-
-            logger.info("Networks pruned", metadata: ["count": "\(deletedNetworkNames.count)"])
-            return .success(NetworkPruneResponse(networksDeleted: deletedNetworkNames))
-
-        } catch {
-            logger.error("Failed to prune networks", metadata: ["error": "\(error)"])
-            return .failure(NetworkError.pruneFailed(errorDescription(error)))
+        if let untilValues = filters["until"], let untilStr = untilValues.first {
+            // Parse timestamp (Unix timestamp, RFC3339, or duration like "24h")
+            untilDate = parseTimestamp(untilStr)
         }
+
+        if let labels = filters["label"] {
+            labelFilters = labels
+        }
+
+        // Get all networks from NetworkManager
+        let allNetworks = await networkManager.listNetworks()
+
+        var deletedNetworkNames: [String] = []
+
+        for network in allNetworks {
+            // Skip default networks (bridge, host, none)
+            if network.isDefault {
+                continue
+            }
+
+            // Skip networks with active containers
+            let attachments = await networkManager.getNetworkAttachments(networkID: network.id)
+            if !attachments.isEmpty {
+                continue
+            }
+
+            // Apply until filter
+            if let until = untilDate, network.created > until {
+                continue
+            }
+
+            // Apply label filters
+            if !labelFilters.isEmpty {
+                let matchesLabels = labelFilters.allSatisfy { labelFilter in
+                    if let (key, value) = labelFilter.split(separator: "=", maxSplits: 1).map({ String($0) }).tuple() {
+                        return network.labels[key] == value
+                    } else {
+                        return network.labels[labelFilter] != nil
+                    }
+                }
+                if !matchesLabels {
+                    continue
+                }
+            }
+
+            // Delete the network
+            do {
+                try await networkManager.deleteNetwork(id: network.id)
+                deletedNetworkNames.append(network.name)  // Docker returns names, not IDs
+                logger.info("Pruned network", metadata: ["id": "\(network.id)", "name": "\(network.name)"])
+            } catch {
+                logger.warning("Failed to prune network", metadata: [
+                    "id": "\(network.id)",
+                    "error": "\(error)"
+                ])
+            }
+        }
+
+        logger.info("Networks pruned", metadata: ["count": "\(deletedNetworkNames.count)"])
+        return .success(NetworkPruneResponse(networksDeleted: deletedNetworkNames))
     }
 
     /// Parse timestamp from string (Unix timestamp, RFC3339, or Go duration)

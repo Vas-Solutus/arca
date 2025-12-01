@@ -1,5 +1,4 @@
 import Foundation
-import DockerAPI
 
 /// Handlers for Docker Engine API events endpoints
 /// Reference: Documentation/DOCKER_ENGINE_API_SPEC.md - /events endpoint
