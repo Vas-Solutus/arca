@@ -2629,19 +2629,18 @@ public actor ContainerManager {
         }
 
         // Unpublish ports if configured (Phase 4.1)
+        // NOTE: We pass nil for wireguardClient because the VM is already stopped.
+        // The nftables rules inside the container are gone with the VM, so there's
+        // nothing to clean up via gRPC. We only need to stop the host-side proxies.
         if let portMapManager = portMapManager,
            !info.hostConfig.portBindings.isEmpty {
-            // Get WireGuard client for this container (optional - for nftables cleanup)
-            let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
-
             do {
                 try await portMapManager.unpublishPorts(
                     containerID: dockerID,
-                    wireguardClient: wireguardClient
+                    wireguardClient: nil  // VM is stopped, can't use vsock
                 )
                 logger.info("Unpublished port mappings for container", metadata: [
-                    "container": "\(dockerID)",
-                    "wireguardClient": wireguardClient != nil ? "available" : "unavailable"
+                    "container": "\(dockerID)"
                 ])
             } catch {
                 logger.warning("Failed to unpublish port mappings", metadata: [
@@ -2649,11 +2648,6 @@ public actor ContainerManager {
                     "error": "\(error)"
                 ])
                 // Don't fail container stop on port unpublishing errors
-            }
-
-            // Disconnect WireGuard client after operations complete
-            if let client = wireguardClient {
-                try? await client.disconnect()
             }
         }
 
@@ -2961,22 +2955,19 @@ public actor ContainerManager {
             }
         }
 
-        // Unpublish ports before removal (Phase 4.1)
-        // IMPORTANT: Always call this, even if WireGuardClient is unavailable
-        // This ensures stale proxies and port allocations are cleaned up
+        // Unpublish ports (cleans up host-side proxies and port allocations)
+        // NOTE: We pass nil for wireguardClient because the VM is already stopped.
+        // The nftables rules inside the container are gone with the VM, so there's
+        // nothing to clean up via gRPC. We only need to stop the host-side proxies.
         if let portMapManager = portMapManager,
            !info.hostConfig.portBindings.isEmpty {
-            // Get WireGuard client for this container (optional - for nftables cleanup)
-            let wireguardClient = await networkManager?.getWireGuardClient(containerID: dockerID)
-
             do {
                 try await portMapManager.unpublishPorts(
                     containerID: dockerID,
-                    wireguardClient: wireguardClient
+                    wireguardClient: nil  // VM is stopped, can't use vsock
                 )
                 logger.info("Unpublished port mappings before removal", metadata: [
-                    "container": "\(dockerID)",
-                    "wireguardClient": wireguardClient != nil ? "available" : "unavailable"
+                    "container": "\(dockerID)"
                 ])
             } catch {
                 logger.warning("Failed to unpublish port mappings during removal", metadata: [
@@ -2984,11 +2975,6 @@ public actor ContainerManager {
                     "error": "\(error)"
                 ])
                 // Don't fail container removal on port unpublishing errors
-            }
-
-            // Disconnect WireGuard client after operations complete
-            if let client = wireguardClient {
-                try? await client.disconnect()
             }
         }
 
