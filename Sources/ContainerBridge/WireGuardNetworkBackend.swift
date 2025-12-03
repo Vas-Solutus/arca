@@ -472,6 +472,7 @@ public actor WireGuardNetworkBackend {
         let result = try await wgClient.addNetwork(
             networkID: networkID,
             networkIndex: networkIndex,
+            containerID: containerID,
             privateKey: privateKey,
             listenPort: listenPort,
             peerEndpoint: "",  // Empty - no initial peer needed

@@ -7,8 +7,8 @@ import Foundation
 /// Build-time information injected by Makefile
 public struct ArcaBuildInfo {
     /// Git commit hash at build time
-    public static let gitCommit = "3f4dfd5"
+    public static let gitCommit = "d572c7a"
 
     /// ISO8601 timestamp of build
-    public static let buildTime = "2025-12-01T19:45:32Z"
+    public static let buildTime = "2025-12-03T19:38:25Z"
 }

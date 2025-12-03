@@ -19,6 +19,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
   var serviceName: String { get }
   var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? { get }
 
+  func ready(
+    _ request: Arca_Wireguard_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Wireguard_V1_ReadyRequest, Arca_Wireguard_V1_ReadyResponse>
+
   func addNetwork(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions?
@@ -68,6 +73,25 @@ public protocol Arca_Wireguard_V1_WireGuardServiceClientProtocol: GRPCClient {
 extension Arca_Wireguard_V1_WireGuardServiceClientProtocol {
   public var serviceName: String {
     return "arca.wireguard.v1.WireGuardService"
+  }
+
+  /// Check if service is fully initialized and ready to handle requests
+  /// Used by vminitd to verify service startup before allowing container creation
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to Ready.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func ready(
+    _ request: Arca_Wireguard_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Wireguard_V1_ReadyRequest, Arca_Wireguard_V1_ReadyResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   /// Add a network to this container (creates wgN interface + veth pair, renames to ethN)
@@ -298,6 +322,11 @@ public protocol Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol: GRPCClien
   static var serviceDescriptor: GRPCServiceDescriptor { get }
   var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? { get }
 
+  func makeReadyCall(
+    _ request: Arca_Wireguard_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_ReadyRequest, Arca_Wireguard_V1_ReadyResponse>
+
   func makeAddNetworkCall(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions?
@@ -352,6 +381,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
 
   public var interceptors: Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol? {
     return nil
+  }
+
+  public func makeReadyCall(
+    _ request: Arca_Wireguard_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Wireguard_V1_ReadyRequest, Arca_Wireguard_V1_ReadyResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   public func makeAddNetworkCall(
@@ -465,6 +506,18 @@ extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Wireguard_V1_WireGuardServiceAsyncClientProtocol {
+  public func ready(
+    _ request: Arca_Wireguard_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Wireguard_V1_ReadyResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
+  }
+
   public func addNetwork(
     _ request: Arca_Wireguard_V1_AddNetworkRequest,
     callOptions: CallOptions? = nil
@@ -593,6 +646,9 @@ public struct Arca_Wireguard_V1_WireGuardServiceAsyncClient: Arca_Wireguard_V1_W
 
 public protocol Arca_Wireguard_V1_WireGuardServiceClientInterceptorFactoryProtocol: Sendable {
 
+  /// - Returns: Interceptors to use when invoking 'ready'.
+  func makeReadyInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_ReadyRequest, Arca_Wireguard_V1_ReadyResponse>]
+
   /// - Returns: Interceptors to use when invoking 'addNetwork'.
   func makeAddNetworkInterceptors() -> [ClientInterceptor<Arca_Wireguard_V1_AddNetworkRequest, Arca_Wireguard_V1_AddNetworkResponse>]
 
@@ -626,6 +682,7 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
     name: "WireGuardService",
     fullName: "arca.wireguard.v1.WireGuardService",
     methods: [
+      Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.ready,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addNetwork,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.removeNetwork,
       Arca_Wireguard_V1_WireGuardServiceClientMetadata.Methods.addPeer,
@@ -639,6 +696,12 @@ public enum Arca_Wireguard_V1_WireGuardServiceClientMetadata {
   )
 
   public enum Methods {
+    public static let ready = GRPCMethodDescriptor(
+      name: "Ready",
+      path: "/arca.wireguard.v1.WireGuardService/Ready",
+      type: GRPCCallType.unary
+    )
+
     public static let addNetwork = GRPCMethodDescriptor(
       name: "AddNetwork",
       path: "/arca.wireguard.v1.WireGuardService/AddNetwork",

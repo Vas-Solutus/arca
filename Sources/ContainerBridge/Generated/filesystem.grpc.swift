@@ -19,6 +19,11 @@ public protocol Arca_Filesystem_V1_FilesystemServiceClientProtocol: GRPCClient {
   var serviceName: String { get }
   var interceptors: Arca_Filesystem_V1_FilesystemServiceClientInterceptorFactoryProtocol? { get }
 
+  func ready(
+    _ request: Arca_Filesystem_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Filesystem_V1_ReadyRequest, Arca_Filesystem_V1_ReadyResponse>
+
   func syncFilesystem(
     _ request: Arca_Filesystem_V1_SyncFilesystemRequest,
     callOptions: CallOptions?
@@ -48,6 +53,25 @@ public protocol Arca_Filesystem_V1_FilesystemServiceClientProtocol: GRPCClient {
 extension Arca_Filesystem_V1_FilesystemServiceClientProtocol {
   public var serviceName: String {
     return "arca.filesystem.v1.FilesystemService"
+  }
+
+  /// Check if service is fully initialized and ready to handle requests
+  /// Used by vminitd to verify service startup before allowing container creation
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to Ready.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func ready(
+    _ request: Arca_Filesystem_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Filesystem_V1_ReadyRequest, Arca_Filesystem_V1_ReadyResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   /// Sync filesystem (flush all cached writes to disk)
@@ -215,6 +239,11 @@ public protocol Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol: GRPCCli
   static var serviceDescriptor: GRPCServiceDescriptor { get }
   var interceptors: Arca_Filesystem_V1_FilesystemServiceClientInterceptorFactoryProtocol? { get }
 
+  func makeReadyCall(
+    _ request: Arca_Filesystem_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Filesystem_V1_ReadyRequest, Arca_Filesystem_V1_ReadyResponse>
+
   func makeSyncFilesystemCall(
     _ request: Arca_Filesystem_V1_SyncFilesystemRequest,
     callOptions: CallOptions?
@@ -249,6 +278,18 @@ extension Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol {
 
   public var interceptors: Arca_Filesystem_V1_FilesystemServiceClientInterceptorFactoryProtocol? {
     return nil
+  }
+
+  public func makeReadyCall(
+    _ request: Arca_Filesystem_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Filesystem_V1_ReadyRequest, Arca_Filesystem_V1_ReadyResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   public func makeSyncFilesystemCall(
@@ -314,6 +355,18 @@ extension Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol {
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Filesystem_V1_FilesystemServiceAsyncClientProtocol {
+  public func ready(
+    _ request: Arca_Filesystem_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Filesystem_V1_ReadyResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
+  }
+
   public func syncFilesystem(
     _ request: Arca_Filesystem_V1_SyncFilesystemRequest,
     callOptions: CallOptions? = nil
@@ -394,6 +447,9 @@ public struct Arca_Filesystem_V1_FilesystemServiceAsyncClient: Arca_Filesystem_V
 
 public protocol Arca_Filesystem_V1_FilesystemServiceClientInterceptorFactoryProtocol: Sendable {
 
+  /// - Returns: Interceptors to use when invoking 'ready'.
+  func makeReadyInterceptors() -> [ClientInterceptor<Arca_Filesystem_V1_ReadyRequest, Arca_Filesystem_V1_ReadyResponse>]
+
   /// - Returns: Interceptors to use when invoking 'syncFilesystem'.
   func makeSyncFilesystemInterceptors() -> [ClientInterceptor<Arca_Filesystem_V1_SyncFilesystemRequest, Arca_Filesystem_V1_SyncFilesystemResponse>]
 
@@ -415,6 +471,7 @@ public enum Arca_Filesystem_V1_FilesystemServiceClientMetadata {
     name: "FilesystemService",
     fullName: "arca.filesystem.v1.FilesystemService",
     methods: [
+      Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.ready,
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.syncFilesystem,
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.enumerateUpperdir,
       Arca_Filesystem_V1_FilesystemServiceClientMetadata.Methods.readArchive,
@@ -424,6 +481,12 @@ public enum Arca_Filesystem_V1_FilesystemServiceClientMetadata {
   )
 
   public enum Methods {
+    public static let ready = GRPCMethodDescriptor(
+      name: "Ready",
+      path: "/arca.filesystem.v1.FilesystemService/Ready",
+      type: GRPCCallType.unary
+    )
+
     public static let syncFilesystem = GRPCMethodDescriptor(
       name: "SyncFilesystem",
       path: "/arca.filesystem.v1.FilesystemService/SyncFilesystem",

@@ -37,6 +37,7 @@ public actor WireGuardClient {
     }
 
     /// Connect to a container's WireGuard service via vsock using LinuxContainer.dialVsock()
+    /// Includes retry logic to handle race conditions during container startup
     public func connect(container: Containerization.LinuxContainer, vsockPort: UInt32 = 51820) async throws {
         logger.info("Connecting to container WireGuard service via vsock", metadata: [
             "vsockPort": "\(vsockPort)"
@@ -45,27 +46,48 @@ public actor WireGuardClient {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.eventLoopGroup = group
 
-        // Use LinuxContainer.dialVsock() to get a FileHandle for the vsock connection
-        logger.debug("Calling container.dialVsock(\(vsockPort))...")
-        let fileHandle = try await container.dialVsock(port: vsockPort)
-        let fd = fileHandle.fileDescriptor
-        logger.debug("container.dialVsock() successful, got file handle", metadata: [
-            "fd": "\(fd)"
+        // Retry logic following waitForAgent() pattern to handle startup race conditions
+        let maxRetries = 50
+        let retryDelay: Duration = .milliseconds(50)
+        var lastError: Error?
+
+        for attempt in 1...maxRetries {
+            do {
+                logger.debug("Attempting vsock connection", metadata: [
+                    "attempt": "\(attempt)",
+                    "vsockPort": "\(vsockPort)"
+                ])
+                let fileHandle = try await container.dialVsock(port: vsockPort)
+                let fd = fileHandle.fileDescriptor
+
+                // Create gRPC channel from the connected socket
+                // IMPORTANT: SwiftNIO takes ownership of the fd via .connectedSocket()
+                // We must NOT keep the FileHandle alive - SwiftNIO will close the fd when channel closes
+                let channel = ClientConnection(
+                    configuration: .default(
+                        target: .connectedSocket(NIOBSDSocket.Handle(fd)),
+                        eventLoopGroup: group
+                    ))
+
+                self.channel = channel
+                self.client = Arca_Wireguard_V1_WireGuardServiceNIOClient(channel: channel)
+
+                logger.info("Connected to container WireGuard service via vsock", metadata: [
+                    "attempts": "\(attempt)"
+                ])
+                return
+            } catch {
+                lastError = error
+                if attempt < maxRetries {
+                    try await Task.sleep(for: retryDelay)
+                }
+            }
+        }
+
+        logger.error("Failed to connect to WireGuard service after \(maxRetries) attempts", metadata: [
+            "error": "\(lastError?.localizedDescription ?? "unknown")"
         ])
-
-        // Create gRPC channel from the connected socket
-        // IMPORTANT: SwiftNIO takes ownership of the fd via .connectedSocket()
-        // We must NOT keep the FileHandle alive - SwiftNIO will close the fd when channel closes
-        let channel = ClientConnection(
-            configuration: .default(
-                target: .connectedSocket(NIOBSDSocket.Handle(fd)),
-                eventLoopGroup: group
-            ))
-
-        self.channel = channel
-        self.client = Arca_Wireguard_V1_WireGuardServiceNIOClient(channel: channel)
-
-        logger.info("Connected to container WireGuard service via vsock")
+        throw lastError ?? WireGuardClientError.connectionFailed("Connection timed out after \(maxRetries) attempts")
     }
 
     /// Disconnect from the container's WireGuard service
@@ -89,9 +111,11 @@ public actor WireGuardClient {
 
     /// Add a network to the container's WireGuard hub (creates wgN/ethN interfaces)
     /// Hub is created lazily on first network addition
+    /// Returns the namespace path that the container should join
     public func addNetwork(
         networkID: String,
         networkIndex: UInt32,
+        containerID: String,
         privateKey: String,
         listenPort: UInt32,
         peerEndpoint: String,
@@ -101,7 +125,7 @@ public actor WireGuardClient {
         gateway: String,
         hostIP: String,
         extraHosts: [String] = []
-    ) async throws -> (wgInterface: String, ethInterface: String, publicKey: String) {
+    ) async throws -> (wgInterface: String, ethInterface: String, publicKey: String, namespacePath: String) {
         guard let client = client else {
             throw WireGuardClientError.notConnected
         }
@@ -109,6 +133,7 @@ public actor WireGuardClient {
         logger.info("Adding network to WireGuard hub", metadata: [
             "networkID": "\(networkID)",
             "networkIndex": "\(networkIndex)",
+            "containerID": "\(containerID)",
             "listenPort": "\(listenPort)",
             "peerEndpoint": "\(peerEndpoint)",
             "ipAddress": "\(ipAddress)",
@@ -121,6 +146,7 @@ public actor WireGuardClient {
         var request = Arca_Wireguard_V1_AddNetworkRequest()
         request.networkID = networkID
         request.networkIndex = networkIndex
+        request.containerID = containerID
         request.privateKey = privateKey
         request.listenPort = listenPort
         request.peerEndpoint = peerEndpoint
@@ -142,10 +168,11 @@ public actor WireGuardClient {
             "totalNetworks": "\(response.totalNetworks)",
             "wgInterface": "\(response.wgInterface)",
             "ethInterface": "\(response.ethInterface)",
-            "publicKey": "\(response.publicKey)"
+            "publicKey": "\(response.publicKey)",
+            "namespacePath": "\(response.namespacePath)"
         ])
 
-        return (response.wgInterface, response.ethInterface, response.publicKey)
+        return (response.wgInterface, response.ethInterface, response.publicKey, response.namespacePath)
     }
 
     /// Remove a network from the container's WireGuard hub (deletes wgN/ethN interfaces)
