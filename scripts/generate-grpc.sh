@@ -8,18 +8,16 @@ echo "========================================"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Proto file locations
-CONTROL_API_PROTO="$PROJECT_ROOT/helpervm/proto/network.proto"
+# Proto file locations (all in arca-services now)
+ARCA_SERVICES_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/arca-services"
 
 # Output directories
 SWIFT_OUTPUT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Generated"
-CONTROL_API_GO_DIR="$PROJECT_ROOT/helpervm/control-api/proto"
+PROCESS_SWIFT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Process/Generated"
 
 # Create output directories
 mkdir -p "$SWIFT_OUTPUT_DIR"
-
-# Clean up old subdirectory structure (files are now in root with prefixed names)
-rm -rf "$SWIFT_OUTPUT_DIR/ControlAPI"
+mkdir -p "$PROCESS_SWIFT_DIR"
 
 # Check if protoc is installed
 if ! command -v protoc &> /dev/null; then
@@ -44,128 +42,98 @@ if ! command -v protoc-gen-grpc-swift &> /dev/null; then
     exit 1
 fi
 
-# Generate Swift code for Control API (helpervm/proto/network.proto)
-echo ""
-echo "→ Generating Swift code for Control API..."
-if [ -f "$CONTROL_API_PROTO" ]; then
-    protoc "$CONTROL_API_PROTO" \
-        --proto_path="$(dirname "$CONTROL_API_PROTO")" \
-        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+# ============================================================================
+# WireGuard Service
+# ============================================================================
+WG_PROTO="$ARCA_SERVICES_DIR/proto/wireguard/wireguard.proto"
+WG_GO_DIR="$ARCA_SERVICES_DIR/proto/wireguard"
 
-    # Rename to avoid filename conflicts (both control_api and vlan_service use network.proto)
-    mv "$SWIFT_OUTPUT_DIR/network.pb.swift" "$SWIFT_OUTPUT_DIR/control_api.pb.swift"
-    mv "$SWIFT_OUTPUT_DIR/network.grpc.swift" "$SWIFT_OUTPUT_DIR/control_api.grpc.swift"
-
-    echo "  ✓ Generated Swift code: control_api.{pb,grpc}.swift"
-else
-    echo "  ⚠ Skipping - proto file not found: $CONTROL_API_PROTO"
-fi
-
-# Generate Go code for Control API
-echo ""
-echo "→ Generating Go code for Control API..."
-if [ -f "$CONTROL_API_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$CONTROL_API_PROTO" \
-        --proto_path="$(dirname "$CONTROL_API_PROTO")" \
-        --go_out="$CONTROL_API_GO_DIR" \
-        --go_opt=paths=source_relative \
-        --go-grpc_out="$CONTROL_API_GO_DIR" \
-        --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $CONTROL_API_GO_DIR"
-else
-    echo "  ⚠ Skipping - proto file or Go plugins not found"
-fi
-
-# Generate Swift code for WireGuard Service (containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto)
 echo ""
 echo "→ Generating Swift code for WireGuard Service..."
-WIREGUARD_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/wireguard-service/proto/wireguard.proto"
-if [ -f "$WIREGUARD_PROTO" ]; then
-    protoc "$WIREGUARD_PROTO" \
-        --proto_path="$(dirname "$WIREGUARD_PROTO")" \
+if [ -f "$WG_PROTO" ]; then
+    protoc "$WG_PROTO" \
+        --proto_path="$(dirname "$WG_PROTO")" \
         --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
         --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
     echo "  ✓ Generated Swift code: wireguard.{pb,grpc}.swift"
 else
-    echo "  ⚠ Skipping - proto file not found: $WIREGUARD_PROTO"
+    echo "  ⚠ Skipping - proto file not found: $WG_PROTO"
 fi
 
-# Generate Go code for WireGuard Service
 echo ""
 echo "→ Generating Go code for WireGuard Service..."
-WIREGUARD_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/wireguard-service/proto"
-if [ -f "$WIREGUARD_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$WIREGUARD_PROTO" \
-        --proto_path="$(dirname "$WIREGUARD_PROTO")" \
-        --go_out="$WIREGUARD_GO_DIR" \
+if [ -f "$WG_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$WG_PROTO" \
+        --proto_path="$(dirname "$WG_PROTO")" \
+        --go_out="$WG_GO_DIR" \
         --go_opt=paths=source_relative \
-        --go-grpc_out="$WIREGUARD_GO_DIR" \
+        --go-grpc_out="$WG_GO_DIR" \
         --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $WIREGUARD_GO_DIR"
+    echo "  ✓ Generated Go code in $WG_GO_DIR"
 else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi
 
-# Generate Swift code for Filesystem Service (containerization/vminitd/extensions/filesystem-service/proto/filesystem.proto)
+# ============================================================================
+# Filesystem Service
+# ============================================================================
+FS_PROTO="$ARCA_SERVICES_DIR/proto/filesystem/filesystem.proto"
+FS_GO_DIR="$ARCA_SERVICES_DIR/proto/filesystem"
+
 echo ""
 echo "→ Generating Swift code for Filesystem Service..."
-FILESYSTEM_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/filesystem-service/proto/filesystem.proto"
-FILESYSTEM_SWIFT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Generated"
-if [ -f "$FILESYSTEM_PROTO" ]; then
-    protoc "$FILESYSTEM_PROTO" \
-        --proto_path="$(dirname "$FILESYSTEM_PROTO")" \
-        --swift_out=Visibility=Public:"$FILESYSTEM_SWIFT_DIR" \
-        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$FILESYSTEM_SWIFT_DIR"
-    echo "  ✓ Generated Swift code: Sources/ContainerBridge/Generated/filesystem.{pb,grpc}.swift"
+if [ -f "$FS_PROTO" ]; then
+    protoc "$FS_PROTO" \
+        --proto_path="$(dirname "$FS_PROTO")" \
+        --swift_out=Visibility=Public:"$SWIFT_OUTPUT_DIR" \
+        --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$SWIFT_OUTPUT_DIR"
+    echo "  ✓ Generated Swift code: filesystem.{pb,grpc}.swift"
 else
-    echo "  ⚠ Skipping - proto file not found: $FILESYSTEM_PROTO"
+    echo "  ⚠ Skipping - proto file not found: $FS_PROTO"
 fi
 
-# Generate Go code for Filesystem Service
 echo ""
 echo "→ Generating Go code for Filesystem Service..."
-FILESYSTEM_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/filesystem-service/proto"
-if [ -f "$FILESYSTEM_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$FILESYSTEM_PROTO" \
-        --proto_path="$(dirname "$FILESYSTEM_PROTO")" \
-        --go_out="$FILESYSTEM_GO_DIR" \
+if [ -f "$FS_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$FS_PROTO" \
+        --proto_path="$(dirname "$FS_PROTO")" \
+        --go_out="$FS_GO_DIR" \
         --go_opt=paths=source_relative \
-        --go-grpc_out="$FILESYSTEM_GO_DIR" \
+        --go-grpc_out="$FS_GO_DIR" \
         --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $FILESYSTEM_GO_DIR"
+    echo "  ✓ Generated Go code in $FS_GO_DIR"
 else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi
 
-# Generate Swift code for Process Service (containerization/vminitd/extensions/process-control/proto/process.proto)
+# ============================================================================
+# Process Service
+# ============================================================================
+PROC_PROTO="$ARCA_SERVICES_DIR/proto/process/process.proto"
+PROC_GO_DIR="$ARCA_SERVICES_DIR/proto/process"
+
 echo ""
 echo "→ Generating Swift code for Process Service..."
-PROCESS_PROTO="$PROJECT_ROOT/containerization/vminitd/extensions/process-control/proto/process.proto"
-PROCESS_SWIFT_DIR="$PROJECT_ROOT/Sources/ContainerBridge/Process/Generated"
-if [ -f "$PROCESS_PROTO" ]; then
-    mkdir -p "$PROCESS_SWIFT_DIR"
-    protoc "$PROCESS_PROTO" \
-        --proto_path="$(dirname "$PROCESS_PROTO")" \
+if [ -f "$PROC_PROTO" ]; then
+    protoc "$PROC_PROTO" \
+        --proto_path="$(dirname "$PROC_PROTO")" \
         --swift_out=Visibility=Public:"$PROCESS_SWIFT_DIR" \
         --grpc-swift_out=Client=true,Server=false,Visibility=Public:"$PROCESS_SWIFT_DIR"
-    echo "  ✓ Generated Swift code: Sources/ContainerBridge/Process/Generated/process.{pb,grpc}.swift"
+    echo "  ✓ Generated Swift code: process.{pb,grpc}.swift"
 else
-    echo "  ⚠ Skipping - proto file not found: $PROCESS_PROTO"
+    echo "  ⚠ Skipping - proto file not found: $PROC_PROTO"
 fi
 
-# Generate Go code for Process Service
 echo ""
 echo "→ Generating Go code for Process Service..."
-PROCESS_GO_DIR="$PROJECT_ROOT/containerization/vminitd/extensions/process-control/proto"
-if [ -f "$PROCESS_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
-    protoc "$PROCESS_PROTO" \
-        --proto_path="$(dirname "$PROCESS_PROTO")" \
-        --go_out="$PROCESS_GO_DIR" \
+if [ -f "$PROC_PROTO" ] && command -v protoc-gen-go &> /dev/null && command -v protoc-gen-go-grpc &> /dev/null; then
+    protoc "$PROC_PROTO" \
+        --proto_path="$(dirname "$PROC_PROTO")" \
+        --go_out="$PROC_GO_DIR" \
         --go_opt=paths=source_relative \
-        --go-grpc_out="$PROCESS_GO_DIR" \
+        --go-grpc_out="$PROC_GO_DIR" \
         --go-grpc_opt=paths=source_relative
-    echo "  ✓ Generated Go code in $PROCESS_GO_DIR"
+    echo "  ✓ Generated Go code in $PROC_GO_DIR"
 else
     echo "  ⚠ Skipping - proto file or Go plugins not found"
 fi

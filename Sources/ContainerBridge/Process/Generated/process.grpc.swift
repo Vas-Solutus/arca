@@ -29,6 +29,11 @@ public protocol Arca_Process_V1_ProcessServiceClientProtocol: GRPCClient {
   var serviceName: String { get }
   var interceptors: Arca_Process_V1_ProcessServiceClientInterceptorFactoryProtocol? { get }
 
+  func ready(
+    _ request: Arca_Process_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> UnaryCall<Arca_Process_V1_ReadyRequest, Arca_Process_V1_ReadyResponse>
+
   func startProcess(
     _ request: Arca_Process_V1_StartProcessRequest,
     callOptions: CallOptions?
@@ -48,6 +53,25 @@ public protocol Arca_Process_V1_ProcessServiceClientProtocol: GRPCClient {
 extension Arca_Process_V1_ProcessServiceClientProtocol {
   public var serviceName: String {
     return "arca.process.v1.ProcessService"
+  }
+
+  /// Check if service is fully initialized and ready to handle requests
+  /// Used by vminitd to verify service startup before allowing container creation
+  ///
+  /// - Parameters:
+  ///   - request: Request to send to Ready.
+  ///   - callOptions: Call options.
+  /// - Returns: A `UnaryCall` with futures for the metadata, status and response.
+  public func ready(
+    _ request: Arca_Process_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> UnaryCall<Arca_Process_V1_ReadyRequest, Arca_Process_V1_ReadyResponse> {
+    return self.makeUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   /// Start the container's init process
@@ -188,6 +212,11 @@ public protocol Arca_Process_V1_ProcessServiceAsyncClientProtocol: GRPCClient {
   static var serviceDescriptor: GRPCServiceDescriptor { get }
   var interceptors: Arca_Process_V1_ProcessServiceClientInterceptorFactoryProtocol? { get }
 
+  func makeReadyCall(
+    _ request: Arca_Process_V1_ReadyRequest,
+    callOptions: CallOptions?
+  ) -> GRPCAsyncUnaryCall<Arca_Process_V1_ReadyRequest, Arca_Process_V1_ReadyResponse>
+
   func makeStartProcessCall(
     _ request: Arca_Process_V1_StartProcessRequest,
     callOptions: CallOptions?
@@ -212,6 +241,18 @@ extension Arca_Process_V1_ProcessServiceAsyncClientProtocol {
 
   public var interceptors: Arca_Process_V1_ProcessServiceClientInterceptorFactoryProtocol? {
     return nil
+  }
+
+  public func makeReadyCall(
+    _ request: Arca_Process_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) -> GRPCAsyncUnaryCall<Arca_Process_V1_ReadyRequest, Arca_Process_V1_ReadyResponse> {
+    return self.makeAsyncUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
   }
 
   public func makeStartProcessCall(
@@ -253,6 +294,18 @@ extension Arca_Process_V1_ProcessServiceAsyncClientProtocol {
 
 @available(macOS 10.15, iOS 13, tvOS 13, watchOS 6, *)
 extension Arca_Process_V1_ProcessServiceAsyncClientProtocol {
+  public func ready(
+    _ request: Arca_Process_V1_ReadyRequest,
+    callOptions: CallOptions? = nil
+  ) async throws -> Arca_Process_V1_ReadyResponse {
+    return try await self.performAsyncUnaryCall(
+      path: Arca_Process_V1_ProcessServiceClientMetadata.Methods.ready.path,
+      request: request,
+      callOptions: callOptions ?? self.defaultCallOptions,
+      interceptors: self.interceptors?.makeReadyInterceptors() ?? []
+    )
+  }
+
   public func startProcess(
     _ request: Arca_Process_V1_StartProcessRequest,
     callOptions: CallOptions? = nil
@@ -309,6 +362,9 @@ public struct Arca_Process_V1_ProcessServiceAsyncClient: Arca_Process_V1_Process
 
 public protocol Arca_Process_V1_ProcessServiceClientInterceptorFactoryProtocol: Sendable {
 
+  /// - Returns: Interceptors to use when invoking 'ready'.
+  func makeReadyInterceptors() -> [ClientInterceptor<Arca_Process_V1_ReadyRequest, Arca_Process_V1_ReadyResponse>]
+
   /// - Returns: Interceptors to use when invoking 'startProcess'.
   func makeStartProcessInterceptors() -> [ClientInterceptor<Arca_Process_V1_StartProcessRequest, Arca_Process_V1_StartProcessResponse>]
 
@@ -324,6 +380,7 @@ public enum Arca_Process_V1_ProcessServiceClientMetadata {
     name: "ProcessService",
     fullName: "arca.process.v1.ProcessService",
     methods: [
+      Arca_Process_V1_ProcessServiceClientMetadata.Methods.ready,
       Arca_Process_V1_ProcessServiceClientMetadata.Methods.startProcess,
       Arca_Process_V1_ProcessServiceClientMetadata.Methods.getProcessStatus,
       Arca_Process_V1_ProcessServiceClientMetadata.Methods.listProcesses,
@@ -331,6 +388,12 @@ public enum Arca_Process_V1_ProcessServiceClientMetadata {
   )
 
   public enum Methods {
+    public static let ready = GRPCMethodDescriptor(
+      name: "Ready",
+      path: "/arca.process.v1.ProcessService/Ready",
+      type: GRPCCallType.unary
+    )
+
     public static let startProcess = GRPCMethodDescriptor(
       name: "StartProcess",
       path: "/arca.process.v1.ProcessService/StartProcess",

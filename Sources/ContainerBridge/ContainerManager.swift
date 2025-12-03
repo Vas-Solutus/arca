@@ -1266,10 +1266,21 @@ public actor ContainerManager {
             // - bridge network: WireGuard interface in network namespace
             // - none network: no interfaces at all
             containerConfig.useNetworkNamespace = needsNetworkNamespace
+
+            // Set network namespace path for WireGuard networking
+            // The namespace is created by arca-services during AddNetwork RPC
+            // Path is deterministic: /run/netns/arca-{shortID}
+            // vmexec will join this namespace instead of creating a new one
+            if needsNetworkNamespace {
+                let shortID = String(dockerID.prefix(12))
+                containerConfig.networkNamespacePath = "/run/netns/arca-\(shortID)"
+            }
+
             configLogger.debug("Network namespace configuration", metadata: [
                 "docker_id": "\(dockerID)",
                 "networkMode": "\(effectiveNetworkMode ?? "none")",
-                "useNetworkNamespace": "\(needsNetworkNamespace)"
+                "useNetworkNamespace": "\(needsNetworkNamespace)",
+                "namespacePath": "\(containerConfig.networkNamespacePath ?? "none")"
             ])
 
             // Network interface configuration:
@@ -2228,7 +2239,19 @@ public actor ContainerManager {
             "id": "\(dockerID)",
             "current_state": "\(info.state)"
         ])
-        try await nativeContainer.start()
+
+        // ===================================================================================
+        // NETWORK SETUP BEFORE START
+        // We must complete network setup BEFORE calling container.start() because:
+        // 1. start() holds a lock that blocks dialVsock()
+        // 2. AddNetwork (via dialVsock) creates the network namespace
+        // 3. vmexec needs to join the namespace when start() is called
+        // By doing network setup first, the namespace exists before vmexec runs.
+        // ===================================================================================
+
+        // Wait for arca-services to signal all services are ready (port 51819)
+        // dialVsock works in .created state, so we can do this before start()
+        try await waitForServicesReady(container: nativeContainer, dockerID: dockerID)
 
         // Create FilesystemClient for container filesystem operations (diff, archive)
         let filesystemClient = FilesystemClient(
@@ -2239,18 +2262,13 @@ public actor ContainerManager {
         filesystemClients[dockerID] = filesystemClient
         logger.debug("Created FilesystemClient", metadata: ["container": "\(dockerID)"])
 
-        // Update state
-        info.state = "running"
-        info.startedAt = Date()
-        info.pid = 1  // Containers run as PID 1 in their VM
-        containers[dockerID] = info
+        // ===================================================================================
+        // NETWORK SETUP - Creates namespace at /run/netns/arca-{shortID}
+        // This MUST complete before start() so vmexec can join the namespace
+        // ===================================================================================
 
-        // Persist state change
-        try await persistContainerState(dockerID: dockerID, info: info)
-
-        logger.info("Container started successfully", metadata: [
-            "id": "\(dockerID)",
-            "state": "running"
+        logger.debug("Beginning container network setup (before start)", metadata: [
+            "container": "\(dockerID)"
         ])
 
         // DEBUG: Log network attachment state before attachment logic
@@ -2287,40 +2305,39 @@ public actor ContainerManager {
 
                 do {
                     // Resolve network name/ID to actual network ID
-                    guard let resolvedNetworkID = await networkManager.resolveNetworkID(targetNetwork) else {
-                        logger.warning("Failed to resolve network", metadata: [
+                    if let resolvedNetworkID = await networkManager.resolveNetworkID(targetNetwork) {
+                        let containerName = info.name ?? String(dockerID.prefix(12))
+                        let attachment = try await networkManager.attachContainerToNetwork(
+                            containerID: dockerID,
+                            container: nativeContainer,
+                            networkID: resolvedNetworkID,
+                            containerName: containerName,
+                            aliases: info.initialNetworkAliases,  // Pass aliases from Docker Compose
+                            userSpecifiedIP: info.initialNetworkUserIP,  // Pass user-specified IP for validation
+                            extraHosts: info.hostConfig.extraHosts  // Pass extra hosts for DNS resolution (Issue #34)
+                        )
+
+                        // Record the attachment in ContainerManager
+                        try await self.attachContainerToNetwork(
+                            dockerID: dockerID,
+                            networkID: resolvedNetworkID,
+                            ip: attachment.ip,
+                            mac: attachment.mac,
+                            aliases: attachment.aliases
+                        )
+
+                        logger.info("Container auto-attached to network successfully", metadata: [
+                            "container": "\(dockerID)",
+                            "network": "\(targetNetwork)",
+                            "resolved_id": "\(resolvedNetworkID)",
+                            "ip": "\(attachment.ip)"
+                        ])
+                    } else {
+                        logger.warning("Failed to resolve network, container will start without network", metadata: [
                             "container": "\(dockerID)",
                             "network": "\(targetNetwork)"
                         ])
-                        return  // Skip network attachment if network doesn't exist
                     }
-
-                    let containerName = info.name ?? String(dockerID.prefix(12))
-                    let attachment = try await networkManager.attachContainerToNetwork(
-                        containerID: dockerID,
-                        container: nativeContainer,
-                        networkID: resolvedNetworkID,
-                        containerName: containerName,
-                        aliases: info.initialNetworkAliases,  // Pass aliases from Docker Compose
-                        userSpecifiedIP: info.initialNetworkUserIP,  // Pass user-specified IP for validation
-                        extraHosts: info.hostConfig.extraHosts  // Pass extra hosts for DNS resolution (Issue #34)
-                    )
-
-                    // Record the attachment in ContainerManager
-                    try await self.attachContainerToNetwork(
-                        dockerID: dockerID,
-                        networkID: resolvedNetworkID,
-                        ip: attachment.ip,
-                        mac: attachment.mac,
-                        aliases: attachment.aliases
-                    )
-
-                    logger.info("Container auto-attached to network successfully", metadata: [
-                        "container": "\(dockerID)",
-                        "network": "\(targetNetwork)",
-                        "resolved_id": "\(resolvedNetworkID)",
-                        "ip": "\(attachment.ip)"
-                    ])
                 } catch let error as NetworkManagerError {
                     // User validation errors should fail container start
                     switch error {
@@ -2457,6 +2474,29 @@ public actor ContainerManager {
                 }
             }
         }
+
+        // ===================================================================================
+        // START CONTAINER - Network namespace already exists from AddNetwork above
+        // vmexec will join the pre-existing namespace immediately, no waiting needed
+        // ===================================================================================
+        try await nativeContainer.start()
+
+        // ===================================================================================
+        // ALL SETUP COMPLETE - Now safe to mark container as "running"
+        // ===================================================================================
+
+        info.state = "running"
+        info.startedAt = Date()
+        info.pid = 1  // Containers run as PID 1 in their VM
+        containers[dockerID] = info
+
+        // Persist state change
+        try await persistContainerState(dockerID: dockerID, info: info)
+
+        logger.info("Container started successfully (all setup complete)", metadata: [
+            "id": "\(dockerID)",
+            "state": "running"
+        ])
 
         // Start health checks if configured (Phase 6 - Task 6.2)
         if let deferred = deferredConfigs[dockerID],
@@ -4172,6 +4212,51 @@ public actor ContainerManager {
         let adj = adjectives.randomElement() ?? "random"
         let noun = nouns.randomElement() ?? "container"
         return "\(adj)_\(noun)"
+    }
+
+    // MARK: - Service Readiness
+
+    /// Wait for arca-services to signal all services are ready
+    /// Connects to vsock port 51819 which only opens after wireguard, filesystem, and process services are initialized
+    private func waitForServicesReady(container: LinuxContainer, dockerID: String) async throws {
+        let readyPort: UInt32 = 51819
+        let maxRetries = 100  // 100 * 50ms = 5 seconds max
+        let retryDelay: Duration = .milliseconds(50)
+
+        logger.debug("Waiting for container services to be ready", metadata: [
+            "container": "\(dockerID)",
+            "readyPort": "\(readyPort)"
+        ])
+
+        var lastError: Error?
+        for attempt in 1...maxRetries {
+            do {
+                // Try to connect to the ready signal port
+                let fileHandle = try await container.dialVsock(port: readyPort)
+                // Connection successful - services are ready
+                // Close immediately (ready port just accepts and closes)
+                try? fileHandle.close()
+
+                logger.info("Container services ready", metadata: [
+                    "container": "\(dockerID)",
+                    "attempts": "\(attempt)"
+                ])
+                return
+            } catch {
+                lastError = error
+                if attempt < maxRetries {
+                    try await Task.sleep(for: retryDelay)
+                }
+            }
+        }
+
+        // Log warning but don't fail - the retry logic in clients will handle it
+        // This provides graceful degradation for containers without arca-services
+        logger.warning("Timeout waiting for container services ready signal", metadata: [
+            "container": "\(dockerID)",
+            "attempts": "\(maxRetries)",
+            "error": "\(lastError?.localizedDescription ?? "unknown")"
+        ])
     }
 
     // MARK: - Helper Methods

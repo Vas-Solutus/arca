@@ -31,6 +31,7 @@ public actor FilesystemClient {
     }
 
     /// Connect to the container's filesystem service via vsock
+    /// Includes retry logic to handle race conditions during container startup
     private func connect() async throws {
         guard client == nil else { return }
 
@@ -42,29 +43,51 @@ public actor FilesystemClient {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.eventLoopGroup = group
 
-        // Use LinuxContainer.dialVsock() to get a FileHandle for the vsock connection
-        let fileHandle = try await container.dialVsock(port: 51821)
-        logger.debug("container.dialVsock(51821) successful", metadata: [
+        // Retry logic following waitForAgent() pattern to handle startup race conditions
+        let maxRetries = 50
+        let retryDelay: Duration = .milliseconds(50)
+        var lastError: Error?
+
+        for attempt in 1...maxRetries {
+            do {
+                logger.debug("Attempting vsock connection", metadata: [
+                    "container": "\(containerID)",
+                    "attempt": "\(attempt)",
+                    "vsockPort": "51821"
+                ])
+                let fileHandle = try await container.dialVsock(port: 51821)
+
+                // Store FileHandle to keep it alive for the lifetime of the connection
+                self.vsockFileHandle = fileHandle
+
+                // Create gRPC channel from the connected socket FileHandle
+                let channel = ClientConnection(
+                    configuration: .default(
+                        target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
+                        eventLoopGroup: group
+                    ))
+
+                self.channel = channel
+                self.client = Arca_Filesystem_V1_FilesystemServiceAsyncClient(channel: channel)
+
+                logger.debug("Connected to container filesystem service via vsock", metadata: [
+                    "container": "\(containerID)",
+                    "attempts": "\(attempt)"
+                ])
+                return
+            } catch {
+                lastError = error
+                if attempt < maxRetries {
+                    try await Task.sleep(for: retryDelay)
+                }
+            }
+        }
+
+        logger.error("Failed to connect to filesystem service after \(maxRetries) attempts", metadata: [
             "container": "\(containerID)",
-            "fd": "\(fileHandle.fileDescriptor)"
+            "error": "\(lastError?.localizedDescription ?? "unknown")"
         ])
-
-        // Store FileHandle to keep it alive for the lifetime of the connection
-        self.vsockFileHandle = fileHandle
-
-        // Create gRPC channel from the connected socket FileHandle
-        let channel = ClientConnection(
-            configuration: .default(
-                target: .connectedSocket(NIOBSDSocket.Handle(fileHandle.fileDescriptor)),
-                eventLoopGroup: group
-            ))
-
-        self.channel = channel
-        self.client = Arca_Filesystem_V1_FilesystemServiceAsyncClient(channel: channel)
-
-        logger.debug("Connected to container filesystem service via vsock", metadata: [
-            "container": "\(containerID)"
-        ])
+        throw lastError ?? FilesystemClientError.connectionFailed("Connection timed out after \(maxRetries) attempts")
     }
 
     /// Get or create gRPC client connection
